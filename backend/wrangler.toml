@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 workers_dev = false
 
 routes = [
-  { pattern = "api.parlo.me/*", zone_name = "parlo.me" }
+  { pattern = "api.parlo.me", custom_domain = true }
 ]
 
 [[d1_databases]]
