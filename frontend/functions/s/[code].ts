@@ -15,7 +15,7 @@ interface Env {
   ASSETS: Fetcher;
 }
 
-const BACKEND_URL = "https://parlo-backend.andrej-c9b.workers.dev";
+const BACKEND_URL = "https://api.parlo.me";
 
 function extractCode(slugOrCode: string): string {
   const match = slugOrCode.match(/([a-z0-9]{6,12})$/i);

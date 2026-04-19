@@ -28,7 +28,7 @@ linkedin.get("/api/auth/linkedin/start", async (c) => {
   const state = crypto.randomUUID();
   await c.env.KV.put(`linkedin-state:${state}`, JSON.stringify({ phone, returnTo }), { expirationTtl: 300 });
 
-  const redirectUri = "https://parlo-backend.andrej-c9b.workers.dev/api/auth/linkedin/callback";
+  const redirectUri = "https://api.parlo.me/api/auth/linkedin/callback";
   const params = new URLSearchParams({
     response_type: "code",
     client_id: c.env.LINKEDIN_CLIENT_ID,
@@ -76,7 +76,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
     phone = stateData;
   }
 
-  const redirectUri = "https://parlo-backend.andrej-c9b.workers.dev/api/auth/linkedin/callback";
+  const redirectUri = "https://api.parlo.me/api/auth/linkedin/callback";
 
   // Exchange authorization code for access token
   const tokenRes = await fetch(LINKEDIN_TOKEN_URL, {

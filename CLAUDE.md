@@ -14,7 +14,7 @@ Voice interview app. Creators speak (or type) their agent config, share via What
 ```
 parlo/
   frontend/          — React+Vite app on Cloudflare Pages (parlo.me)
-  backend/           — Cloudflare Worker + Hono (parlo-backend.andrej-c9b.workers.dev)
+  backend/           — Cloudflare Worker + Hono (api.parlo.me)
   fe_experiments/    — Original prototypes (reference only, not deployed)
 ```
 

@@ -1,6 +1,11 @@
 name = "parlo-backend"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
+workers_dev = false
+
+routes = [
+  { pattern = "api.parlo.me/*", zone_name = "parlo.me" }
+]
 
 [[d1_databases]]
 binding = "DB"

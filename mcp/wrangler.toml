@@ -21,4 +21,4 @@ binding = "OAUTH_KV"
 id = "0797bc38784d4a77b5a1d1edef68571b"
 
 [vars]
-PARLO_BACKEND_URL = "https://parlo-backend.andrej-c9b.workers.dev"
+PARLO_BACKEND_URL = "https://api.parlo.me"
