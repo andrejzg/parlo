@@ -14,7 +14,7 @@ function generateOtpCode(): string {
 
 // ── POST /api/otp/send-whatsapp ── Send OTP via WhatsApp
 otp.post("/api/otp/send-whatsapp", async (c) => {
-  const body = await c.req.json<{ phone?: string }>().catch(() => ({}));
+  const body = await c.req.json<{ phone?: string }>().catch(() => ({}) as { phone?: string });
   const phone = body.phone;
 
   if (!phone) {
@@ -43,7 +43,9 @@ otp.post("/api/otp/send-whatsapp", async (c) => {
 
 // ── POST /api/otp/verify-whatsapp ── Verify WhatsApp OTP
 otp.post("/api/otp/verify-whatsapp", async (c) => {
-  const body = await c.req.json<{ phone?: string; code?: string }>().catch(() => ({}));
+  const body = await c.req
+    .json<{ phone?: string; code?: string }>()
+    .catch(() => ({}) as { phone?: string; code?: string });
   const { phone, code } = body;
 
   if (!phone || !code) {
