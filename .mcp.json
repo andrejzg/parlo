@@ -3,6 +3,13 @@
     "parlo-mcp": {
       "type": "http",
       "url": "https://mcp.parlo.me/mcp"
+    },
+    "posthog": {
+      "type": "http",
+      "url": "https://mcp.posthog.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${POSTHOG_API_KEY}"
+      }
     }
   }
 }
