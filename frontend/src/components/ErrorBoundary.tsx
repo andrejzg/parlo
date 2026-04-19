@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { captureException } from "@/lib/posthog";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -18,9 +19,11 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
     return { hasError: true };
   }
 
-  componentDidCatch(_error: Error, _errorInfo: ErrorInfo) {
-    // Error captured by boundary — no console.error in production.
-    // PostHog or other analytics can be wired here if needed.
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    captureException(error, {
+      source: "ErrorBoundary",
+      componentStack: errorInfo.componentStack,
+    });
   }
 
   render() {

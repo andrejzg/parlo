@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
-import { initAnalytics } from "./services/analytics";
+import { initAnalytics, captureServerException } from "./services/analytics";
 import { authMiddleware } from "./middleware/auth";
 
 import surveys from "./routes/surveys";
@@ -16,7 +16,7 @@ import linkedin from "./routes/linkedin";
 import feed from "./routes/feed";
 import audience from "./routes/audience";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
 
 // ── Middleware ──
 app.use("*", cors({
@@ -47,5 +47,17 @@ app.route("/", og);
 app.route("/", linkedin);
 app.route("/", feed);
 app.route("/", audience);
+
+// ── Error handler — forward unhandled exceptions to PostHog ──
+app.onError((err, c) => {
+  const distinctId = c.get("creatorId") ?? "anonymous";
+  const promise = captureServerException(distinctId, err, {
+    path: c.req.path,
+    method: c.req.method,
+  });
+  if (promise) c.executionCtx.waitUntil(promise);
+  console.error("[onError]", c.req.method, c.req.path, err);
+  return c.json({ error: "Internal Server Error" }, 500);
+});
 
 export default app;

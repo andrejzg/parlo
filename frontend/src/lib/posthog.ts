@@ -12,6 +12,7 @@ export const posthog =
         api_host: posthogHost,
         capture_pageview: true,
         capture_pageleave: true,
+        capture_exceptions: true,
       })
     : null;
 
@@ -24,6 +25,19 @@ export function trackEvent(
 ): void {
   if (!posthog) return;
   posthog.capture(name, properties);
+}
+
+/**
+ * Manually report an error to PostHog. Use in try/catch blocks where the error
+ * is handled and therefore won't reach `window.onerror`.
+ */
+export function captureException(
+  error: unknown,
+  properties?: Record<string, unknown>,
+): void {
+  if (!posthog) return;
+  const err = error instanceof Error ? error : new Error(String(error));
+  posthog.captureException(err, properties);
 }
 
 /**

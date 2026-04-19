@@ -44,3 +44,49 @@ export function trackServerEvent(
     // Swallow errors — analytics should never take down the request
   });
 }
+
+/**
+ * Report a thrown error as a PostHog `$exception` event so it shows up in
+ * PostHog's Error Tracking UI. Returns the in-flight fetch promise so callers
+ * can `ctx.waitUntil(...)` it to keep the Worker alive long enough to flush.
+ */
+export function captureServerException(
+  distinctId: string,
+  error: unknown,
+  properties?: Record<string, unknown>,
+): Promise<void> | undefined {
+  if (!_apiKey) return;
+
+  const err = error instanceof Error ? error : new Error(String(error));
+  const type = err.name || "Error";
+
+  const body = JSON.stringify({
+    api_key: _apiKey,
+    event: "$exception",
+    distinct_id: distinctId,
+    properties: {
+      $exception_list: [
+        {
+          type,
+          value: err.message,
+          mechanism: { handled: false, synthetic: false },
+          stacktrace: err.stack ? { type: "raw", frames: [] } : undefined,
+        },
+      ],
+      $exception_message: err.message,
+      $exception_type: type,
+      $exception_stack_trace_raw: err.stack,
+      $lib: "parlo-backend",
+      ...properties,
+    },
+    timestamp: new Date().toISOString(),
+  });
+
+  return fetch(`${POSTHOG_HOST}/capture/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  })
+    .then(() => undefined)
+    .catch(() => undefined);
+}
