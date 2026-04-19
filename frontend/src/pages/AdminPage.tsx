@@ -12,6 +12,7 @@ import {
   type PromptDetail,
   type PromptVersion,
 } from "@/api/client";
+import { captureException } from "@/lib/posthog";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ export default function AdminPage() {
       const data = await getPrompts();
       setPrompts(data);
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.loadPrompts" });
       setError(e.message);
     }
   }, []);
@@ -84,6 +86,7 @@ export default function AdminPage() {
       setSelected(detail);
       setDraft(detail.currentContent);
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.selectPrompt", promptName: name });
       setError(e.message);
     } finally {
       setLoading(false);
@@ -105,6 +108,7 @@ export default function AdminPage() {
       setTimeout(() => setSuccessMsg(null), 3000);
       loadPrompts();
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.handleSave", promptName: selected?.name });
       setError(e.message);
     } finally {
       setLoading(false);
@@ -125,6 +129,7 @@ export default function AdminPage() {
       setTimeout(() => setSuccessMsg(null), 3000);
       loadPrompts();
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.handleRevert", promptName: selected?.name, version });
       setError(e.message);
     } finally {
       setLoading(false);
@@ -140,6 +145,7 @@ export default function AdminPage() {
       setSuccessMsg("Prompts seeded");
       setTimeout(() => setSuccessMsg(null), 3000);
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.handleSeed" });
       setError(e.message);
     } finally {
       setLoading(false);
@@ -153,6 +159,7 @@ export default function AdminPage() {
       const res = await testGenerate(testAudience, testGather);
       setTestResult(JSON.stringify(res, null, 2));
     } catch (e: any) {
+      captureException(e, { location: "AdminPage.handleTestGenerate" });
       setTestResult(`Error: ${e.message}`);
     } finally {
       setTestLoading(false);

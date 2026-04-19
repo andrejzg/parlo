@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
@@ -11,8 +11,27 @@ import AdminPage from "@/pages/AdminPage";
 import NotFound from "@/pages/NotFound";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import LandscapeOverlay from "@/components/LandscapeOverlay";
+import { captureException } from "@/lib/posthog";
 
 const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (err, query) => {
+      captureException(err, {
+        source: "react-query",
+        kind: "query",
+        queryKey: JSON.stringify(query.queryKey),
+      });
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (err, _vars, _ctx, mutation) => {
+      captureException(err, {
+        source: "react-query",
+        kind: "mutation",
+        mutationKey: JSON.stringify(mutation.options.mutationKey ?? []),
+      });
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: 1,

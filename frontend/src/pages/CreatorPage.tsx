@@ -221,7 +221,8 @@ export default function CreatorPage() {
       const url = uploadUrls[key];
       if (url) {
         const uploadPromise = uploadAudioBlob(url, answer.blob).catch(
-          () => {
+          (err) => {
+            captureException(err, { location: "CreatorPage.uploadAudioBlob" });
             toast.error(`Failed to upload recording. Please check your connection.`);
             return false as boolean;
           },
@@ -286,6 +287,7 @@ export default function CreatorPage() {
       // Check if BuildingAgentScreen passed an error
       const maybeError = result as { error?: unknown } | undefined;
       if (maybeError?.error) {
+        captureException(maybeError.error, { location: "CreatorPage.handleBuildingDone" });
         toast.error("Failed to generate questions. Tap 'Retry' to try again.");
         setBuildError(true);
         return;
@@ -405,14 +407,16 @@ export default function CreatorPage() {
       const result = await sendOtp(value, "recaptcha-container");
       setConfirmationResult(result);
       goForward("otp");
-    } catch {
+    } catch (smsErr) {
       // Firebase failed → fall back to WhatsApp
+      captureException(smsErr, { location: "CreatorPage.handlePhone.sendOtp" });
       toast("SMS failed, trying WhatsApp...");
       try {
         await sendWhatsAppOtp(value);
         setConfirmationResult(null);
         goForward("otp");
-      } catch {
+      } catch (waErr) {
+        captureException(waErr, { location: "CreatorPage.handlePhone.sendWhatsAppOtp" });
         toast.error("Couldn't send verification code. Please try again.");
       }
     }

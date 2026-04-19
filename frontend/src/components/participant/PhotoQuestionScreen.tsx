@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import imageCompression from "browser-image-compression";
 import { SurveyQuestion, VoiceAnswer } from "@/types/survey";
+import { captureException } from "@/lib/posthog";
 
 interface PhotoQuestionScreenProps {
   question: SurveyQuestion;
@@ -111,7 +112,7 @@ export default function PhotoQuestionScreen({
       setPhotoBlob(compressed);
       setPreviewUrl(url);
     } catch (err) {
-      console.error("[PhotoQuestionScreen] compression failed:", err);
+      captureException(err, { location: "PhotoQuestionScreen.handleFile", questionId: question.id });
       setError("Couldn't process that photo. Please try again.");
     } finally {
       setIsCompressing(false);

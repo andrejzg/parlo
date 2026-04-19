@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { stagger, fadeUp } from "@/lib/animations";
 import type { ConfirmationResult } from "@/lib/firebase";
 import { sendWhatsAppOtp, verifyWhatsAppOtp } from "@/api/client";
+import { captureException } from "@/lib/posthog";
 
 interface OtpScreenProps {
   phone: string;
@@ -58,7 +59,8 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
           await confirmationResult.confirm(otp);
         }
         onNext(phone);
-      } catch {
+      } catch (err) {
+        captureException(err, { location: "OtpScreen.verify", whatsappMode });
         setError("Invalid code. Please try again.");
         setCode("");
         inputRef.current?.focus();
@@ -86,7 +88,8 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
       setSecondsLeft(RESEND_COOLDOWN);
       setCode("");
       inputRef.current?.focus();
-    } catch {
+    } catch (err) {
+      captureException(err, { location: "OtpScreen.handleWhatsAppFallback" });
       setError("Failed to send WhatsApp code. Please try again.");
     } finally {
       setWhatsappSending(false);

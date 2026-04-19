@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SurveyQuestion, VoiceAnswer } from "@/types/survey";
+import { captureException } from "@/lib/posthog";
 
 interface VideoQuestionScreenProps {
   question: SurveyQuestion;
@@ -137,7 +138,7 @@ export default function VideoQuestionScreen({
       setPreviewUrl(url);
       setDurationMs(Math.round(seconds * 1000));
     } catch (err) {
-      console.error("[VideoQuestionScreen] capture failed:", err);
+      captureException(err, { location: "VideoQuestionScreen.handleFile", questionId: question.id });
       setError(err instanceof Error ? err.message : "Couldn't process the video.");
     } finally {
       setValidating(false);
