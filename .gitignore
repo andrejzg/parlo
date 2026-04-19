@@ -42,6 +42,3 @@ test-results/
 # Misc
 .cache/
 coverage/
-
-# Old prototypes — live as separate repos (andrejzg/creation-flow, andrejzg/participation-flow)
-fe_experiments/
