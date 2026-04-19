@@ -12,7 +12,7 @@ import OtpScreen from "@/components/participant/OtpScreen";
 import CreatorSidebar, { MenuButton } from "@/components/creator/CreatorSidebar";
 import { VoiceAnswer } from "@/types/survey";
 import { pageVariants } from "@/lib/animations";
-import { trackEvent, identifyUser } from "@/lib/posthog";
+import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
 import { forceReleaseSharedStream } from "@/hooks/useVoiceRecorder";
 import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
@@ -193,7 +193,8 @@ export default function CreatorPage() {
       setUploadUrls(result.uploadUrls);
 
       goForward("creating");
-    } catch {
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.handleStart" });
       toast.error("Something went wrong. Please try again.");
     }
   };
@@ -273,7 +274,8 @@ export default function CreatorPage() {
         textAnswers: textAnswers.length > 0 ? textAnswers : undefined,
       });
       return result;
-    } catch {
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.generateQuestions" });
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
