@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Cloudflare Wrangler local state
+.wrangler/
+
+# Claude Code local settings
+.claude/
+
+# Env — local overrides only
+.dev.vars
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Playwright / tests
+playwright-report/
+test-results/
+/tmp/parlo-*
+
+# Misc
+.cache/
+coverage/
+
+# Old prototypes — live as separate repos (andrejzg/creation-flow, andrejzg/participation-flow)
+fe_experiments/

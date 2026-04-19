@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "parlo-mcp": {
+      "type": "http",
+      "url": "https://mcp.parlo.me/mcp"
+    }
+  }
+}

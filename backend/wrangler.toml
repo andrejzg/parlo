@@ -1,0 +1,22 @@
+name = "parlo-backend"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "parlo"
+database_id = "e7917315-4d35-459a-9a01-1dee0a00b258"
+
+[[r2_buckets]]
+binding = "AUDIO_BUCKET"
+bucket_name = "parlo-audio"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "0ed2107abd454e33918ac4717f2f7a33"
+
+[ai]
+binding = "AI"
+
+[vars]
+WHATSAPP_VERIFY_TOKEN = "REPLACE_WITH_VERIFY_TOKEN"
