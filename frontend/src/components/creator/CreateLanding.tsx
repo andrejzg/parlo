@@ -117,8 +117,12 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
         <motion.div variants={fadeUp} className="mt-4 sm:mt-8 flex flex-col gap-3 w-full">
           <motion.button
             onClick={onCreateAgent}
-            className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-display text-lg tracking-wide glow-primary"
-            style={{ fontWeight: 700 }}
+            className="w-full py-5 rounded-2xl text-primary-foreground font-display text-lg tracking-wide"
+            style={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, hsl(215 90% 54%), hsl(215 90% 62%))",
+              boxShadow: "0 4px 24px hsl(215 90% 45% / 0.4)",
+            }}
             whileTap={{ scale: 0.96, transition: { duration: 0.08 } }}
             whileHover={{ filter: "brightness(1.1)", transition: { duration: 0.15 } }}
           >
