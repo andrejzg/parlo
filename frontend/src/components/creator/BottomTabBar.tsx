@@ -80,8 +80,8 @@ export default function BottomTabBar({
         onClick={onCreateNew}
         className="flex items-center justify-center w-11 h-11 rounded-full -mt-1"
         style={{
-          background: "linear-gradient(135deg, hsl(22 95% 58%), hsl(22 95% 66%))",
-          boxShadow: "0 4px 16px hsl(22 95% 50% / 0.3)",
+          background: "linear-gradient(135deg, hsl(215 90% 54%), hsl(215 90% 62%))",
+          boxShadow: "0 4px 16px hsl(215 90% 45% / 0.35)",
         }}
         aria-label="Create new survey"
       >
