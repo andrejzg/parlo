@@ -261,7 +261,7 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
-- Orange accent color (hsl 22 95% 62%), Syne + Inter font pairing
+- Orange accent color (hsl 22 95% 62%), Cormorant Garamond serif throughout (narrow Garamond — evokes 1980s Apple marketing type, i.e. ITC Garamond Condensed used on Mac manuals and "Think Different" era ads)
 - Voice-first with "Type instead" escape hatch (auto-switches on mic denial)
 - `pb-safe` utility class for safe-area-inset-bottom on all screens with bottom CTAs
 - `h-svh` uses `100dvh` (dynamic viewport height) for mobile browser chrome handling
