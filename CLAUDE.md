@@ -261,7 +261,7 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
-- Orange accent color (hsl 22 95% 62%), Syne (display) + Inter (body) sans pairing for UI; Cormorant Garamond serif (`font-serif`) reserved for big question headings (QuestionScreen / PhotoQuestionScreen / VideoQuestionScreen / CreationQuestionScreen) and the unlogged-in landing headline (CreateLanding) — evokes 1980s Apple marketing type, i.e. ITC Garamond Condensed used on Mac manuals and "Think Different" era ads. Do not apply `font-serif` elsewhere.
+- Orange accent color (hsl 22 95% 62%). Two fonts only: **Cormorant Garamond** (serif — `font-display` and `font-serif` both resolve to it) and **Inter** (sans — body default). The serif evokes 1980s Apple marketing type (ITC Garamond Condensed, used on Mac manuals and "Think Different" era ads). Never reintroduce Syne or any other display sans — `font-display` exists as a back-compat alias and now renders serif.
 - Voice-first with "Type instead" escape hatch (auto-switches on mic denial)
 - `pb-safe` utility class for safe-area-inset-bottom on all screens with bottom CTAs
 - `h-svh` uses `100dvh` (dynamic viewport height) for mobile browser chrome handling
