@@ -25,6 +25,7 @@ export interface Creator {
   linkedin_name: string | null;
   linkedin_email: string | null;
   linkedin_photo_url: string | null;
+  linkedin_photo_r2_key: string | null;
   linkedin_connected_at: string | null;
 }
 
