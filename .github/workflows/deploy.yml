@@ -29,6 +29,45 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Re-assert Worker secrets on every deploy. Source of truth lives in
+      # GitHub Actions secrets (encrypted at rest), so even if a future
+      # accidental script-shape change resets the Worker bindings, the next
+      # deploy puts them right back. Skips empty secrets to avoid clearing
+      # values on the Worker when a GH secret hasn't been set yet.
+      - name: Sync Worker secrets
+        working-directory: backend
+        run: |
+          node -e '
+            const fs = require("fs");
+            const e = process.env;
+            const keys = [
+              "LINKEDIN_CLIENT_ID",
+              "LINKEDIN_CLIENT_SECRET",
+              "KAPSO_API_KEY",
+              "WHATSAPP_PHONE_NUMBER_ID",
+              "POSTHOG_API_KEY"
+            ];
+            const out = {};
+            for (const k of keys) if (e[k]) out[k] = e[k];
+            if (Object.keys(out).length === 0) {
+              console.log("No secrets to sync");
+              process.exit(0);
+            }
+            fs.writeFileSync("/tmp/parlo-secrets.json", JSON.stringify(out));
+            console.log("Synced keys: " + Object.keys(out).join(", "));
+          '
+          if [ -f /tmp/parlo-secrets.json ]; then
+            npx wrangler secret bulk /tmp/parlo-secrets.json --config ./wrangler.toml --name parlo-backend
+            rm /tmp/parlo-secrets.json
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
+          LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
+          KAPSO_API_KEY: ${{ secrets.KAPSO_API_KEY }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
 
   mcp:
     name: Deploy MCP worker
