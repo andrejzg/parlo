@@ -5,9 +5,34 @@ import { trackServerEvent } from "../services/analytics";
 
 const webhooks = new Hono<{ Bindings: Env }>();
 
+async function isValidKapsoSignature(secret: string, body: string, signature: string | undefined): Promise<boolean> {
+  if (!signature) return false;
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(body)));
+  const expected = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
+  const given = signature.trim().toLowerCase().replace(/^sha256=/, "");
+  if (given.length !== expected.length) return false;
+  // Constant-time compare
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}
+
 // ── POST /api/webhooks/whatsapp ── Handle incoming WhatsApp messages
 webhooks.post("/api/webhooks/whatsapp", async (c) => {
-  const raw = await c.req.json<any>();
+  // Kapso signs each delivery: X-Webhook-Signature = hex HMAC-SHA256(secret, raw body).
+  // Reject unsigned or forged calls so nobody else can trigger sends from our number.
+  const body = await c.req.text();
+  if (!c.env.KAPSO_WEBHOOK_SECRET) {
+    console.error("[webhook] KAPSO_WEBHOOK_SECRET is not set; rejecting delivery");
+    return c.json({ error: "webhook secret not configured" }, 500);
+  }
+  if (!(await isValidKapsoSignature(c.env.KAPSO_WEBHOOK_SECRET, body, c.req.header("x-webhook-signature")))) {
+    console.warn("[webhook] invalid signature; rejecting delivery");
+    return c.json({ error: "invalid signature" }, 401);
+  }
+  const raw = JSON.parse(body);
   const db = c.env.DB;
   const wa = createWhatsAppClient(c.env.KAPSO_API_KEY, c.env.WHATSAPP_PHONE_NUMBER_ID);
 
@@ -74,7 +99,11 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
 
         // RESPONSE pattern checked FIRST (message may contain both "survey" and "response")
         // Prefilled: "Parlo - survey response submitted for <code>"
-        const responseMatch = text.match(/response\s+submitted\s+for\s+(\S+)/i) || text.match(/submitted\s+.*?response\s+(\S+)/i);
+        // Also accept the bare "response <code>" that ThankYouScreen prefills.
+        const responseMatch =
+          text.match(/response\s+submitted\s+for\s+(\S+)/i) ||
+          text.match(/submitted\s+.*?response\s+(\S+)/i) ||
+          text.match(/^response\s+(\S+)$/i);
         if (responseMatch) {
           const code = responseMatch[1];
           const response = await db
@@ -95,14 +124,15 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
               .run();
 
             // Reply to participant based on survey visibility
+            const participantName = response.first_name ?? "there";
             if (response.visibility === "open") {
               await wa.sendTemplate(from, "parlo_thanks_open", [
-                { type: "body", parameters: [{ type: "text", text: contactName ?? "The creator" }] },
+                { type: "body", parameters: [{ type: "text", parameter_name: "name", text: participantName }] },
                 { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: response.survey_code }] },
               ]);
             } else {
               await wa.sendTemplate(from, "parlo_thanks", [
-                { type: "body", parameters: [{ type: "text", text: contactName ?? "The creator" }] },
+                { type: "body", parameters: [{ type: "text", parameter_name: "name", text: participantName }] },
               ]);
             }
 
@@ -128,9 +158,9 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
                 {
                   type: "body",
                   parameters: [
-                    { type: "text", text: response.first_name ?? "Someone" },
-                    { type: "text", text: response.title ?? "your" },
-                    { type: "text", text: String(responseCount?.count ?? 1) },
+                    { type: "text", parameter_name: "respondent", text: response.first_name ?? "Someone" },
+                    { type: "text", parameter_name: "survey_title", text: response.title ?? "your survey" },
+                    { type: "text", parameter_name: "response_count", text: String(responseCount?.count ?? 1) },
                   ],
                 },
                 { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: response.dashboard_code }] },
@@ -166,7 +196,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
               });
 
               await wa.sendTemplate(from, "parlo_survey_ready", [
-                { type: "body", parameters: [{ type: "text", text: `https://parlo.me/s/${code}` }] },
+                { type: "body", parameters: [{ type: "text", parameter_name: "share_url", text: `https://parlo.me/s/${code}` }] },
                 { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: code }] },
               ]);
             } else {

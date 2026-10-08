@@ -6,6 +6,7 @@ export interface Env {
   KV: KVNamespace;
   WHATSAPP_VERIFY_TOKEN: string;
   KAPSO_API_KEY: string;
+  KAPSO_WEBHOOK_SECRET: string;
   WHATSAPP_PHONE_NUMBER_ID: string;
   POSTHOG_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;

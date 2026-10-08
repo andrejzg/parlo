@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { VoiceAnswer } from "@/types/survey";
 import { trackEvent } from "@/lib/posthog";
 import { buildShareUrl } from "@/lib/slug";
+import { buildBotChatUrl } from "@/lib/whatsapp";
 
 interface ThankYouScreenProps {
   answers: VoiceAnswer[];
@@ -333,7 +334,7 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
   const shareText = `Check out this voice survey: ${shareUrl}`;
   const whatsappShareUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
   const whatsappUpdatesUrl = responseCode
-    ? `https://wa.me/12058311222?text=${encodeURIComponent(`response ${responseCode}`)}`
+    ? buildBotChatUrl(`response ${responseCode}`)
     : undefined;
 
   return (
