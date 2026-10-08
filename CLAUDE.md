@@ -29,7 +29,7 @@ parlo/
 - **Phone Auth:** Firebase Phone Auth (SMS OTP) + WhatsApp OTP fallback via Kapso
 - **Photo capture:** native `<input type="file" capture="environment">` + `browser-image-compression` (client-side JPEG transcode at 1080px / ~1MB / 0.85 quality)
 - **Video capture:** native `<input type="file" accept="video/*" capture="environment">` (60s + 25MB hard caps, vertical-only, no client compression — relies on phone's hardware H.264 encoder)
-- **Analytics:** PostHog (EU region) — frontend + backend events + LLM observability
+- **Analytics:** PostHog (US region, project 653180 under andrej@parlo.me) — frontend + backend events + LLM observability
 - **Auth (admin):** Cloudflare Access (Google Workspace @parlo.me)
 - **Auth (API):** API key (`pk_` prefix) per creator, stored in D1. Header: `X-Parlo-Api-Key` or `Authorization: Bearer pk_...`
 - **Offline persistence:** IndexedDB (sessionStore.ts) — stores session state + audio blobs

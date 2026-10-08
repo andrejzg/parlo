@@ -5,7 +5,7 @@
  * bundle small and avoid Node.js-only dependencies.
  */
 
-const POSTHOG_HOST = "https://eu.i.posthog.com";
+const POSTHOG_HOST = "https://us.i.posthog.com";
 
 let _apiKey: string | undefined;
 
