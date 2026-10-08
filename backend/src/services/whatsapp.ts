@@ -15,7 +15,9 @@ interface TemplateComponent {
   type: "body" | "header" | "button";
   sub_type?: "url";
   index?: number;
-  parameters: { type: "text"; text: string }[];
+  // Templates use NAMED params, so body parameters must carry parameter_name.
+  // URL button parameters are positional and omit it.
+  parameters: { type: "text"; text: string; parameter_name?: string }[];
 }
 
 export function createWhatsAppClient(apiKey: string, phoneNumberId: string): WhatsAppClient {

@@ -151,6 +151,8 @@ Kapso webhook receiver. Handles:
 - `response <code>` → participant confirmation + creator notification
 - Unknown → fallback message
 
+Requests must carry a valid `X-Webhook-Signature` (hex HMAC-SHA256 of the raw body with `KAPSO_WEBHOOK_SECRET`); otherwise 401. If the secret isn't set the endpoint returns 500 rather than accepting unsigned calls.
+
 ### GET /api/my/surveys
 List all surveys for the authenticated creator. Requires `X-Parlo-Api-Key` header or `Authorization: Bearer pk_...`.
 Returns 401 if no valid API key provided.
@@ -235,6 +237,19 @@ Survey share URLs (`/s/*`) get dynamic OG meta tags via a Cloudflare Pages Funct
 Pages Functions are scoped to `/s/*` and `/api/*` via `frontend/public/_routes.json` — without this, Pages would invoke the Function on every request.
 
 OG images are generated dynamically by the backend Worker at `GET /api/og/:code.png` using `workers-og` (Satori port). Each survey gets a unique deterministic Vienna Secession-style design (tiled pattern + cream card with title).
+
+## WhatsApp (Kapso)
+
+- Bot number: **+1 201-578-9837**, phone number ID `1407538595771805`, WABA `1134962085529075`. Frontend wa.me links come from `frontend/src/lib/whatsapp.ts` (`buildBotChatUrl`) — never hardcode the number.
+- Kapso webhook (phone-number scope, `kind: kapso`, payload v2, event `whatsapp.message.received`) points at `https://api.parlo.me/api/webhooks/whatsapp`.
+- Worker secrets: `KAPSO_API_KEY`, `WHATSAPP_PHONE_NUMBER_ID`, `KAPSO_WEBHOOK_SECRET` (synced from GitHub secrets on deploy).
+- Templates (en_US, UTILITY, **NAMED** params — send body params with `parameter_name`; URL button params stay positional):
+  - `parlo_survey_ready` — `{{share_url}}`; button → `parlo.me/s/{code}`
+  - `parlo_thanks` — `{{name}}`
+  - `parlo_thanks_open` — `{{name}}`; button → `parlo.me/r/{surveyCode}`
+  - `parlo_new_response` — `{{respondent}}`, `{{survey_title}}`, `{{response_count}}`; button → `parlo.me/d/{dashboardCode}`
+- Templates live on the WABA: switching numbers/WABAs means recreating them.
+- Free-form `sendText` only reaches users who messaged us in the last 24h. The WhatsApp OTP fallback still uses `sendText`, so it fails for first-time users. Meta refuses AUTHENTICATION templates until the business is verified; once it is, create a `COPY_CODE` auth template and switch `routes/otp.ts` to it.
 
 ## Key Naming Conventions
 

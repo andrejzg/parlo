@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Switch } from "@/components/ui/switch";
 import { trackEvent } from "@/lib/posthog";
 import { buildShareUrl } from "@/lib/slug";
+import { buildBotChatUrl } from "@/lib/whatsapp";
 
 interface AgentReadyScreenProps {
   surveyCode: string;
@@ -31,7 +32,7 @@ export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCod
   const shareUrl = buildShareUrl(surveyTitle, surveyCode);
   const shareText = `Answer my voice survey! ${shareUrl}`;
   const waShareLink = `https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`;
-  const waNotifyLink = `https://wa.me/12058311222?text=${encodeURIComponent(`Parlo - notify me about survey ${surveyCode}`)}`;
+  const waNotifyLink = buildBotChatUrl(`Parlo - notify me about survey ${surveyCode}`);
   const dashboardUrl = `parlo.me/d/${dashboardCode || surveyCode}`;
 
   const copyDashboardLink = () => {
