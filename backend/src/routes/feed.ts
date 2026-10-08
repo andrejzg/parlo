@@ -58,7 +58,7 @@ feed.get("/api/my/feed", async (c) => {
 
   // Get all survey IDs for this creator (with titles for the response)
   const surveysResult = await db
-    .prepare("SELECT id, title FROM surveys WHERE creator_id = ?")
+    .prepare("SELECT id, title FROM surveys WHERE creator_id = ? AND status != 'deleted'")
     .bind(creatorId)
     .all<{ id: string; title: string | null }>();
 
@@ -171,7 +171,7 @@ feed.get("/api/my/feed", async (c) => {
       FROM responses r
       LEFT JOIN creator_read_responses crr
         ON crr.response_id = r.id AND crr.creator_id = ?
-      WHERE r.survey_id IN (SELECT id FROM surveys WHERE creator_id = ?)
+      WHERE r.survey_id IN (SELECT id FROM surveys WHERE creator_id = ? AND status != 'deleted')
         AND r.status = 'submitted'
         AND crr.response_id IS NULL
     `)

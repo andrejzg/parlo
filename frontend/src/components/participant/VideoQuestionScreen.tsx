@@ -234,8 +234,8 @@ export default function VideoQuestionScreen({
         )}
         <motion.h2
           variants={questionItem}
-          className="font-display text-xl sm:text-3xl leading-snug text-center text-foreground"
-          style={{ fontWeight: 800 }}
+          className="font-serif text-2xl sm:text-4xl leading-snug text-center text-foreground"
+          style={{ fontWeight: 600 }}
         >
           {question.text}
         </motion.h2>

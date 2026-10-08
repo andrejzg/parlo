@@ -29,7 +29,7 @@ parlo/
 - **Phone Auth:** Firebase Phone Auth (SMS OTP) + WhatsApp OTP fallback via Kapso
 - **Photo capture:** native `<input type="file" capture="environment">` + `browser-image-compression` (client-side JPEG transcode at 1080px / ~1MB / 0.85 quality)
 - **Video capture:** native `<input type="file" accept="video/*" capture="environment">` (60s + 25MB hard caps, vertical-only, no client compression — relies on phone's hardware H.264 encoder)
-- **Analytics:** PostHog (EU region) — frontend + backend events + LLM observability
+- **Analytics:** PostHog (US region, project 653180 under andrej@parlo.me) — frontend + backend events + LLM observability
 - **Auth (admin):** Cloudflare Access (Google Workspace @parlo.me)
 - **Auth (API):** API key (`pk_` prefix) per creator, stored in D1. Header: `X-Parlo-Api-Key` or `Authorization: Bearer pk_...`
 - **Offline persistence:** IndexedDB (sessionStore.ts) — stores session state + audio blobs
@@ -261,7 +261,7 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
-- Orange accent color (hsl 22 95% 62%), Syne + Inter font pairing
+- Orange accent color (hsl 22 95% 62%), Syne (display) + Inter (body) sans pairing for UI; Cormorant Garamond serif (`font-serif`) reserved for big question headings (QuestionScreen / PhotoQuestionScreen / VideoQuestionScreen / CreationQuestionScreen) and the unlogged-in landing headline (CreateLanding) — evokes 1980s Apple marketing type, i.e. ITC Garamond Condensed used on Mac manuals and "Think Different" era ads. Do not apply `font-serif` elsewhere.
 - Voice-first with "Type instead" escape hatch (auto-switches on mic denial)
 - `pb-safe` utility class for safe-area-inset-bottom on all screens with bottom CTAs
 - `h-svh` uses `100dvh` (dynamic viewport height) for mobile browser chrome handling

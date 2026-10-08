@@ -304,10 +304,10 @@ export default function CreationQuestionScreen({
       >
         <motion.h2
           variants={questionItem}
-          className="font-display leading-tight tracking-tight"
+          className="font-serif leading-tight tracking-tight"
           style={{
-            fontSize: "clamp(2.1rem, 9vw, 2.8rem)",
-            fontWeight: 800,
+            fontSize: "clamp(2.3rem, 9.5vw, 3rem)",
+            fontWeight: 600,
             color: "hsl(40 20% 95%)",
           }}
         >

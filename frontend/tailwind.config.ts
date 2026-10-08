@@ -71,6 +71,7 @@ export default {
       fontFamily: {
         display: ["Syne", "sans-serif"],
         body: ["Inter", "sans-serif"],
+        serif: ["Cormorant Garamond", "Georgia", "Times New Roman", "serif"],
       },
       keyframes: {
         "accordion-down": {

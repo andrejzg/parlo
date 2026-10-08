@@ -10,6 +10,41 @@ const LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo";
 const SCOPES = "openid profile email";
 
 /**
+ * Build a stable, never-expiring URL for a creator's LinkedIn photo. The URL
+ * points at our own backend, which streams the bytes from R2.
+ */
+function buildPhotoUrl(phone: string): string {
+  return `https://api.parlo.me/api/auth/linkedin/photo?phone=${encodeURIComponent(phone)}`;
+}
+
+/**
+ * Fetch a LinkedIn profile photo and stash it in R2. LinkedIn's CDN URLs are
+ * signed and expire (~30d), which is why we don't link to them directly.
+ * Returns the R2 key on success, null if the fetch failed.
+ */
+async function mirrorPhotoToR2(
+  env: Env,
+  linkedinSub: string,
+  photoUrl: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(photoUrl);
+    if (!res.ok) return null;
+    const bytes = await res.arrayBuffer();
+    const contentType = res.headers.get("content-type") || "image/jpeg";
+    const ext = contentType.includes("png") ? "png" : "jpg";
+    const key = `creators/linkedin/${linkedinSub}.${ext}`;
+    await env.AUDIO_BUCKET.put(key, bytes, {
+      httpMetadata: { contentType, cacheControl: "public, max-age=86400" },
+    });
+    return key;
+  } catch (err) {
+    console.error("[linkedin] Failed to mirror photo to R2:", err);
+    return null;
+  }
+}
+
+/**
  * GET /api/auth/linkedin/start?phone={phone}
  *
  * Initiates the LinkedIn OAuth flow. The phone param identifies which creator
@@ -126,6 +161,12 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
   // Normalize phone for lookup
   const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
 
+  // Mirror photo bytes to R2 so we don't depend on LinkedIn's expiring URL
+  let photoR2Key: string | null = null;
+  if (profile.picture) {
+    photoR2Key = await mirrorPhotoToR2(c.env, profile.sub, profile.picture);
+  }
+
   // Update the creator record with LinkedIn data
   const db = c.env.DB;
   const result = await db
@@ -135,6 +176,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
            linkedin_name = ?,
            linkedin_email = ?,
            linkedin_photo_url = ?,
+           linkedin_photo_r2_key = ?,
            linkedin_connected_at = datetime('now'),
            wa_name = COALESCE(wa_name, ?)
        WHERE phone = ?`
@@ -144,6 +186,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
       displayName,
       profile.email ?? null,
       profile.picture ?? null,
+      photoR2Key,
       displayName,
       normalizedPhone,
     )
@@ -181,13 +224,15 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
 
   const creator = await db
     .prepare(
-      "SELECT linkedin_name, linkedin_email, linkedin_photo_url, linkedin_connected_at FROM creators WHERE phone = ?"
+      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM creators WHERE phone = ?"
     )
     .bind(normalizedPhone)
     .first<{
+      linkedin_sub: string | null;
       linkedin_name: string | null;
       linkedin_email: string | null;
       linkedin_photo_url: string | null;
+      linkedin_photo_r2_key: string | null;
       linkedin_connected_at: string | null;
     }>();
 
@@ -195,12 +240,57 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
     return c.json({ connected: false });
   }
 
+  // Lazy backfill: if we don't yet have an R2 mirror but the LinkedIn URL is
+  // still live, mirror it now so it stays usable after LinkedIn's URL expires.
+  let r2Key = creator.linkedin_photo_r2_key;
+  if (!r2Key && creator.linkedin_sub && creator.linkedin_photo_url) {
+    r2Key = await mirrorPhotoToR2(c.env, creator.linkedin_sub, creator.linkedin_photo_url);
+    if (r2Key) {
+      await db
+        .prepare("UPDATE creators SET linkedin_photo_r2_key = ? WHERE phone = ?")
+        .bind(r2Key, normalizedPhone)
+        .run();
+    }
+  }
+
   return c.json({
     connected: true,
     name: creator.linkedin_name,
     email: creator.linkedin_email,
-    photoUrl: creator.linkedin_photo_url,
+    photoUrl: r2Key ? buildPhotoUrl(normalizedPhone) : null,
   });
+});
+
+/**
+ * GET /api/auth/linkedin/photo?phone={phone}
+ *
+ * Streams a creator's LinkedIn profile photo from R2. Stable URL — never
+ * expires — so the frontend can use it directly in <img src=...>.
+ */
+linkedin.get("/api/auth/linkedin/photo", async (c) => {
+  const phone = c.req.query("phone");
+  if (!phone) return c.json({ error: "Phone is required" }, 400);
+
+  const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
+  const creator = await c.env.DB
+    .prepare("SELECT linkedin_photo_r2_key FROM creators WHERE phone = ?")
+    .bind(normalizedPhone)
+    .first<{ linkedin_photo_r2_key: string | null }>();
+
+  if (!creator?.linkedin_photo_r2_key) {
+    return c.json({ error: "Photo not found" }, 404);
+  }
+
+  const obj = await c.env.AUDIO_BUCKET.get(creator.linkedin_photo_r2_key);
+  if (!obj) return c.json({ error: "Photo missing" }, 404);
+
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  if (!headers.has("content-type")) headers.set("content-type", "image/jpeg");
+  // Long edge cache; CDN-backed via Cloudflare. Re-OAuth overwrites the same
+  // R2 key, so a stale cached photo lasts at most a few hours.
+  headers.set("cache-control", "public, max-age=3600, s-maxage=86400");
+  return new Response(obj.body, { headers });
 });
 
 /**
@@ -217,7 +307,8 @@ linkedin.post("/api/auth/linkedin/disconnect", async (c) => {
     .prepare(
       `UPDATE creators
        SET linkedin_sub = NULL, linkedin_name = NULL, linkedin_email = NULL,
-           linkedin_photo_url = NULL, linkedin_connected_at = NULL
+           linkedin_photo_url = NULL, linkedin_photo_r2_key = NULL,
+           linkedin_connected_at = NULL
        WHERE phone = ?`
     )
     .bind(phone)

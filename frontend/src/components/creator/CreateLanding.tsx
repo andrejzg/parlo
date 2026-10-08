@@ -96,8 +96,8 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
         {/* Headline */}
         <motion.h1
           variants={fadeUp}
-          className="font-display text-foreground leading-[1.05] tracking-tight mb-2 sm:mb-4"
-          style={{ fontSize: "clamp(1.75rem, 10vw, 3.4rem)", fontWeight: 800 }}
+          className="font-serif text-foreground leading-[1.02] tracking-tight mb-2 sm:mb-4"
+          style={{ fontSize: "clamp(2rem, 11vw, 3.8rem)", fontWeight: 600 }}
         >
           Voice surveys,
           <br />
