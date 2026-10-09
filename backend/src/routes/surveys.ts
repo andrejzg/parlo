@@ -193,11 +193,13 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
 
   console.log("[generate] Transcriptions — audience:", audienceText, "gather:", gatherText);
 
-  // 3. Send transcriptions to Workers AI Llama to generate title + questions
-  const generated = await generateQuestions(c.env.AI, c.env.KV, {
-    audience: audienceText,
-    gather: gatherText,
-  });
+  // 3. Send transcriptions to Cerebras (Workers AI Llama fallback) to generate title + questions
+  const generated = await generateQuestions(
+    c.env.AI,
+    c.env.KV,
+    { audience: audienceText, gather: gatherText },
+    c.env.CEREBRAS_API_KEY
+  );
 
   console.log("[generate] Generated result:", JSON.stringify(generated));
 

@@ -25,7 +25,7 @@ app.use("*", cors({
 
 // Initialise PostHog analytics on every request (idempotent, pulls key from env)
 app.use("*", async (c, next) => {
-  initAnalytics(c.env.POSTHOG_API_KEY);
+  initAnalytics(c.env.POSTHOG_API_KEY, (p) => c.executionCtx.waitUntil(p));
   await next();
 });
 

@@ -46,7 +46,8 @@ jobs:
               "KAPSO_API_KEY",
               "WHATSAPP_PHONE_NUMBER_ID",
               "POSTHOG_API_KEY",
-              "KAPSO_WEBHOOK_SECRET"
+              "KAPSO_WEBHOOK_SECRET",
+              "CEREBRAS_API_KEY"
             ];
             const out = {};
             for (const k of keys) if (e[k]) out[k] = e[k];
@@ -70,6 +71,7 @@ jobs:
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           KAPSO_WEBHOOK_SECRET: ${{ secrets.KAPSO_WEBHOOK_SECRET }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
   mcp:
     name: Deploy MCP worker

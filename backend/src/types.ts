@@ -9,6 +9,7 @@ export interface Env {
   KAPSO_WEBHOOK_SECRET: string;
   WHATSAPP_PHONE_NUMBER_ID: string;
   POSTHOG_API_KEY?: string;
+  CEREBRAS_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   AI: any;
