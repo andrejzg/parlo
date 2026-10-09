@@ -24,7 +24,7 @@ parlo/
 - **Backend:** Cloudflare Workers, Hono router, TypeScript
 - **Database:** Cloudflare D1 (SQLite)
 - **Audio Storage:** Cloudflare R2 (presigned upload URLs with one-time tokens)
-- **AI:** Cloudflare Workers AI — Whisper (STT) + Llama 3.3 70B (question generation)
+- **AI:** Cerebras `gpt-oss-120b` for question generation (secret `CEREBRAS_API_KEY`; falls back to Workers AI Llama 3.3 70B if the key is missing or the call fails) + Cloudflare Workers AI Whisper (STT — Cerebras has no speech-to-text)
 - **WhatsApp:** Kapso.ai (@kapso/whatsapp-cloud-api)
 - **Phone Auth:** Firebase Phone Auth (SMS OTP) + WhatsApp OTP fallback via Kapso
 - **Photo capture:** native `<input type="file" capture="environment">` + `browser-image-compression` (client-side JPEG transcode at 1080px / ~1MB / 0.85 quality)

@@ -1,5 +1,6 @@
 /**
- * AI pipeline services: Workers AI (Whisper STT + Llama question generation)
+ * AI pipeline services: Workers AI Whisper (STT) + Cerebras GPT OSS question generation
+ * (Workers AI Llama fallback)
  * With PostHog LLM observability ($ai_generation events)
  */
 
@@ -96,8 +97,9 @@ async function getPrompt(kv: KVNamespace, key: string, fallback: string): Promis
 export async function generateQuestions(
   ai: any,
   kv: KVNamespace,
-  transcriptions: { audience: string; gather: string }
-): Promise<{ title: string; questions: { text: string; hint: string; type?: "voice" | "photo" | "video" }[] }> {
+  transcriptions: { audience: string; gather: string },
+  cerebrasApiKey?: string
+): Promise<GeneratedSurvey> {
   const systemPrompt = await getPrompt(kv, "system", DEFAULT_SYSTEM_PROMPT);
   const userTemplate = await getPrompt(kv, "user", DEFAULT_USER_PROMPT);
 
@@ -122,63 +124,96 @@ export async function generateQuestions(
     { role: "user", content: userPrompt },
   ];
 
-  const start = Date.now();
-  let isError = false;
-  let errorMsg: string | undefined;
-  let outputText = "";
-
-  try {
-    const result = await ai.run(
-      "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-      { messages: input }
-    );
-
-    console.log("[ai] Raw Llama response:", JSON.stringify(result));
-    let jsonStr = (result.response ?? result.text ?? "").trim();
-    outputText = jsonStr;
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1].trim();
-    }
-
-    console.log("[ai] Extracted JSON string:", jsonStr);
-
-    const parsed = JSON.parse(jsonStr) as {
-      title: string;
-      questions: { text: string; hint: string; type?: "voice" | "photo" | "video" }[];
-    };
-
-    console.log("[ai] Parsed questions:", JSON.stringify(parsed));
-
-    if (
-      !parsed.title ||
-      !Array.isArray(parsed.questions) ||
-      parsed.questions.length === 0
-    ) {
-      throw new Error("Invalid response structure from AI");
-    }
-
-    return parsed;
-  } catch (err: any) {
-    isError = true;
-    errorMsg = err?.message ?? String(err);
-    throw err;
-  } finally {
-    const latency = (Date.now() - start) / 1000;
-    trackServerEvent("parlo-ai", "$ai_generation", {
-      $ai_trace_id: traceId,
-      $ai_model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-      $ai_provider: "cloudflare-workers-ai",
-      $ai_input: input,
-      $ai_output_choices: outputText ? [{ message: { content: outputText } }] : [],
-      $ai_latency: latency,
-      $ai_is_error: isError,
-      ...(errorMsg && { $ai_error: errorMsg }),
-      // Custom properties
-      audience: transcriptions.audience,
-      gather: transcriptions.gather,
-      $ai_prompt_version_system: systemVersion,
-      $ai_prompt_version_user: userVersion,
-    });
+  // Cerebras first (fast); Workers AI Llama as a fallback if the key is
+  // missing or the call/parse fails, so generation never hard-fails on one provider.
+  const providers: { provider: string; model: string; run: () => Promise<string> }[] = [];
+  if (cerebrasApiKey) {
+    providers.push({ provider: "cerebras", model: CEREBRAS_MODEL, run: () => runCerebras(cerebrasApiKey, input) });
   }
+  providers.push({
+    provider: "cloudflare-workers-ai",
+    model: WORKERS_AI_MODEL,
+    run: async () => {
+      const result = await ai.run(WORKERS_AI_MODEL, { messages: input });
+      return result.response ?? result.text ?? "";
+    },
+  });
+
+  let lastError: unknown;
+  for (const { provider, model, run } of providers) {
+    const start = Date.now();
+    let isError = false;
+    let errorMsg: string | undefined;
+    let outputText = "";
+
+    try {
+      outputText = (await run()).trim();
+      console.log(`[ai] Raw ${provider} response:`, outputText);
+      const parsed = parseGeneratedSurvey(outputText);
+      console.log("[ai] Parsed questions:", JSON.stringify(parsed));
+      return parsed;
+    } catch (err: any) {
+      isError = true;
+      errorMsg = err?.message ?? String(err);
+      lastError = err;
+      console.error(`[ai] ${provider} generation failed:`, errorMsg);
+    } finally {
+      const latency = (Date.now() - start) / 1000;
+      trackServerEvent("parlo-ai", "$ai_generation", {
+        $ai_trace_id: traceId,
+        $ai_model: model,
+        $ai_provider: provider,
+        $ai_input: input,
+        $ai_output_choices: outputText ? [{ message: { content: outputText } }] : [],
+        $ai_latency: latency,
+        $ai_is_error: isError,
+        ...(errorMsg && { $ai_error: errorMsg }),
+        // Custom properties
+        audience: transcriptions.audience,
+        gather: transcriptions.gather,
+        $ai_prompt_version_system: systemVersion,
+        $ai_prompt_version_user: userVersion,
+      });
+    }
+  }
+  throw lastError;
+}
+
+type GeneratedSurvey = {
+  title: string;
+  questions: { text: string; hint: string; type?: "voice" | "photo" | "video" }[];
+};
+
+const CEREBRAS_MODEL = "gpt-oss-120b";
+const WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+async function runCerebras(apiKey: string, messages: { role: string; content: string }[]): Promise<string> {
+  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: CEREBRAS_MODEL,
+      messages,
+      response_format: { type: "json_object" },
+      reasoning_effort: "low",
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Cerebras ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+function parseGeneratedSurvey(text: string): GeneratedSurvey {
+  let jsonStr = text;
+  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (jsonMatch) {
+    jsonStr = jsonMatch[1].trim();
+  }
+  const parsed = JSON.parse(jsonStr) as GeneratedSurvey;
+  if (!parsed.title || !Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+    throw new Error("Invalid response structure from AI");
+  }
+  return parsed;
 }
