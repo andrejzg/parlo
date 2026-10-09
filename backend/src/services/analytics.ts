@@ -9,8 +9,16 @@ const POSTHOG_HOST = "https://us.i.posthog.com";
 
 let _apiKey: string | undefined;
 
-export function initAnalytics(apiKey: string | undefined): void {
+let _waitUntil: ((p: Promise<unknown>) => void) | undefined;
+
+/**
+ * `waitUntil` keeps the Worker alive until in-flight analytics fetches finish.
+ * Without it, Workers cancels outstanding subrequests once the response is
+ * sent, and fire-and-forget events never reach PostHog.
+ */
+export function initAnalytics(apiKey: string | undefined, waitUntil?: (p: Promise<unknown>) => void): void {
   _apiKey = apiKey;
+  _waitUntil = waitUntil;
 }
 
 /**
@@ -35,14 +43,15 @@ export function trackServerEvent(
     timestamp: new Date().toISOString(),
   });
 
-  // Non-blocking — we intentionally don't await
-  fetch(`${POSTHOG_HOST}/capture/`, {
+  // Non-blocking — we intentionally don't await, but register with waitUntil
+  const sent = fetch(`${POSTHOG_HOST}/capture/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   }).catch(() => {
     // Swallow errors — analytics should never take down the request
   });
+  _waitUntil?.(sent);
 }
 
 /**
