@@ -340,35 +340,39 @@ export default function CreationQuestionScreen({
         </div>
       </motion.div>
 
-      {/* Question — centre stage */}
+      {/* Question — centre stage. Long Cerebras follow-ups get a smaller size,
+          and the block scrolls rather than hiding the hint behind the CTA. */}
       <motion.div
-        className="flex-1 min-h-0 flex flex-col items-start justify-center px-6 gap-4"
+        className="flex-1 min-h-0 flex flex-col px-6 overflow-y-auto"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
-        <motion.h2
-          variants={questionItem}
-          className="font-serif leading-tight tracking-tight"
-          style={{
-            fontSize: "clamp(2rem, 8.5vw, 3rem)",
-            fontWeight: 600,
-            color: "hsl(40 20% 95%)",
-          }}
-          data-testid="creation-question"
-        >
-          {question.text}
-        </motion.h2>
-
-        {question.subtext && (
-          <motion.p
-            variants={item}
-            className="text-base leading-relaxed"
-            style={{ color: "hsl(225 10% 55%)", fontWeight: 300 }}
+        {/* my-auto centres when there's room and scrolls from the top when there isn't */}
+        <div className="my-auto py-2 flex flex-col items-start gap-4">
+          <motion.h2
+            variants={questionItem}
+            className="font-serif leading-tight tracking-tight"
+            style={{
+              fontSize: question.text.length > 70 ? "clamp(1.6rem, 7vw, 2.3rem)" : "clamp(2rem, 8.5vw, 3rem)",
+              fontWeight: 600,
+              color: "hsl(40 20% 95%)",
+            }}
+            data-testid="creation-question"
           >
-            {question.subtext}
-          </motion.p>
-        )}
+            {question.text}
+          </motion.h2>
+
+          {question.subtext && (
+            <motion.p
+              variants={item}
+              className="text-base leading-relaxed"
+              style={{ color: "hsl(225 10% 55%)", fontWeight: 300 }}
+            >
+              {question.subtext}
+            </motion.p>
+          )}
+        </div>
       </motion.div>
 
       {/* Wave / Textarea + CTA */}
