@@ -30,6 +30,8 @@ export interface VoiceAnswer {
   url?: string;
   durationMs: number;
   textContent?: string;
+  /** Live speech-to-text of a voice answer (creator flow only). */
+  transcript?: string;
   segments?: VoiceSegment[];
 }
 

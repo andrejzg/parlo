@@ -128,6 +128,17 @@ export function useVoiceRecorder() {
     return true;
   }, []);
 
+  /**
+   * Everything recorded so far as one Blob, while still recording. The
+   * recorder emits a chunk every 100 ms, and concatenating chunks yields a
+   * decodable container (WebM in Chrome, fragmented MP4 in Safari), which is
+   * what the Whisper fallback in useLiveTranscript sends up mid-recording.
+   */
+  const getRecordedBlob = useCallback((): Blob | null => {
+    if (chunksRef.current.length === 0) return null;
+    return new Blob(chunksRef.current, { type: activeMimeRef.current || "audio/webm" });
+  }, []);
+
   const stop = useCallback((): Promise<RecordingResult> => {
     return new Promise((resolve) => {
       const mr = mediaRecorderRef.current;
@@ -151,5 +162,5 @@ export function useVoiceRecorder() {
     });
   }, []);
 
-  return { isRecording, analyser, permissionDenied, mimeType, start, stop };
+  return { isRecording, analyser, permissionDenied, mimeType, start, stop, getRecordedBlob };
 }

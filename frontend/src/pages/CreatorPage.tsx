@@ -3,7 +3,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import CreateLanding from "@/components/creator/CreateLanding";
 import ConsentScreen from "@/components/ConsentScreen";
-import CreationQuestionScreen, { CREATION_QUESTIONS } from "@/components/creator/CreationQuestionScreen";
+import CreationQuestionScreen from "@/components/creator/CreationQuestionScreen";
+import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
+import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import ReviewQuestionsScreen from "@/components/creator/ReviewQuestionsScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
@@ -24,38 +26,45 @@ import {
   useCreateSurvey,
   useGenerateQuestions,
   useUpdateQuestions,
+  fetchClarifyingQuestion,
   type CreateSurveyResponse,
   type GenerateQuestionsResponse,
+  type Clarification,
+  type ClarifyingQuestion,
 } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
 import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
-
-type Stage = "home" | "player" | "profile" | "inbox" | "welcome" | "consent" | "creating" | "building" | "review" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
-
-const CREATOR_SESSION_KEY = "parlo-creator-session";
+import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
 
 /**
- * Maps creation-question index (0, 1) to the backend upload-URL key.
- * Question 0 = audience ("Who will I be talking to?")
- * Question 1 = gather ("What info do you need me to gather?")
+ * Creation flow:
+ *   welcome → brief (one screen, 5-item checklist ticks live via TypeSafe Jev)
+ *           → clarify ×N (one Cerebras follow-up per screen)
+ *           → checkpoint after answer 2, 5, 10, 15… ("Create agent" / "Ask me more")
+ *           → building → review → phone/otp → linkedin → ready
  */
-const QUESTION_INDEX_TO_KEY: Record<number, string> = {
-  0: "audience",
-  1: "gather",
-};
+type Stage = "home" | "player" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+
+const CREATOR_SESSION_KEY = "parlo-creator-session";
 
 export default function CreatorPage() {
   useVisualViewport();
   const navigate = useNavigate();
   const [initializing, setInitializing] = useState(true);
   const [stage, setStage] = useState<Stage>("welcome");
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<VoiceAnswer[]>([]);
   const [screenKey, setScreenKey] = useState(0);
   const [preferredMode, setPreferredMode] = useState<"voice" | "text">("voice");
   const [direction, setDirection] = useState(1); // 1 = forward, -1 = back
+
+  // Agent brief flow state
+  const [brief, setBrief] = useState("");
+  const [briefMode, setBriefMode] = useState<"voice" | "text">("voice");
+  const [clarifications, setClarifications] = useState<Clarification[]>([]);
+  const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
+  const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
+  const [nextLoading, setNextLoading] = useState(false);
 
   // Error state for building screen
   const [buildError, setBuildError] = useState(false);
@@ -191,69 +200,146 @@ export default function CreatorPage() {
       setSurveyCode(result.code);
       setDashboardCode(result.dashboardCode);
       setUploadUrls(result.uploadUrls);
+      resetBriefFlow();
 
-      goForward("creating");
+      goForward("brief");
     } catch (err) {
       captureException(err, { location: "CreatorPage.handleStart" });
       toast.error("Something went wrong. Please try again.");
     }
   };
 
-  const handleAnswer = (answer: VoiceAnswer) => {
-    // Upsert answer at current index
-    setAnswers((prev) => {
-      const updated = [...prev];
-      const existingIdx = updated.findIndex((a) => a.questionId === answer.questionId);
-      if (existingIdx >= 0) {
-        updated[existingIdx] = answer;
-      } else {
-        updated.push(answer);
-      }
-      return updated;
-    });
-
-    // Remember the mode so the next question defaults to the same
-    setPreferredMode(answer.textContent ? "text" : "voice");
-
-    // Only upload audio blob if this is a voice answer (not text)
-    if (answer.blob && !answer.textContent && uploadUrls) {
-      const key = QUESTION_INDEX_TO_KEY[questionIndex] as keyof typeof uploadUrls;
-      const url = uploadUrls[key];
-      if (url) {
-        const uploadPromise = uploadAudioBlob(url, answer.blob).catch(
-          (err) => {
-            captureException(err, { location: "CreatorPage.uploadAudioBlob" });
-            toast.error(`Failed to upload recording. Please check your connection.`);
-            return false as boolean;
-          },
-        );
-        pendingUploads.current.push(uploadPromise);
-      }
-    }
-
-    const nextIndex = questionIndex + 1;
-    if (nextIndex >= CREATION_QUESTIONS.length) {
-      trackEvent("survey_recording_completed", { questionCount: CREATION_QUESTIONS.length });
-      forceReleaseSharedStream();
-      goForward("building");
-    } else {
-      setDirection(1);
-      setQuestionIndex(nextIndex);
-      setScreenKey((k) => k + 1);
-    }
+  const resetBriefFlow = () => {
+    setBrief("");
+    setClarifications([]);
+    setCurrentQuestion(null);
+    setClarifyAnswerDraft(null);
+    setNextLoading(false);
   };
 
-  const handleBack = () => {
-    if (stage === "creating" && questionIndex > 0) {
-      setDirection(-1);
-      setQuestionIndex(questionIndex - 1);
+  /**
+   * Fetch the next Cerebras follow-up for the given history and show it.
+   * If the model can't produce one, we don't block the creator: go build.
+   */
+  const fetchNextQuestion = useCallback(
+    async (briefText: string, history: Clarification[]) => {
+      if (!surveyId) return;
+      setNextLoading(true);
+      try {
+        const q = await fetchClarifyingQuestion(surveyId, briefText, history);
+        setCurrentQuestion(q);
+        setClarifyAnswerDraft(null);
+        trackEvent("clarify_question_shown", { index: q.index });
+        goForward("clarify");
+      } catch (err) {
+        captureException(err, { location: "CreatorPage.fetchNextQuestion" });
+        toast("Couldn't think of a follow-up — building your agent with what I have.");
+        forceReleaseSharedStream();
+        goForward("building");
+      } finally {
+        setNextLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [surveyId],
+  );
+
+  /** Step 1 done: the brief is in. Keep the recording, ask the first follow-up. */
+  const handleBriefContinue = async (result: BriefResult) => {
+    const text = result.transcript.trim();
+    if (!text) {
+      toast.error("I didn't catch anything — try again?");
       setScreenKey((k) => k + 1);
+      return;
     }
+    setBrief(text);
+    setBriefMode(result.mode);
+    setPreferredMode(result.mode);
+    trackEvent("brief_submitted", {
+      mode: result.mode,
+      source: result.source,
+      chars: text.length,
+      durationMs: result.durationMs,
+    });
+
+    // Keep the raw recording for the future "proper agent" work (voice persona
+    // etc). Fire and forget; the transcript is what the pipeline needs today.
+    if (result.blob && uploadUrls?.brief) {
+      const uploadPromise = uploadAudioBlob(uploadUrls.brief, result.blob).catch((err) => {
+        captureException(err, { location: "CreatorPage.uploadBrief" });
+        return false as boolean;
+      });
+      pendingUploads.current.push(uploadPromise);
+    }
+
+    await fetchNextQuestion(text, []);
+  };
+
+  /** A follow-up was answered. Checkpoint, cap, or fetch the next one. */
+  const handleClarifyAnswer = async (answer: VoiceAnswer) => {
+    if (!currentQuestion) return;
+    const text = (answer.textContent ?? answer.transcript ?? "").trim();
+    setPreferredMode(answer.textContent ? "text" : "voice");
+
+    if (!text) {
+      toast.error("I didn't catch that — could you say it again?");
+      setClarifyAnswerDraft(null);
+      setScreenKey((k) => k + 1);
+      return;
+    }
+
+    const history = [...clarifications, { question: currentQuestion.question, answer: text }];
+    setClarifications(history);
+    const n = history.length;
+    trackEvent("clarify_question_answered", { index: n, mode: answer.textContent ? "text" : "voice", chars: text.length });
+
+    if (n >= MAX_CLARIFICATIONS) {
+      forceReleaseSharedStream();
+      goForward("checkpoint");
+      return;
+    }
+    if (isClarifyCheckpoint(n)) {
+      goForward("checkpoint");
+      return;
+    }
+    await fetchNextQuestion(brief, history);
+  };
+
+  /** Back from a follow-up: re-open the previous one (or the brief) with its answer editable. */
+  const handleClarifyBack = () => {
+    setDirection(-1);
+    if (clarifications.length === 0) {
+      setBriefMode("text");
+      setStage("brief");
+      setScreenKey((k) => k + 1);
+      return;
+    }
+    const prev = clarifications[clarifications.length - 1];
+    setClarifications(clarifications.slice(0, -1));
+    setCurrentQuestion({ question: prev.question, hint: null, index: clarifications.length });
+    setClarifyAnswerDraft(prev.answer);
+    setStage("clarify");
+    setScreenKey((k) => k + 1);
+  };
+
+  const handleCheckpointCreate = () => {
+    trackEvent("clarify_checkpoint", { choice: "create", answered: clarifications.length });
+    forceReleaseSharedStream();
+    goForward("building");
+  };
+
+  const handleCheckpointContinue = async () => {
+    trackEvent("clarify_checkpoint", { choice: "continue", answered: clarifications.length });
+    await fetchNextQuestion(brief, clarifications);
   };
 
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
     if (!surveyId) {
       toast.error("Survey not found. Please start over.");
+      return undefined;
+    }
+    if (!brief.trim()) {
+      toast.error("Your brief is empty. Please start over.");
       return undefined;
     }
 
@@ -264,15 +350,11 @@ export default function CreatorPage() {
       // Upload errors were already toasted individually
     }
 
-    // Collect text answers (from type-instead escape hatch) to pass directly
-    const textAnswers = answers
-      .filter((a) => a.textContent)
-      .map((a) => ({ questionId: a.questionId, text: a.textContent! }));
-
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        textAnswers: textAnswers.length > 0 ? textAnswers : undefined,
+        brief,
+        clarifications,
       });
       return result;
     } catch (err) {
@@ -280,7 +362,7 @@ export default function CreatorPage() {
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, answers]);
+  }, [surveyId, generateQuestions, brief, clarifications]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -479,6 +561,10 @@ export default function CreatorPage() {
       ? "welcome"
       : stage === "consent"
       ? "consent"
+      : stage === "brief"
+      ? `brief-${screenKey}`
+      : stage === "checkpoint"
+      ? `checkpoint-${clarifications.length}`
       : stage === "building"
       ? "building"
       : stage === "review"
@@ -497,10 +583,11 @@ export default function CreatorPage() {
       ? "dashboard"
       : `cq-${screenKey}`;
 
-  // Existing answer for current question (for re-recording)
-  const existingAnswer = stage === "creating"
-    ? answers.find((a) => a.questionId === CREATION_QUESTIONS[questionIndex]?.id)
-    : undefined;
+  // When stepping back to a follow-up, re-open it with the previous answer typed in.
+  const existingAnswer: VoiceAnswer | undefined =
+    stage === "clarify" && currentQuestion && clarifyAnswerDraft
+      ? { questionId: `clarify-${currentQuestion.index}`, durationMs: 0, textContent: clarifyAnswerDraft }
+      : undefined;
 
   if (initializing) {
     return (
@@ -590,11 +677,13 @@ export default function CreatorPage() {
                   if (survey.questionCount > 0) {
                     navigate(`/d/${survey.dashboardCode}`);
                   } else {
-                    // Draft — resume creation flow
+                    // Draft — resume creation flow from the brief
                     setSurveyId(survey.id);
                     setSurveyCode(survey.code);
                     setDashboardCode(survey.dashboardCode);
-                    goForward("creating");
+                    setUploadUrls(null);
+                    resetBriefFlow();
+                    goForward("brief");
                   }
                 }}
               />
@@ -657,20 +746,48 @@ export default function CreatorPage() {
             {stage === "welcome" && (
               <CreateLanding onCreateAgent={handleStart} />
             )}
-            {stage === "creating" && (
-              <CreationQuestionScreen
-                question={CREATION_QUESTIONS[questionIndex]}
-                questionIndex={questionIndex}
-                totalQuestions={CREATION_QUESTIONS.length}
-                isLast={questionIndex === CREATION_QUESTIONS.length - 1}
-                existingAnswer={existingAnswer}
-                onNext={handleAnswer}
-                onBack={questionIndex > 0 ? handleBack : () => {
+            {stage === "brief" && surveyId && (
+              <BriefScreen
+                surveyId={surveyId}
+                initialMode={brief ? briefMode : preferredMode}
+                initialTranscript={brief}
+                busy={nextLoading}
+                onContinue={handleBriefContinue}
+                onBack={() => {
                   setDirection(-1);
+                  forceReleaseSharedStream();
                   setStage(apiKey ? "home" : "welcome");
                   setScreenKey((k) => k + 1);
                 }}
+              />
+            )}
+            {stage === "clarify" && currentQuestion && (
+              <CreationQuestionScreen
+                question={{
+                  id: `clarify-${currentQuestion.index}`,
+                  text: currentQuestion.question,
+                  subtext: currentQuestion.hint,
+                }}
+                questionIndex={currentQuestion.index - 1}
+                totalQuestions={currentQuestion.index}
+                isLast={false}
+                progressLabel={`Step 2 · Follow-up ${currentQuestion.index}`}
+                ctaLabel="Continue"
+                transcriptSurveyId={surveyId ?? undefined}
+                busy={nextLoading}
+                existingAnswer={existingAnswer}
+                onNext={handleClarifyAnswer}
+                onBack={handleClarifyBack}
                 initialMode={preferredMode}
+              />
+            )}
+            {stage === "checkpoint" && (
+              <CheckpointScreen
+                answeredCount={clarifications.length}
+                canContinue={clarifications.length < MAX_CLARIFICATIONS}
+                busy={nextLoading}
+                onCreate={handleCheckpointCreate}
+                onContinue={handleCheckpointContinue}
               />
             )}
             {stage === "building" && (

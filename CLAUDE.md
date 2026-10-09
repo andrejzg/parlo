@@ -52,19 +52,45 @@ Returns:
   "dashboardCode": "string (12-char)",
   "apiKey": "string (pk_ + 32 chars, only generated once per creator)",
   "uploadUrls": {
-    "audience": "string (presigned URL)",
-    "gather": "string (presigned URL)"
+    "brief": "string (presigned URL — the creator's single brief recording)",
+    "audience": "string (presigned URL — legacy two-question flow)",
+    "gather": "string (presigned URL — legacy two-question flow)"
   }
 }
 ```
 
+### POST /api/surveys/:id/transcribe
+Whisper for a creator recording. Body: raw audio bytes (any `Content-Type`) or multipart with an `audio` field. Max 12 MB. Rate limited 600/hr per IP (the live fallback polls every ~4.5 s).
+Returns: `{text: "string"}`
+
+### POST /api/surveys/:id/brief/evaluate
+Which brief-checklist items does a transcript cover? Called (debounced) while the creator talks. TypeSafe Jev answers five Noul questions in one ~300 ms call; falls back to Cerebras, then Workers AI Llama, returning booleans as 1/0 probabilities. Body: `{transcript: string}` (max 20k chars; under 12 chars returns all-false without calling a model).
+Returns:
+```json
+{
+  "items": [{"id": "audience|goal|purpose|tone|length", "satisfied": true, "probability": 0.97}],
+  "complete": false,
+  "provider": "typesafe | cerebras | cloudflare-workers-ai | none",
+  "model": "jev-1.13.0 | null"
+}
+```
+`satisfied` = probability ≥ 0.7 (`BRIEF_SATISFIED_THRESHOLD` in `backend/src/services/brief.ts`). The frontend applies hysteresis on top (tick ≥ 0.7, untick < 0.45).
+
+### POST /api/surveys/:id/clarify
+Next clarifying question from Cerebras (Workers AI Llama fallback). Stateless — the frontend sends everything so far each time. Body: `{brief: string, history: [{question, answer}]}` (history capped at 40 entries, 4k chars each).
+Returns: `{question: "string", hint: "string | null", index: number}` — `index` is 1-based (`history.length + 1`).
+
 ### POST /api/surveys/:id/generate
-Triggers AI pipeline. Body (optional): `{textAnswers?: {audience?: string, gather?: string}}`.
+Triggers AI pipeline. Two modes:
+- **Agent brief flow (current):** body `{brief: string, clarifications: [{question, answer}]}`. Text only — no R2 audio is read. Stores `brief` and `brief_clarifications` (JSON) on the `surveys` row.
+- **Legacy flow (MCP server):** body optional `{textAnswers?: {audience?: string, gather?: string}}`; transcribes `surveys/{id}/audience|gather.webm` from R2 for whatever is missing.
+
+Both modes **replace** the survey's questions (delete + insert), so Regenerate doesn't pile up duplicates. Defaults to 5 questions in brief mode, 3 in legacy mode, unless the creator asked for a number.
 Returns:
 ```json
 {
   "title": "string",
-  "questions": [{"text": "string", "hint": "string"}]
+  "questions": [{"text": "string", "hint": "string", "type": "voice | photo | video"}]
 }
 ```
 
@@ -180,6 +206,19 @@ Returns:
 - POST /api/admin/prompts/:name/revert — revert `{version: number}`
 - GET /api/admin/prompts/seed — initialize defaults
 
+## Creator flow (agent brief)
+
+```
+welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → building → review → phone → otp → linkedin → ready
+```
+
+- **Brief** (`components/creator/BriefScreen.tsx`): one screen, mic auto-starts, the creator describes their research agent in one go. Five checklist items (`lib/briefChecklist.ts`: audience, goal, purpose, tone, length) tick green live. `hooks/useLiveTranscript.ts` streams words (Web Speech API first, Whisper polling via `/transcribe` as fallback); `hooks/useBriefChecklist.ts` debounces the transcript ~650 ms and calls `/brief/evaluate` (TypeSafe Jev). "Continue" unlocks when all five are ticked; a subtle "Continue without the rest" link appears once 3+ are ticked so nobody gets stuck. "Type instead" keeps the heard text in the textarea; switching back to voice seeds the transcript with what was typed. The recording is uploaded to `surveys/{id}/brief.webm` in the background for future use; only the transcript feeds the pipeline today.
+- **Clarify** (`CreationQuestionScreen` with `transcriptSurveyId`, `progressLabel`, `ctaLabel`): one Cerebras follow-up per screen via `/clarify`. The live transcript means the answer text is ready the moment the creator taps Continue, so the next question appears in ~0.5 s. Back re-opens the previous follow-up (or the brief) in text mode with the answer editable.
+- **Checkpoint** (`CheckpointScreen.tsx`): after answer 2, then every answer where `isClarifyCheckpoint(n)` holds (5, 10, 15…): "Create agent" or "Ask me more". Hard cap `MAX_CLARIFICATIONS = 20`.
+- **Building/Review/Ready**: unchanged. `handleGenerate` posts `{brief, clarifications}`.
+- Checklist ids/order are duplicated in `frontend/src/lib/briefChecklist.ts` and `backend/src/services/brief.ts` — change both together.
+- The legacy two-question flow (`CREATION_QUESTIONS`, audience/gather) is no longer reachable from the UI; the MCP server still uses the legacy generate mode.
+
 ## Question types
 
 Surveys support three question types per question:
@@ -290,8 +329,13 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 AI prompts are editable at runtime via:
 - Admin UI: parlo.me/admin
 - Cloudflare KV dashboard: Storage & databases → KV → SESSIONS
-- KV keys: `prompt:system`, `prompt:user` (use `{{audience}}` and `{{gather}}` placeholders)
-- Versioned: each save creates immutable version, tracked in PostHog $ai_generation events
+- KV keys (defaults live in `backend/src/services/ai.ts` as `PROMPT_DEFAULTS`; `routes/admin.ts` imports them, so never duplicate prompt text):
+  - `prompt:system` — system prompt for question generation
+  - `prompt:user` — legacy generation (`{{audience}}`, `{{gather}}`)
+  - `prompt:brief` — brief-flow generation (`{{brief}}`, `{{clarifications}}`)
+  - `prompt:clarify` — next clarifying question (`{{brief}}`, `{{clarifications}}`, `{{count}}`); must return `{"question","hint"}`
+- The brief-checklist rubric (TypeSafe Noul questions) is code, not KV: `backend/src/services/brief.ts`.
+- Versioned: each save creates immutable version, tracked in PostHog $ai_generation events (`$ai_prompt_version_*` properties). TypeSafe calls are tracked as `$ai_provider: "typesafe"`.
 
 ## Transcription
 
@@ -341,6 +385,7 @@ Test fixtures in `e2e/fixtures/`:
 Current specs:
 - `e2e/participant/happy-path.spec.ts` — functional flow tests (voice recording, mic-denial text mode, session restore). **Note**: this file's `fillPIIAndSubmit` helper references first/last-name screens that no longer exist in the current flow — consider stale until refactored.
 - `e2e/device-audit.spec.ts` — visual audit across **iPhone SE / Pixel 7 / iPhone 15 Pro Max**. Two passes per device: (1) voice-only happy path captures welcome → consent → voice Q → review → phone, (2) two mini mixed-type surveys capture the welcome/consent/capture screens for photo and video. 33 screenshots total dropped in `/tmp/parlo-<device>/`. ~60s runtime. Use this whenever you touch participant-facing UI — grep for layout regressions across small / medium / large viewports in one shot.
+- `e2e/creator/brief-flow.spec.ts` — the creator flow on the same three devices, in "Type instead" mode with `/surveys`, `/brief/evaluate`, `/clarify`, `/generate` stubbed: brief (partial → complete ticks, CTA gating) → 2 follow-ups → checkpoint → 3 more → checkpoint → building → review with voice/photo/video badges. 8 screenshots per device in `$PARLO_SHOTS_DIR/parlo-creator-<device>/` (`/tmp` by default). Playwright's Chromium has no speech engine, so the voice path can't be covered here — test it on a real phone.
 
 **Important**: Playwright specs need a running preview server, NOT the Vite dev server — `npm run dev` doesn't load `.env.production`, so Firebase init throws `auth/invalid-api-key` and the React app never mounts (blank white page in screenshots). Start a preview server first:
 
@@ -367,3 +412,6 @@ The `playwright.config.ts` `webServer` hook is set to `npm run dev`, which is co
 11. **Flex scroll containers need `min-h-0`**: Any `flex-1 overflow-y-auto` child of a `flex-col` parent must also have `min-h-0`, otherwise the flex item keeps its default `min-height: auto` (= content size) and refuses to shrink, so `overflow-y-auto` never activates. Content overflows past the viewport and gets clipped behind the bottom CTA. Affects `ReviewScreen`, `ThankYouScreen`, `QuestionScreen`, `PhotoQuestionScreen`, `VideoQuestionScreen` — all of them have `min-h-0` applied; don't remove it.
 12. **Playwright device audit needs `vite preview`, not `vite dev`**: See E2E Tests section. Dev server runs without `.env.production`, so Firebase throws and the app never renders. Always run `vite preview` after `vite build` for audit runs.
 13. **Welcome/Consent copy adapts to media mix**: Don't hardcode "voice responses" / "Start recording" strings — use `getMediaMix()` from `lib/mediaMix.ts`. See the "Media-mix copy adaptation" section above.
+14. **Secret sync must run before `wrangler deploy` in CI**: `wrangler secret bulk` PATCHes Worker settings and re-sends the non-secret bindings it reads back. On 2026-10-09 that read raced the deploy that had just finished and the PATCH wiped D1/R2/KV/AI, so every request 500'd with `Cannot read properties of undefined (reading 'get')`. `deploy.yml` now syncs secrets first, deploys last (bindings from `wrangler.toml` always win, secrets are kept), and a "Verify Worker bindings" step fails the job if DB/AUDIO_BUCKET/KV/AI are missing. If you ever see that error in prod, re-run the backend deploy command — it restores the bindings.
+15. **Web Speech API isn't everywhere**: `useLiveTranscript` falls back to Whisper (`/transcribe`) when `SpeechRecognition` is missing, errors with `network`/`not-allowed`/etc., or the watchdog hears voice for 2.5 s with no words after 8 s. Chrome restarts recognition every ~60 s (handled in `onend`); Safari and Chrome disagree on `resultIndex`, so results are always rebuilt from the full `results` list. Firefox and Playwright's Chromium always use the fallback.
+16. **Brief checklist ids live in two places**: `frontend/src/lib/briefChecklist.ts` (labels/hints) and `backend/src/services/brief.ts` (TypeSafe rubric). Keep ids and order identical.

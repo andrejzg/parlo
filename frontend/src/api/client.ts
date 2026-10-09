@@ -22,7 +22,7 @@ export interface CreateSurveyResponse {
   id: string;
   code: string;
   dashboardCode: string;
-  uploadUrls: { audience: string; gather: string };
+  uploadUrls: { brief: string; audience: string; gather: string };
 }
 
 export function useCreateSurvey() {
@@ -30,6 +30,57 @@ export function useCreateSurvey() {
     mutationFn: () =>
       apiFetch<CreateSurveyResponse>("/surveys", { method: "POST" }),
   });
+}
+
+// ── Agent brief flow ──────────────────────────────────────────────────
+
+export interface Clarification {
+  question: string;
+  answer: string;
+}
+
+export interface BriefEvaluation {
+  items: { id: string; satisfied: boolean; probability: number }[];
+  complete: boolean;
+  provider: string;
+  model: string | null;
+}
+
+/** Which brief-checklist items does this transcript cover? (TypeSafe Jev) */
+export function evaluateBrief(surveyId: string, transcript: string) {
+  return apiFetch<BriefEvaluation>(`/surveys/${surveyId}/brief/evaluate`, {
+    method: "POST",
+    body: JSON.stringify({ transcript }),
+  });
+}
+
+export interface ClarifyingQuestion {
+  question: string;
+  hint: string | null;
+  index: number;
+}
+
+/** Ask Cerebras for the next clarifying question given everything so far. */
+export function fetchClarifyingQuestion(surveyId: string, brief: string, history: Clarification[]) {
+  return apiFetch<ClarifyingQuestion>(`/surveys/${surveyId}/clarify`, {
+    method: "POST",
+    body: JSON.stringify({ brief, history }),
+  });
+}
+
+/** Whisper transcription of a creator recording (fallback when Web Speech is unavailable). */
+export async function transcribeAudio(surveyId: string, blob: Blob): Promise<string> {
+  const res = await fetch(`${API_BASE}/surveys/${surveyId}/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": blob.type || "audio/webm" },
+    body: blob,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${body}`);
+  }
+  const data = (await res.json()) as { text: string };
+  return data.text ?? "";
 }
 
 export interface GeneratedQuestion {
@@ -46,17 +97,21 @@ export interface GenerateQuestionsResponse {
 
 export interface GenerateQuestionsInput {
   surveyId: string;
+  /** Agent brief flow: the creator's transcribed brief + clarifying Q&A. */
+  brief?: string;
+  clarifications?: Clarification[];
+  /** Legacy two-question flow. */
   textAnswers?: { questionId: string; text: string }[];
 }
 
 export function useGenerateQuestions() {
   return useMutation({
-    mutationFn: ({ surveyId, textAnswers }: GenerateQuestionsInput) => {
-      // Map frontend question IDs to backend field names.
-      // CreationQuestionScreen uses ids "audience" and "gather".
-      // Map frontend question IDs to backend field names.
+    mutationFn: ({ surveyId, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
-      if (textAnswers?.length) {
+      if (brief?.trim()) {
+        body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
+      } else if (textAnswers?.length) {
+        // Legacy: map frontend question IDs to backend field names.
         const mapped: Record<string, string> = {};
         for (const ta of textAnswers) {
           if (ta.questionId === "cq1" || ta.questionId === "audience") mapped.audience = ta.text;

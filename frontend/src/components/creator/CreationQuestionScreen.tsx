@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceWave from "@/components/VoiceWave";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { useLiveTranscript } from "@/hooks/useLiveTranscript";
 import { useSwipeNavigation } from "@/hooks/useSwipeNavigation";
 import { VoiceAnswer } from "@/types/survey";
 
 interface CreationQuestion {
   id: string;
   text: string;
-  subtext?: string;
+  subtext?: string | null;
 }
 
 interface CreationQuestionScreenProps {
@@ -21,6 +22,19 @@ interface CreationQuestionScreenProps {
   onBack?: () => void;
   /** If the user chose text mode on a previous question, start in text mode */
   initialMode?: "voice" | "text";
+  /** Step chips for a fixed sequence (legacy audience/gather flow). Hidden when omitted. */
+  stepLabels?: string[];
+  /** Small label in the top bar, e.g. "Follow-up 3". */
+  progressLabel?: string;
+  ctaLabel?: string;
+  /**
+   * When set, a live transcript is captured while recording and returned as
+   * `answer.transcript`, so the parent can act on the words immediately
+   * (Cerebras picks the next question from them) without a server round trip.
+   */
+  transcriptSurveyId?: string;
+  /** Parent is working (fetching the next question) — CTA shows a waiting label. */
+  busy?: boolean;
 }
 
 function formatDuration(ms: number) {
@@ -52,6 +66,7 @@ const questionItem = {
   },
 };
 
+/** Legacy two-question setup flow (still used by the MCP server's prompts). */
 export const CREATION_QUESTIONS: CreationQuestion[] = [
   {
     id: "audience",
@@ -74,8 +89,21 @@ export default function CreationQuestionScreen({
   onNext,
   onBack,
   initialMode = "voice",
+  stepLabels,
+  progressLabel,
+  ctaLabel,
+  transcriptSurveyId,
+  busy = false,
 }: CreationQuestionScreenProps) {
-  const { isRecording, analyser, permissionDenied, start, stop } = useVoiceRecorder();
+  const { isRecording, analyser, permissionDenied, start, stop, getRecordedBlob } = useVoiceRecorder();
+  const transcript = useLiveTranscript({
+    surveyId: transcriptSurveyId ?? "",
+    getAudioBlob: getRecordedBlob,
+    analyser,
+    live: false,
+  });
+  const captureTranscript = !!transcriptSurveyId;
+
   const [elapsed, setElapsed] = useState(0);
   const [hasStarted, setHasStarted] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -93,21 +121,24 @@ export default function CreationQuestionScreen({
     }
   }, [existingAnswer]);
 
+  const beginVoice = async () => {
+    const ok = await start();
+    if (ok) {
+      setHasStarted(true);
+      if (captureTranscript) transcript.start();
+      timerRef.current = setInterval(() => {
+        setElapsed((e) => e + 100);
+      }, 100);
+    }
+    return ok;
+  };
+
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
-    // Don't auto-start mic if we're in text mode
-    if (initialMode === "text") return;
-    const autoStart = async () => {
-      const ok = await start();
-      if (ok) {
-        setHasStarted(true);
-        timerRef.current = setInterval(() => {
-          setElapsed((e) => e + 100);
-        }, 100);
-      }
-    };
-    autoStart();
+    // Don't auto-start mic if we're in text mode (or restoring a typed answer)
+    if (initialMode === "text" || existingAnswer?.textContent) return;
+    void beginVoice();
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
@@ -116,7 +147,12 @@ export default function CreationQuestionScreen({
 
   const switchToText = async () => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (isRecording) await stop();
+    let heard = "";
+    if (isRecording) {
+      await stop();
+      if (captureTranscript) heard = await transcript.stop();
+    }
+    if (heard.trim()) setTextValue((prev) => prev || heard);
     setMode("text");
   };
 
@@ -142,17 +178,12 @@ export default function CreationQuestionScreen({
     setMode("voice");
     setMicDeniedNotice(false);
     setElapsed(0);
-    const ok = await start();
-    if (ok) {
-      setHasStarted(true);
-      timerRef.current = setInterval(() => {
-        setElapsed((e) => e + 100);
-      }, 100);
-    }
+    transcript.reset();
+    await beginVoice();
   };
 
   const handleNext = async () => {
-    if (isTransitioning) return;
+    if (isTransitioning || busy) return;
     setIsTransitioning(true);
 
     if (mode === "text") {
@@ -164,11 +195,13 @@ export default function CreationQuestionScreen({
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       const result = await stop();
+      const text = captureTranscript ? await transcript.stop() : undefined;
       onNext({
         questionId: question.id,
         blob: result.blob,
         url: result.url,
         durationMs: result.durationMs,
+        transcript: text,
       });
     }
   };
@@ -177,22 +210,27 @@ export default function CreationQuestionScreen({
     if (!onBack || isTransitioning) return;
     setIsTransitioning(true);
     if (timerRef.current) clearInterval(timerRef.current);
-    if (isRecording) await stop();
+    if (isRecording) {
+      await stop();
+      if (captureTranscript) await transcript.stop();
+    }
     onBack();
   };
 
   const canSubmit =
-    mode === "voice"
+    (mode === "voice"
       ? hasStarted && !isTransitioning
-      : textValue.trim().length > 0 && !isTransitioning;
-
-  const STEP_LABELS = ["who", "what"];
+      : textValue.trim().length > 0 && !isTransitioning) && !busy;
 
   const swipe = useSwipeNavigation({
     onSwipeLeft: canSubmit ? handleNext : undefined,
     onSwipeRight: onBack ? handleBack : undefined,
     enabled: !isTransitioning,
   });
+
+  const TAIL = 140;
+  const liveText = transcript.text;
+  const liveTail = liveText.length > TAIL ? `…${liveText.slice(-TAIL)}` : liveText;
 
   return (
     <div
@@ -208,13 +246,13 @@ export default function CreationQuestionScreen({
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3, delay: 0.05 }}
       >
-        {/* Step blocks */}
         <div className="flex items-center gap-2">
           {/* Back button */}
           {onBack && (
             <motion.button
               type="button"
               onClick={handleBack}
+              aria-label="Back"
               className="flex items-center justify-center w-11 h-11 -ml-2 rounded-full hover:bg-muted/50 transition-colors"
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
@@ -226,7 +264,14 @@ export default function CreationQuestionScreen({
               </svg>
             </motion.button>
           )}
-          {STEP_LABELS.map((label, i) => {
+
+          {progressLabel && (
+            <span className="text-xs font-display tracking-widest uppercase" style={{ color: "hsl(225 10% 45%)" }}>
+              {progressLabel}
+            </span>
+          )}
+
+          {stepLabels?.map((label, i) => {
             const isDone = i < questionIndex;
             const isActive = i === questionIndex;
             return (
@@ -297,7 +342,7 @@ export default function CreationQuestionScreen({
 
       {/* Question — centre stage */}
       <motion.div
-        className="flex-1 flex flex-col items-start justify-center px-6 gap-4"
+        className="flex-1 min-h-0 flex flex-col items-start justify-center px-6 gap-4"
         variants={stagger}
         initial="initial"
         animate="animate"
@@ -306,10 +351,11 @@ export default function CreationQuestionScreen({
           variants={questionItem}
           className="font-serif leading-tight tracking-tight"
           style={{
-            fontSize: "clamp(2.3rem, 9.5vw, 3rem)",
+            fontSize: "clamp(2rem, 8.5vw, 3rem)",
             fontWeight: 600,
             color: "hsl(40 20% 95%)",
           }}
+          data-testid="creation-question"
         >
           {question.text}
         </motion.h2>
@@ -342,6 +388,25 @@ export default function CreationQuestionScreen({
           </motion.div>
         )}
 
+        {/* Live transcript tail (creator follow-ups) */}
+        {captureTranscript && mode === "voice" && liveText && (
+          <p
+            className="w-full text-sm leading-relaxed"
+            style={{
+              color: "hsl(225 10% 58%)",
+              fontWeight: 300,
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+            aria-live="polite"
+            data-testid="live-transcript"
+          >
+            {liveTail}
+          </p>
+        )}
+
         {/* Waveform or Textarea */}
         <AnimatePresence mode="wait">
           {mode === "voice" ? (
@@ -369,12 +434,12 @@ export default function CreationQuestionScreen({
                 onChange={(e) => setTextValue(e.target.value)}
                 placeholder="Type your answer..."
                 rows={4}
+                data-testid="creation-textarea"
                 className="w-full resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed focus:outline-none focus:ring-1"
                 style={{
                   background: "hsl(225 15% 10%)",
                   color: "hsl(40 20% 95%)",
                   border: "1px solid hsl(225 15% 18%)",
-                  focusRingColor: "hsl(var(--primary) / 0.4)",
                 }}
               />
             </motion.div>
@@ -429,6 +494,7 @@ export default function CreationQuestionScreen({
           variants={item}
           onClick={handleNext}
           disabled={!canSubmit}
+          data-testid="creation-next"
           className="w-full py-5 rounded-2xl font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"
           style={{
             fontWeight: 700,
@@ -446,7 +512,7 @@ export default function CreationQuestionScreen({
               : {}
           }
         >
-          {isLast ? "Finish" : "Next"}
+          {busy ? "Thinking…" : ctaLabel ?? (isLast ? "Finish" : "Next")}
         </motion.button>
       </motion.div>
     </div>

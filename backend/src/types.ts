@@ -97,16 +97,55 @@ export interface CreateSurveyResponse {
   dashboardCode: string;
   apiKey: string;
   uploadUrls: {
+    /** Agent brief flow: the creator's single free-form recording. */
+    brief: string;
+    /** Legacy two-question flow (kept for the MCP server / old clients). */
     audience: string;
     gather: string;
   };
 }
 
+export interface Clarification {
+  question: string;
+  answer: string;
+}
+
 export interface GenerateSurveyRequest {
+  /** Agent brief flow — when present, `textAnswers` and the R2 audio are ignored. */
+  brief?: string;
+  clarifications?: Clarification[];
+  /** Legacy two-question flow. */
   textAnswers?: {
     audience?: string;
     gather?: string;
   };
+}
+
+export interface BriefEvaluateRequest {
+  transcript: string;
+}
+
+export interface BriefEvaluateResponse {
+  items: { id: string; satisfied: boolean; probability: number }[];
+  complete: boolean;
+  provider: string;
+  model: string | null;
+}
+
+export interface ClarifyRequest {
+  brief: string;
+  history: Clarification[];
+}
+
+export interface ClarifyResponse {
+  question: string;
+  hint: string | null;
+  /** 1-based position of this question in the clarification sequence. */
+  index: number;
+}
+
+export interface TranscribeResponse {
+  text: string;
 }
 
 export interface GenerateSurveyResponse {

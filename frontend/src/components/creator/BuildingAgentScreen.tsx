@@ -22,9 +22,9 @@ const fadeUp = {
 };
 
 const STEPS = [
-  "Analyzing your voice instructions...",
-  "Understanding your audience...",
-  "Generating interview questions...",
+  "Reading your brief...",
+  "Folding in your answers...",
+  "Writing the interview...",
   "Building your agent...",
 ];
 

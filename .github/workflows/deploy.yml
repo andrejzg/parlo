@@ -23,17 +23,16 @@ jobs:
       - name: Install
         working-directory: backend
         run: npm ci
-      - name: Deploy
-        working-directory: backend
-        run: npx wrangler deploy --config ./wrangler.toml --name parlo-backend
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       # Re-assert Worker secrets on every deploy. Source of truth lives in
-      # GitHub Actions secrets (encrypted at rest), so even if a future
-      # accidental script-shape change resets the Worker bindings, the next
-      # deploy puts them right back. Skips empty secrets to avoid clearing
-      # values on the Worker when a GH secret hasn't been set yet.
+      # GitHub Actions secrets (encrypted at rest). Skips empty secrets to
+      # avoid clearing values on the Worker when a GH secret hasn't been set.
+      #
+      # This runs BEFORE `wrangler deploy` on purpose. `wrangler secret bulk`
+      # PATCHes the Worker settings and "inherits" the non-secret bindings it
+      # reads back; on 2026-10-09 that read raced the deploy that had just
+      # finished and the PATCH wiped D1/R2/KV/AI, taking production down.
+      # Deploying last means the bindings in wrangler.toml always win, and
+      # `wrangler deploy` keeps existing secrets.
       - name: Sync Worker secrets
         working-directory: backend
         run: |
@@ -74,6 +73,35 @@ jobs:
           KAPSO_WEBHOOK_SECRET: ${{ secrets.KAPSO_WEBHOOK_SECRET }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      - name: Deploy
+        working-directory: backend
+        run: npx wrangler deploy --config ./wrangler.toml --name parlo-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Belt and braces: fail loudly if the live Worker is missing any of the
+      # resource bindings from wrangler.toml, so a broken deploy can't go
+      # unnoticed until someone taps "Create voice agent".
+      - name: Verify Worker bindings
+        run: |
+          node -e '
+            const required = ["DB", "AUDIO_BUCKET", "KV", "AI"];
+            const url = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts/parlo-backend/settings`;
+            fetch(url, { headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } })
+              .then((r) => r.json())
+              .then((j) => {
+                const names = new Set((j.result?.bindings ?? []).map((b) => b.name));
+                const missing = required.filter((n) => !names.has(n));
+                if (missing.length) {
+                  console.error("Live Worker is missing bindings: " + missing.join(", "));
+                  process.exit(1);
+                }
+                console.log("Live Worker bindings OK: " + [...names].join(", "));
+              });
+          '
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   mcp:
     name: Deploy MCP worker
