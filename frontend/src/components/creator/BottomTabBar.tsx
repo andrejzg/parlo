@@ -1,15 +1,13 @@
-import { Clapperboard, Home, Inbox, Plus, User } from "lucide-react";
+import { Home, Inbox, Plus, User } from "lucide-react";
 import type { LinkedInProfile } from "@/api/client";
 import { Button } from "@/components/ui/button";
 
-type Tab = "home" | "search" | "content" | "profile";
+type Tab = "home" | "content" | "profile";
 
 interface BottomTabBarProps {
   activeTab: Tab;
-  totalNewCount: number;
   linkedInProfile?: LinkedInProfile | null;
   onHome: () => void;
-  onSearch: () => void;
   onCreateNew: () => void;
   onContent: () => void;
   onProfile: () => void;
@@ -24,10 +22,8 @@ function tabTone(active: boolean) {
 
 export default function BottomTabBar({
   activeTab,
-  totalNewCount,
   linkedInProfile,
   onHome,
-  onSearch,
   onCreateNew,
   onContent,
   onProfile,
@@ -44,21 +40,6 @@ export default function BottomTabBar({
       <button onClick={onHome} className={`${tabClass} ${tabTone(activeTab === "home")}`} aria-label="Home">
         <Home size={20} aria-hidden />
         <span className="font-brand text-xxs">Home</span>
-      </button>
-
-      {/* Reels */}
-      <button
-        onClick={onSearch}
-        className={`${tabClass} ${tabTone(activeTab === "search")} relative`}
-        aria-label="Reels"
-      >
-        <Clapperboard size={20} aria-hidden />
-        <span className="font-brand text-xxs">Reels</span>
-        {totalNewCount > 0 && (
-          <span className="absolute top-1 right-0 min-w-[16px] h-4 rounded-full px-xxs flex items-center justify-center bg-badge text-badge-foreground font-data text-xxs font-medium">
-            {totalNewCount}
-          </span>
-        )}
       </button>
 
       {/* Create (+ button) */}

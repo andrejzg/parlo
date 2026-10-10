@@ -9,14 +9,20 @@
     "db:migrate:remote": "wrangler d1 execute parlo-db --remote --file=migrations/0001_initial.sql"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.78",
+    "@ai-sdk/cerebras": "^3.0.67",
+    "agents": "^0.28.0",
+    "ai": "^7.0.137",
     "hono": "^4.3.0",
     "nanoid": "^5.0.5",
     "posthog-node": "^4.18.0",
-    "workers-og": "^0.0.27"
+    "workers-ai-provider": "^4.0.0",
+    "workers-og": "^0.0.27",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240117.0",
+    "@cloudflare/workers-types": "^5.20261010.1",
     "typescript": "^5.3.3",
-    "wrangler": "^3.25.0"
+    "wrangler": "^4.149.0"
   }
 }

@@ -4,6 +4,8 @@ export interface Env {
   DB: D1Database;
   AUDIO_BUCKET: R2Bucket;
   KV: KVNamespace;
+  /** One GroupAgent Durable Object per parlo; instance name = survey id. */
+  GROUP_AGENT: DurableObjectNamespace<import("./agent/GroupAgent").GroupAgent>;
   WHATSAPP_VERIFY_TOKEN: string;
   KAPSO_API_KEY: string;
   KAPSO_WEBHOOK_SECRET: string;
@@ -11,6 +13,8 @@ export interface Env {
   POSTHOG_API_KEY?: string;
   CEREBRAS_API_KEY?: string;
   TYPESAFE_API_KEY?: string;
+  /** Optional: when set, the group agent's planning loop runs on Claude. */
+  ANTHROPIC_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   AI: any;
@@ -18,10 +22,13 @@ export interface Env {
 
 // ── Database Row Types ──
 
-export interface Creator {
+/** One identity for everyone — creators, admins and members alike. */
+export interface User {
   id: string;
   phone: string | null;
   wa_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
   api_key: string | null;
   created_at: string;
   linkedin_sub: string | null;
@@ -47,6 +54,39 @@ export interface Survey {
   intro_r2_key?: string | null;
   intro_duration_ms?: number | null;
   intro_transcript?: string | null;
+  /** Mirror of the group agent's /report.md so members can read it from D1. */
+  report_md?: string | null;
+  report_updated_at?: string | null;
+}
+
+// ── Groups ──
+
+export type GroupRole = "owner" | "admin" | "member";
+export type GroupVisibility = "open" | "private";
+
+export interface GroupMember {
+  survey_id: string;
+  user_id: string;
+  role: GroupRole;
+  access_token: string;
+  joined_at: string;
+  invited_by: string | null;
+  removed_at: string | null;
+}
+
+export type RoundKind = "poll" | "probe";
+export type RoundStatus = "proposed" | "sent" | "rejected" | "closed";
+
+export interface Round {
+  id: string;
+  survey_id: string;
+  number: number;
+  kind: RoundKind;
+  status: RoundStatus;
+  rationale: string | null;
+  proposed_by: string;
+  created_at: string;
+  sent_at: string | null;
 }
 
 export interface SurveyIntro {
@@ -70,6 +110,10 @@ export interface SurveyQuestion {
   text: string;
   hint: string | null;
   question_type: "voice" | "photo" | "video";
+  /** Which round this ask belongs to (round 1 = the original question set). */
+  round_id?: string | null;
+  /** Null = asked of everyone; otherwise a probe aimed at one member. */
+  target_user_id?: string | null;
 }
 
 export interface Response {
@@ -79,8 +123,12 @@ export interface Response {
   phone: string | null;
   first_name: string | null;
   last_name: string | null;
-  status: "in_progress" | "submitted";
+  status: "in_progress" | "submitted" | "notified";
   submitted_at: string | null;
+  user_id?: string | null;
+  round_id?: string | null;
+  /** The group's visibility when this was submitted — never loosened later. */
+  visibility_at_submit?: GroupVisibility | null;
 }
 
 export interface ResponseAnswer {
@@ -189,10 +237,19 @@ export interface SurveyPublicView {
   id: string;
   title: string | null;
   status: string;
+  /** The asks still pending for this visitor (all sent rounds, minus what they answered). */
   questions: SurveyQuestion[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
   /** Null until the creator records one. */
   intro: SurveyIntro | null;
+  visibility: GroupVisibility;
+  /** Latest sent round, if any. */
+  round: { number: number; kind: RoundKind } | null;
+  /** Set when the visitor carried a valid member token. */
+  member: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
+  /** The agent's report. `markdown` is only filled once the visitor has answered. */
+  report: { available: boolean; unlocked: boolean; markdown: string | null; updatedAt: string | null };
+  memberCount: number;
 }
 
 export interface DashboardView {

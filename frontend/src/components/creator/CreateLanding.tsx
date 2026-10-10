@@ -30,11 +30,11 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
           variants={fadeUp}
           className="font-brand text-xl sm:text-xxl font-heavy text-foreground mb-xs sm:mb-m"
         >
-          Voice surveys, made easy.
+          Group chats, run by an agent.
         </motion.h1>
 
         <motion.p variants={fadeUp} className="text-m text-neutral-8 mb-auto">
-          Build once. Share a link. Let your audience answer in their own voice.
+          Your agent gathers everyone's answers, follows up, and reports back.
         </motion.p>
 
         <motion.div variants={fadeUp} className="mt-m sm:mt-xl flex flex-col gap-s w-full">

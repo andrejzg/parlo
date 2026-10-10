@@ -171,7 +171,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
   const db = c.env.DB;
   const result = await db
     .prepare(
-      `UPDATE creators
+      `UPDATE users
        SET linkedin_sub = ?,
            linkedin_name = ?,
            linkedin_email = ?,
@@ -193,7 +193,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
     .run();
 
   if (result.meta.changes === 0) {
-    console.error("[linkedin] No creator found for phone:", normalizedPhone);
+    console.error("[linkedin] No user found for phone:", normalizedPhone);
     return c.redirect("https://parlo.me/?linkedin=not_found");
   }
 
@@ -224,7 +224,7 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
 
   const creator = await db
     .prepare(
-      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM creators WHERE phone = ?"
+      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM users WHERE phone = ?"
     )
     .bind(normalizedPhone)
     .first<{
@@ -247,7 +247,7 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
     r2Key = await mirrorPhotoToR2(c.env, creator.linkedin_sub, creator.linkedin_photo_url);
     if (r2Key) {
       await db
-        .prepare("UPDATE creators SET linkedin_photo_r2_key = ? WHERE phone = ?")
+        .prepare("UPDATE users SET linkedin_photo_r2_key = ? WHERE phone = ?")
         .bind(r2Key, normalizedPhone)
         .run();
     }
@@ -261,6 +261,20 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
   });
 });
 
+/** Stream a mirrored LinkedIn photo from R2 with a long edge cache. */
+async function streamPhoto(env: Env, r2Key: string): Promise<Response> {
+  const obj = await env.AUDIO_BUCKET.get(r2Key);
+  if (!obj) return Response.json({ error: "Photo missing" }, { status: 404 });
+
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  if (!headers.has("content-type")) headers.set("content-type", "image/jpeg");
+  // Long edge cache; CDN-backed via Cloudflare. Re-OAuth overwrites the same
+  // R2 key, so a stale cached photo lasts at most a few hours.
+  headers.set("cache-control", "public, max-age=3600, s-maxage=86400");
+  return new Response(obj.body, { headers });
+}
+
 /**
  * GET /api/auth/linkedin/photo?phone={phone}
  *
@@ -273,7 +287,7 @@ linkedin.get("/api/auth/linkedin/photo", async (c) => {
 
   const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
   const creator = await c.env.DB
-    .prepare("SELECT linkedin_photo_r2_key FROM creators WHERE phone = ?")
+    .prepare("SELECT linkedin_photo_r2_key FROM users WHERE phone = ?")
     .bind(normalizedPhone)
     .first<{ linkedin_photo_r2_key: string | null }>();
 
@@ -281,16 +295,36 @@ linkedin.get("/api/auth/linkedin/photo", async (c) => {
     return c.json({ error: "Photo not found" }, 404);
   }
 
-  const obj = await c.env.AUDIO_BUCKET.get(creator.linkedin_photo_r2_key);
-  if (!obj) return c.json({ error: "Photo missing" }, 404);
+  return streamPhoto(c.env, creator.linkedin_photo_r2_key);
+});
 
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  if (!headers.has("content-type")) headers.set("content-type", "image/jpeg");
-  // Long edge cache; CDN-backed via Cloudflare. Re-OAuth overwrites the same
-  // R2 key, so a stale cached photo lasts at most a few hours.
-  headers.set("cache-control", "public, max-age=3600, s-maxage=86400");
-  return new Response(obj.body, { headers });
+/**
+ * GET /api/users/:userId/photo
+ *
+ * A member's LinkedIn photo by opaque user id, for the avatar clusters on
+ * the home list, where the viewer is not the person pictured (the
+ * phone-keyed route above would hand every member everyone's phone number).
+ * Participants who connected LinkedIn only have the CDN URL on file, so the
+ * first request mirrors it into R2; after that it streams from R2.
+ */
+linkedin.get("/api/users/:userId/photo", async (c) => {
+  const userId = c.req.param("userId");
+  const user = await c.env.DB
+    .prepare("SELECT id, linkedin_sub, linkedin_photo_url, linkedin_photo_r2_key FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ id: string; linkedin_sub: string | null; linkedin_photo_url: string | null; linkedin_photo_r2_key: string | null }>();
+  if (!user) return c.json({ error: "Photo not found" }, 404);
+
+  let r2Key = user.linkedin_photo_r2_key;
+  if (!r2Key && user.linkedin_photo_url) {
+    r2Key = await mirrorPhotoToR2(c.env, user.linkedin_sub ?? user.id, user.linkedin_photo_url);
+    if (r2Key) {
+      await c.env.DB.prepare("UPDATE users SET linkedin_photo_r2_key = ? WHERE id = ?").bind(r2Key, user.id).run();
+    }
+  }
+  if (!r2Key) return c.json({ error: "Photo not found" }, 404);
+
+  return streamPhoto(c.env, r2Key);
 });
 
 /**
@@ -305,7 +339,7 @@ linkedin.post("/api/auth/linkedin/disconnect", async (c) => {
   const phone = body.phone.replace(/^(\+\d{1,4})0+/, "$1");
   await c.env.DB
     .prepare(
-      `UPDATE creators
+      `UPDATE users
        SET linkedin_sub = NULL, linkedin_name = NULL, linkedin_email = NULL,
            linkedin_photo_url = NULL, linkedin_photo_r2_key = NULL,
            linkedin_connected_at = NULL

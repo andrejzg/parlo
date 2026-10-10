@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { LoaderCircle } from "lucide-react";
 import { useGetDashboard } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,9 @@ import AgentDashboard from "@/components/creator/AgentDashboard";
 
 export default function DashboardPage() {
   const { dashboardCode } = useParams<{ dashboardCode: string }>();
+  // The home list deep-links straight to the Agent tab when a round is waiting for approval.
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab") === "agent" ? "agent" : undefined;
 
   const { data, isLoading, isError, error, refetch } = useGetDashboard(
     dashboardCode ?? ""
@@ -42,7 +45,7 @@ export default function DashboardPage() {
     <div className="min-h-screen w-full flex items-center justify-center bg-background">
       {/* max-w-md / max-h-[812px] are the phone-frame shell dimensions (structural). */}
       <div className="relative w-full max-w-md h-screen max-h-[812px] overflow-hidden bg-background">
-        <AgentDashboard data={data} dashboardCode={dashboardCode ?? ""} />
+        <AgentDashboard data={data} dashboardCode={dashboardCode ?? ""} initialTab={initialTab} />
       </div>
     </div>
   );

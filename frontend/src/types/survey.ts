@@ -13,17 +13,36 @@ export interface SurveyIntro {
   transcript?: string;
 }
 
+export type GroupVisibility = "open" | "private";
+export type GroupRole = "owner" | "admin" | "member";
+
+export interface GroupReportSummary {
+  available: boolean;
+  unlocked: boolean;
+  markdown: string | null;
+  updatedAt: string | null;
+}
+
 export interface Survey {
   id: string;
   code: string;
   title: string;
   description: string;
   ctaLabel: string;
+  /** The asks pending for this visitor (all sent rounds minus what they answered). */
   questions: SurveyQuestion[];
   accentColor?: string;
   isOpen: boolean;
   dashboardCode: string;
   intro?: SurveyIntro;
+  /** private (default): only the owner, admins and the agent hear raw answers. open: everyone hears everyone, with names. */
+  visibility?: GroupVisibility;
+  /** Latest sent round. */
+  round?: { number: number; kind: "poll" | "probe" } | null;
+  /** Set when the visitor arrived with a valid member token. */
+  member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
+  report?: GroupReportSummary;
+  memberCount?: number;
 }
 
 export interface VoiceSegment {

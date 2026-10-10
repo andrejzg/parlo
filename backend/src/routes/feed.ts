@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { Env, ResponseAnswer, SurveyQuestion } from "../types";
+import type { AuthVariables } from "../middleware/auth";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
 
-const feed = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+const feed = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // ── Helper: enrich answers with presigned URLs ──
 async function enrichAnswer(
@@ -44,7 +45,7 @@ async function enrichAnswer(
 
 // ── GET /api/my/feed ── Cross-survey paginated feed for the listening player
 feed.get("/api/my/feed", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const db = c.env.DB;
@@ -193,7 +194,7 @@ feed.get("/api/my/feed", async (c) => {
 
 // ── POST /api/my/responses/:responseId/read ── Mark single response as read
 feed.post("/api/my/responses/:responseId/read", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const responseId = c.req.param("responseId");
@@ -228,7 +229,7 @@ feed.post("/api/my/responses/:responseId/read", async (c) => {
 
 // ── POST /api/my/responses/read ── Batch mark as read
 feed.post("/api/my/responses/read", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const body = await c.req.json<{ responseIds: string[] }>().catch(() => null);
@@ -277,6 +278,38 @@ feed.post("/api/my/responses/read", async (c) => {
   }
 
   if (statements.length > 0) await db.batch(statements);
+
+  return c.json({ ok: true });
+});
+
+// ── POST /api/my/surveys/:surveyId/read ── Mark everything in a parlo as read
+// Called when an owner/admin opens the dashboard; this is what clears the
+// unread dot and `newCount` on the home list. The cursor is written in
+// SQLite's own datetime format because `new_count` compares it against
+// `responses.submitted_at`, which D1 fills with `datetime('now')`.
+feed.post("/api/my/surveys/:surveyId/read", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
+
+  const surveyId = c.req.param("surveyId");
+  const db = c.env.DB;
+
+  const member = await db
+    .prepare("SELECT role FROM group_members WHERE survey_id = ? AND user_id = ? AND removed_at IS NULL")
+    .bind(surveyId, userId)
+    .first<{ role: string }>();
+  if (!member) return c.json({ error: "Not a member of this parlo" }, 404);
+
+  await db
+    .prepare(`
+      INSERT INTO creator_survey_cursors (creator_id, survey_id, last_read_at, updated_at)
+      VALUES (?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT (creator_id, survey_id) DO UPDATE
+      SET last_read_at = MAX(excluded.last_read_at, creator_survey_cursors.last_read_at),
+          updated_at = datetime('now')
+    `)
+    .bind(userId, surveyId)
+    .run();
 
   return c.json({ ok: true });
 });

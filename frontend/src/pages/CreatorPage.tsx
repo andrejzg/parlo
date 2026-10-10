@@ -23,7 +23,6 @@ import { forceReleaseSharedStream } from "@/hooks/useVoiceRecorder";
 import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
-import ListeningPlayer from "@/components/creator/player/ListeningPlayer";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
 import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile } from "@/api/client";
 import {
@@ -51,7 +50,7 @@ import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
  *           → building → review → intro (voice hello, skippable)
  *           → phone/otp → linkedin → ready
  */
-type Stage = "home" | "player" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -96,7 +95,6 @@ export default function CreatorPage() {
   const [linkedInProfile, setLinkedInProfile] = useState<LinkedInProfile | null>(null);
 
   // Total new (unread) responses across all surveys
-  const [totalNewCount, setTotalNewCount] = useState(0);
 
   // Check for returning device on mount — load home if possible
   // Also detect ?linkedin=connected from OAuth callback
@@ -132,14 +130,7 @@ export default function CreatorPage() {
                   const profile = await fetchLinkedInProfile(deviceAuth.phone);
                   if (profile.connected) setLinkedInProfile(profile);
                 } catch {}
-                // Check if there are unread responses → show player
-                const totalNew = result.surveys.reduce((sum, s) => sum + (s.newCount ?? 0), 0);
-                setTotalNewCount(totalNew);
-                if (totalNew > 0) {
-                  setStage("player");
-                } else {
-                  setStage("home");
-                }
+                setStage("home");
               }
             } catch {}
           }
@@ -597,8 +588,6 @@ export default function CreatorPage() {
   const pageKey =
     stage === "home"
       ? "home"
-      : stage === "player"
-      ? "player"
       : stage === "profile"
       ? "profile"
       : stage === "inbox"
@@ -688,26 +677,12 @@ export default function CreatorPage() {
             animate="animate"
             exit="exit"
           >
-            {stage === "player" && apiKey && (
-              <ListeningPlayer
-                apiKey={apiKey}
-                onExit={() => {
-                  setStage("home");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
             {stage === "home" && (
               <CreatorHome
                 surveys={mySurveys}
                 phone={devicePhone || phone}
                 linkedInProfile={linkedInProfile}
-                totalNewCount={totalNewCount}
                 onCreateNew={openCreateSheet}
-                onOpenReels={() => {
-                  setStage("player");
-                  setScreenKey((k) => k + 1);
-                }}
                 onOpenSettings={() => {
                   setStage("profile");
                   setScreenKey((k) => k + 1);
@@ -717,8 +692,12 @@ export default function CreatorPage() {
                   setScreenKey((k) => k + 1);
                 }}
                 onOpenSurvey={(survey) => {
-                  if (survey.questionCount > 0) {
-                    navigate(`/d/${survey.dashboardCode}`);
+                  if (survey.role === "member") {
+                    // Members go to their personal link: pending asks + the report.
+                    navigate(`/s/${survey.code}${survey.memberToken ? `?t=${encodeURIComponent(survey.memberToken)}` : ""}`);
+                  } else if (survey.questionCount > 0) {
+                    // A round waiting for approval opens on the Agent tab, where the approve button is.
+                    navigate(`/d/${survey.dashboardCode}${survey.proposedRound ? "?tab=agent" : ""}`);
                   } else {
                     // Draft — resume creation flow from the brief
                     setSurveyId(survey.id);
@@ -735,7 +714,6 @@ export default function CreatorPage() {
               <ProfilePage
                 phone={devicePhone || phone}
                 linkedInProfile={linkedInProfile}
-                totalNewCount={totalNewCount}
                 onLogout={() => {
                   clearDeviceAuth();
                   setDevicePhone(null);
@@ -751,10 +729,6 @@ export default function CreatorPage() {
                   setStage("home");
                   setScreenKey((k) => k + 1);
                 }}
-                onSearch={() => {
-                  setStage("player");
-                  setScreenKey((k) => k + 1);
-                }}
                 onCreateNew={openCreateSheet}
                 onInbox={() => {
                   setStage("inbox");
@@ -766,13 +740,8 @@ export default function CreatorPage() {
               <InboxPage
                 apiKey={apiKey}
                 linkedInProfile={linkedInProfile}
-                totalNewCount={totalNewCount}
                 onHome={() => {
                   setStage("home");
-                  setScreenKey((k) => k + 1);
-                }}
-                onReels={() => {
-                  setStage("player");
                   setScreenKey((k) => k + 1);
                 }}
                 onCreateNew={openCreateSheet}
@@ -884,6 +853,8 @@ export default function CreatorPage() {
                 surveyCode={surveyCode}
                 surveyTitle={surveyTitle}
                 dashboardCode={dashboardCode}
+                surveyId={surveyId}
+                apiKey={apiKey}
                 onDashboard={handleDashboard}
               />
             )}

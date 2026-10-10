@@ -9,12 +9,10 @@ const API_BASE = import.meta.env.VITE_API_URL || "/api";
 interface ProfilePageProps {
   phone: string | null;
   linkedInProfile?: LinkedInProfile | null;
-  totalNewCount: number;
   onLogout?: () => void;
   onLogin?: () => void;
   onLinkedInConnected?: (profile: LinkedInProfile) => void;
   onHome: () => void;
-  onSearch: () => void;
   onCreateNew: () => void;
   onInbox?: () => void;
 }
@@ -31,11 +29,9 @@ function LinkedInIcon({ size = 14 }: { size?: number }) {
 export default function ProfilePage({
   phone,
   linkedInProfile: initialProfile,
-  totalNewCount,
   onLogout,
   onLogin,
   onHome,
-  onSearch,
   onCreateNew,
   onInbox,
 }: ProfilePageProps) {
@@ -189,10 +185,8 @@ export default function ProfilePage({
 
       <BottomTabBar
         activeTab="profile"
-        totalNewCount={totalNewCount}
         linkedInProfile={initialProfile}
         onHome={onHome}
-        onSearch={onSearch}
         onCreateNew={onCreateNew}
         onContent={onInbox ?? (() => {})}
         onProfile={() => {}}

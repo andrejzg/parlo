@@ -42,3 +42,6 @@ test-results/
 # Misc
 .cache/
 coverage/
+
+# Local-API frontend build used for browser verification
+frontend/dist-local/
