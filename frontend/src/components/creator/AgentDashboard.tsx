@@ -492,7 +492,7 @@ export default function AgentDashboard({
   const hasReplies = submittedResponses.length > 0;
   const feed = buildFeed(submittedResponses, questions, sort);
 
-  const surveyTitle = survey.title || "Voice Survey";
+  const surveyTitle = survey.title || "Untitled parlo";
   const shareUrl = buildShareUrl(
     survey.title,
     survey.code,
@@ -530,7 +530,7 @@ export default function AgentDashboard({
             variant="ghost"
             size="icon"
             onClick={() => setShowDeleteConfirm(true)}
-            aria-label="Delete survey"
+            aria-label="Delete parlo"
             className="shrink-0 -mr-xs text-muted-foreground hover:bg-error-transparent hover:text-error"
           >
             <Trash2 aria-hidden />
@@ -603,7 +603,7 @@ export default function AgentDashboard({
                 No members yet
               </p>
               <p className="text-s text-muted-foreground">
-                Members will appear here once people respond to your survey.
+                Members will appear here once people respond to your parlo.
               </p>
             </div>
           ) : (
@@ -620,7 +620,7 @@ export default function AgentDashboard({
                 No replies yet
               </p>
               <p className="text-s text-muted-foreground">
-                Share your survey link and replies will appear here in real time.
+                Share your parlo link and replies will appear here in real time.
               </p>
             </div>
             <ShareLinkRow host={window.location.host} code={survey.code} shareUrl={shareUrl} />
@@ -704,10 +704,10 @@ export default function AgentDashboard({
               transition={transitionLarge}
             >
               <h3 id="delete-survey-title" className="font-brand text-m font-medium text-foreground mb-xs">
-                Delete this survey?
+                Delete this parlo?
               </h3>
               <p className="text-s text-muted-foreground mb-l">
-                This will remove the survey and its share link. Existing responses will no longer be accessible. This can't be undone.
+                This will remove the parlo and its share link. Existing responses will no longer be accessible. This can't be undone.
               </p>
               <div className="flex gap-s">
                 <Button

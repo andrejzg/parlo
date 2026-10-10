@@ -71,7 +71,7 @@ function SurveyCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-xs">
             <p className="text-m font-medium text-foreground truncate">
-              {survey.title || "Untitled Survey"}
+              {survey.title || "Untitled parlo"}
             </p>
             {/* Response count badge */}
             {hasResponses && (
@@ -136,11 +136,11 @@ export default function CreatorHome({
             ) : null}
             <div>
               <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
-                {displayName ? `Hey, ${displayName}` : "Your surveys"}
+                {displayName ? `Hey, ${displayName}` : "Your parlos"}
               </h1>
               {displayName && (
                 <p className="text-xs text-muted-foreground mt-xxs">
-                  {totalResponses} total response{totalResponses !== 1 ? "s" : ""} across {completed.length} survey{completed.length !== 1 ? "s" : ""}
+                  {totalResponses} total response{totalResponses !== 1 ? "s" : ""} across {completed.length} parlo{completed.length !== 1 ? "s" : ""}
                 </p>
               )}
             </div>
@@ -168,7 +168,7 @@ export default function CreatorHome({
             transition={{ ...transitionLarge, delay: 0.2 }}
           >
             {totalResponses === 0
-              ? "Share your survey link on WhatsApp to start getting responses"
+              ? "Share your parlo link on WhatsApp to start getting responses"
               : `You have ${totalResponses} response${totalResponses !== 1 ? "s" : ""} — share again to keep the momentum going`}
           </motion.p>
         )}

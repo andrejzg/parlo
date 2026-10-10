@@ -21,9 +21,9 @@ export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCod
   const [dashboardCopied, setDashboardCopied] = useState(false);
 
   const shareUrl = buildShareUrl(surveyTitle, surveyCode);
-  const shareText = `Answer my voice survey! ${shareUrl}`;
+  const shareText = `Answer my parlo! ${shareUrl}`;
   const waShareLink = `https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`;
-  const waNotifyLink = buildBotChatUrl(`Parlo - notify me about survey ${surveyCode}`);
+  const waNotifyLink = buildBotChatUrl(`Parlo - notify me about parlo ${surveyCode}`);
   const dashboardUrl = `parlo.me/d/${dashboardCode || surveyCode}`;
 
   const copyDashboardLink = () => {
@@ -77,7 +77,7 @@ export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCod
         {/* Open / Private toggle */}
         <motion.div variants={fadeUp} className="flex items-center gap-s rounded-m bg-card p-m w-full">
           <div className="flex-1 flex flex-col gap-xxs">
-            <Label htmlFor="open-survey">Open survey</Label>
+            <Label htmlFor="open-survey">Open parlo</Label>
             <p className="text-xs text-muted-foreground">
               {isOpen ? "Anyone with the link can see results" : "Only you can see results"}
             </p>

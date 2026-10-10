@@ -594,7 +594,7 @@ export default function ParticipantPage() {
       >
         <div className="flex flex-col items-center gap-m">
           <div className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
-          <p className="text-s text-muted-foreground">Loading survey...</p>
+          <p className="text-s text-muted-foreground">Loading parlo...</p>
         </div>
       </div>
     );
@@ -611,9 +611,9 @@ export default function ParticipantPage() {
             <CircleX size={24} aria-hidden />
           </div>
           <div className="flex flex-col gap-xs">
-            <h2 className="font-brand text-l font-heavy text-foreground">Survey not available</h2>
+            <h2 className="font-brand text-l font-heavy text-foreground">Parlo not available</h2>
             <p className="text-m text-muted-foreground">
-              This survey may have been removed or is no longer accepting responses.
+              This parlo may have been removed or is no longer accepting responses.
             </p>
           </div>
         </div>

@@ -318,7 +318,7 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
           variants={fadeUp}
           className="text-m text-muted-foreground text-center"
         >
-          We'll only contact you about this survey.
+          We'll only contact you about this parlo.
         </motion.p>
 
         {/* Phone input */}

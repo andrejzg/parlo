@@ -93,7 +93,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
         // Check response pattern FIRST (message may contain both "survey" and "response")
         // Prefilled message: "Parlo - survey response submitted for <code>"
         const isResponsePattern = /response\s+submitted\s+for\s+(\S+)/i.test(text) || /response\s+(\S+)/i.test(text);
-        const isSurveyPattern = !isResponsePattern && (/notify\s+me\s+about\s+survey\s+\S+/i.test(text) || /survey\s+(\S+)/i.test(text));
+        const isSurveyPattern = !isResponsePattern && (/notify\s+me\s+about\s+(?:survey|parlo)\s+\S+/i.test(text) || /\b(?:survey|parlo)\s+[a-z0-9]{6,12}\b/i.test(text));
         const messageType = isResponsePattern ? "response" : isSurveyPattern ? "survey" : "unknown";
         trackServerEvent(from, "whatsapp_message_received", { messageType, from });
 
@@ -172,8 +172,8 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
           continue;
         }
 
-        // SURVEY pattern: "notify me about survey <code>" or "survey <code>"
-        const notifyMatch = text.match(/notify\s+me\s+about\s+survey\s+(\S+)/i) || text.match(/survey\s+(\S+)/i);
+        // SURVEY pattern: "notify me about parlo <code>" (the prefilled share-screen message; "survey" still accepted) or "parlo <code>"
+        const notifyMatch = text.match(/notify\s+me\s+about\s+(?:survey|parlo)\s+(\S+)/i) || text.match(/\b(?:survey|parlo)\s+([a-z0-9]{6,12})\b/i);
         if (notifyMatch) {
           const code = notifyMatch[1];
           // Skip if code looks like "response" (already handled above)
@@ -200,7 +200,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
                 { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: code }] },
               ]);
             } else {
-              await wa.sendText(from, `No survey found with code "${code}". Check the code and try again.`);
+              await wa.sendText(from, `No parlo found with code "${code}". Check the code and try again.`);
             }
             continue;
           }
@@ -211,7 +211,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
     try {
       await wa.sendText(
         from,
-        "Hey! I'm Parlo, a voice survey bot. Visit parlo.me to create a survey, or paste a code if you have one!"
+        "Hey! I'm Parlo. Visit parlo.me to create a parlo, or paste a code if you have one!"
       );
       console.log(`[webhook] fallback sent successfully`);
     } catch (err) {

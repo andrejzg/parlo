@@ -108,14 +108,14 @@ export function getMediaMix(questions: SurveyQuestion[]): MediaMix {
 
   // Consent screen description.
   const consentDescription = isVoiceOnly
-    ? "Your voice responses will be recorded and shared with the person who created this survey."
+    ? "Your voice responses will be recorded and shared with the person who created this parlo."
     : isMixed
-    ? "Your responses — voice, photos, and video — will be recorded and shared with the person who created this survey."
+    ? "Your responses — voice, photos, and video — will be recorded and shared with the person who created this parlo."
     : hasPhoto && !hasVideo
-    ? "Your photos and any voice responses will be shared with the person who created this survey."
+    ? "Your photos and any voice responses will be shared with the person who created this parlo."
     : hasVideo && !hasPhoto
-    ? "Your videos and any voice responses will be shared with the person who created this survey."
-    : "Your responses will be recorded and shared with the person who created this survey.";
+    ? "Your videos and any voice responses will be shared with the person who created this parlo."
+    : "Your responses will be recorded and shared with the person who created this parlo.";
 
   // CTA label — "Start recording" only makes sense for voice-only.
   const ctaLabel = isVoiceOnly
