@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check, ChevronLeft } from "lucide-react";
+import { ChevronLeft, Keyboard, Mic } from "lucide-react";
 import VoiceWave from "@/components/VoiceWave";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { BriefChecklistList, BriefStack } from "@/components/creator/BriefChecklist";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useLiveTranscript, type TranscriptSource } from "@/hooks/useLiveTranscript";
-import { useBriefChecklist, type BriefChecklistState } from "@/hooks/useBriefChecklist";
+import { useBriefChecklist } from "@/hooks/useBriefChecklist";
 import { stagger, fadeUp, transitionSmall, transitionLarge } from "@/lib/animations";
 import { trackEvent } from "@/lib/posthog";
 
@@ -14,6 +15,16 @@ import { trackEvent } from "@/lib/posthog";
  * Step 1 of creating an agent: one screen where the creator describes the
  * research agent they want, in their own words, while five checklist items
  * tick green as TypeSafe Jev hears them covered. Single screen, phone-first.
+ *
+ * Two modes, switchable at any point without losing a word:
+ * - voice: mic auto-starts, the full five-item list ticks live, the heard
+ *   words show as a live transcript.
+ * - text: a textarea, and the checklist as a stack of cards — one item at a
+ *   time on top of the screen, the next coming forward as Jev ticks the one
+ *   on show.
+ * Switching voice → text keeps the heard words in the textarea; text → voice
+ * seeds the transcript with what was typed. The checklist state lives above
+ * both, so ticks carry across.
  */
 
 export interface BriefResult {
@@ -44,55 +55,6 @@ function formatDuration(ms: number) {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-/** The tick popping in: theme small-motion duration with a light bounce. */
-const tickPop = { type: "spring" as const, visualDuration: 0.2, bounce: 0.2 };
-
-function ChecklistRow({ entry, index }: { entry: BriefChecklistState; index: number }) {
-  const { satisfied, label, hint } = entry;
-  return (
-    // minHeight is structural: five rows must fit a 667px-tall phone without scrolling.
-    <motion.li
-      variants={fadeUp}
-      className={`flex items-center gap-s rounded-s px-s transition-colors ${satisfied ? "bg-success-transparent" : "bg-card"}`}
-      style={{ minHeight: "clamp(34px, 4.6svh, 40px)" }}
-      data-testid={`brief-item-${entry.id}`}
-      data-satisfied={satisfied ? "true" : "false"}
-    >
-      <span
-        className={`relative flex items-center justify-center shrink-0 w-6 h-6 rounded-full transition-[background-color,box-shadow,color] ${
-          satisfied
-            ? "bg-success text-neutral-1"
-            : "shadow-[inset_0_0_0_1.5px_var(--neutral-5)] font-data text-xxs text-neutral-6"
-        }`}
-        aria-hidden
-      >
-        <AnimatePresence>
-          {satisfied ? (
-            <motion.span
-              key="tick"
-              className="flex"
-              initial={{ scale: 0, rotate: -20 }}
-              animate={{ scale: 1, rotate: 0 }}
-              exit={{ scale: 0 }}
-              transition={tickPop}
-            >
-              <Check size={12} aria-hidden />
-            </motion.span>
-          ) : (
-            <span key="num">{index + 1}</span>
-          )}
-        </AnimatePresence>
-      </span>
-      <div className="min-w-0 flex-1 flex items-baseline gap-xs">
-        <span className="text-s font-medium text-foreground shrink-0">{label}</span>
-        <span className={`text-xs truncate ${satisfied ? "text-success" : "text-muted-foreground"}`}>
-          {satisfied ? "got it" : hint}
-        </span>
-      </div>
-    </motion.li>
-  );
-}
-
 export default function BriefScreen({
   surveyId,
   onContinue,
@@ -117,6 +79,8 @@ export default function BriefScreen({
   const [micDeniedNotice, setMicDeniedNotice] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedRef = useRef(false);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const mountedAtRef = useRef(Date.now());
 
@@ -135,6 +99,12 @@ export default function BriefScreen({
   const beginVoice = useCallback(async () => {
     const ok = await recorder.start();
     if (!ok) return false;
+    // The creator tapped the keyboard while the mic was still warming up:
+    // don't leave a recorder running behind the textarea.
+    if (modeRef.current !== "voice") {
+      await recorder.stop();
+      return false;
+    }
     setHasStarted(true);
     transcript.start();
     startTimer();
@@ -187,22 +157,28 @@ export default function BriefScreen({
     }
   }, [checklist.items, checklist.complete, mode, transcript.source, effectiveText.length]);
 
+  /** Voice → text. Everything heard so far (which already includes anything typed earlier) lands in the textarea. */
   const switchToText = async () => {
+    if (modeRef.current === "text") return;
     stopTimer();
+    setMode("text");
     let heard = transcript.text;
     if (recorder.isRecording) {
       await recorder.stop();
       heard = await transcript.stop();
     }
     setTextValue((prev) => (heard.trim() ? heard : prev));
-    setMode("text");
+    trackEvent("brief_mode_switched", { to: "text", chars: heard.length, ticks: checklist.satisfiedCount });
   };
 
+  /** Text → voice. What was typed becomes the start of the transcript; the mic picks up from there. */
   const switchToVoice = async () => {
+    if (modeRef.current === "voice") return;
     setMicDeniedNotice(false);
     setMode("voice");
     transcript.seed(textValue);
     setElapsed(0);
+    trackEvent("brief_mode_switched", { to: "voice", chars: textValue.length, ticks: checklist.satisfiedCount });
     await beginVoice();
   };
 
@@ -211,7 +187,15 @@ export default function BriefScreen({
     setIsTransitioning(true);
 
     if (mode === "text") {
-      onContinue({ transcript: textValue.trim(), durationMs: 0, mode: "text", source: "text" });
+      // Keep any recording made before switching to typing — it's archived for later.
+      const blob = recorder.getRecordedBlob();
+      onContinue({
+        transcript: textValue.trim(),
+        blob: blob && blob.size > 0 ? blob : undefined,
+        durationMs: blob && blob.size > 0 ? elapsed : 0,
+        mode: "text",
+        source: "text",
+      });
       return;
     }
 
@@ -250,7 +234,7 @@ export default function BriefScreen({
   return (
     // Sized to fit a 667px-tall phone without scrolling; on anything shorter
     // (320×568 iPhone SE) the column scrolls rather than clipping the CTA.
-    <div className="flex flex-col h-full overflow-y-auto bg-background">
+    <div className="flex flex-col h-full overflow-y-auto bg-background" data-mode={mode}>
       {/* Top bar */}
       <motion.div
         className="flex items-center gap-xs px-l pt-xxl pb-xxs shrink-0"
@@ -285,15 +269,22 @@ export default function BriefScreen({
         <motion.h2 variants={fadeUp} className="font-editorial text-l sm:text-xl font-medium text-foreground">
           Describe your research agent
         </motion.h2>
-        <motion.p variants={fadeUp} className="mt-xs text-s text-muted-foreground">
-          Talk it through like you would to a colleague. I'll tick things off as you go.
-        </motion.p>
-
-        <motion.ul className="flex flex-col gap-xs mt-s list-none" aria-label="What to cover">
-          {checklist.items.map((entry, i) => (
-            <ChecklistRow key={entry.id} entry={entry} index={i} />
-          ))}
-        </motion.ul>
+        {/* Each mode's block is its own animation root so it also fades in
+            when mounted later by a mode switch, not just with the screen. */}
+        {mode === "voice" ? (
+          <motion.div key="voice-list" variants={stagger} initial="initial" animate="animate">
+            <motion.p variants={fadeUp} className="mt-xs text-s text-muted-foreground">
+              Talk it through like you would to a colleague. I'll tick things off as you go.
+            </motion.p>
+            <div className="mt-s">
+              <BriefChecklistList items={checklist.items} />
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div key="type-stack" variants={fadeUp} initial="initial" animate="animate" className="mt-s">
+            <BriefStack items={checklist.items} />
+          </motion.div>
+        )}
       </motion.div>
 
       {/* Live transcript (voice) — flexible, collapses on short screens.
@@ -320,7 +311,7 @@ export default function BriefScreen({
         )}
       </div>
 
-      {/* Input + CTA */}
+      {/* Input + mode switch + CTA */}
       <motion.div
         className="flex flex-col items-center gap-s px-l pt-xs pb-safe shrink-0"
         variants={stagger}
@@ -336,49 +327,56 @@ export default function BriefScreen({
           </motion.div>
         )}
 
-        <AnimatePresence mode="wait">
-          {mode === "voice" ? (
-            <motion.div
-              key="waveform"
-              variants={fadeUp}
-              className="w-full h-10"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0, transition: transitionSmall }}
-            >
-              <VoiceWave analyser={recorder.analyser} isRecording={recorder.isRecording} />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="textarea"
-              className="w-full"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0, transition: transitionLarge }}
-              exit={{ opacity: 0, transition: transitionSmall }}
-            >
-              <Textarea
-                ref={textareaRef}
-                value={textValue}
-                onChange={(e) => setTextValue(e.target.value)}
-                placeholder="Who you'll talk to, what you want to learn, why, the tone, how long…"
-                rows={3}
-                data-testid="brief-textarea"
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Status line + mode toggle, on one row to save height */}
-        <motion.div variants={fadeUp} className="flex items-center justify-center gap-xs text-xs text-muted-foreground">
-          {mode === "voice" && (
-            <span>
-              {!hasStarted ? "Starting microphone…" : recorder.isRecording ? "Recording — speak naturally" : "Preparing…"}
-            </span>
-          )}
-          <Button type="button" variant="link" size="sm" onClick={mode === "voice" ? switchToText : switchToVoice}>
-            {mode === "voice" ? "Type instead" : "Switch to voice"}
+        {/* The input and, beside it, the way into the other mode. */}
+        <div className="w-full flex items-end gap-s">
+          <AnimatePresence mode="wait" initial={false}>
+            {mode === "voice" ? (
+              <motion.div
+                key="waveform"
+                className="min-w-0 flex-1 h-11"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1, transition: transitionLarge }}
+                exit={{ opacity: 0, transition: transitionSmall }}
+              >
+                <VoiceWave analyser={recorder.analyser} isRecording={recorder.isRecording} />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="textarea"
+                className="min-w-0 flex-1"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0, transition: transitionLarge }}
+                exit={{ opacity: 0, transition: transitionSmall }}
+              >
+                <Textarea
+                  ref={textareaRef}
+                  value={textValue}
+                  onChange={(e) => setTextValue(e.target.value)}
+                  placeholder="Who you'll talk to, what you want to learn, why, the tone, how long…"
+                  rows={5}
+                  data-testid="brief-textarea"
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="shrink-0"
+            onClick={mode === "voice" ? switchToText : switchToVoice}
+            aria-label={mode === "voice" ? "Type instead" : "Switch to voice"}
+            data-testid="brief-mode-toggle"
+          >
+            {mode === "voice" ? <Keyboard className="!size-5" aria-hidden /> : <Mic className="!size-5" aria-hidden />}
           </Button>
-        </motion.div>
+        </div>
+
+        {mode === "voice" && (
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground">
+            {!hasStarted ? "Starting microphone…" : recorder.isRecording ? "Recording — speak naturally" : "Preparing…"}
+          </motion.p>
+        )}
 
         {canSkip && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={transitionSmall}>

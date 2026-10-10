@@ -184,9 +184,9 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
         </div>
         <div className="space-y-xs text-center">
           <h2 className="font-brand text-l font-heavy text-foreground">You're all caught up</h2>
-          <p className="text-s text-muted-foreground">Share your surveys to get more responses</p>
+          <p className="text-s text-muted-foreground">Share your parlos to get more responses</p>
         </div>
-        <Button onClick={onExit}>Go to surveys</Button>
+        <Button onClick={onExit}>Go to parlos</Button>
       </div>
     );
   }

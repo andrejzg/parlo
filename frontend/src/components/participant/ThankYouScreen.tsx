@@ -292,7 +292,7 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const shareUrl = buildShareUrl(surveyTitle, surveyCode);
-  const shareText = `Check out this voice survey: ${shareUrl}`;
+  const shareText = `Check out this parlo: ${shareUrl}`;
   const whatsappShareUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
   const whatsappUpdatesUrl = responseCode
     ? buildBotChatUrl(`response ${responseCode}`)
@@ -387,7 +387,7 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
               rel="noopener noreferrer"
               onClick={() => trackEvent("participant_share_survey_clicked", { surveyCode })}
             >
-              Share this survey
+              Share this parlo
             </a>
           </Button>
 

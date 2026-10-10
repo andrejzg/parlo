@@ -51,6 +51,12 @@ async function mockCreatorApi(page: Page) {
     await route.fulfill({ status: 200, body: "" });
   });
 
+  // No speech engine here, so voice mode polls Whisper; hand back nothing new.
+  await page.route("**/api/surveys/*/transcribe", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text: "" }) });
+  });
+
   // Checklist: short transcripts cover audience + goal, longer ones cover all five.
   await page.route("**/api/surveys/*/brief/evaluate", async (route: Route) => {
     if (route.request().method() !== "POST") return route.fallback();
@@ -161,7 +167,7 @@ for (const deviceName of DEVICES) {
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/01-landing.png` });
 
-    await page.getByRole("button", { name: /create voice agent/i }).click();
+    await page.getByRole("button", { name: /create a parlo/i }).click();
 
     // ── Brief screen (voice mode by default) ──
     await page.getByText("Describe your research agent").waitFor({ timeout: 10_000 });
@@ -178,20 +184,37 @@ for (const deviceName of DEVICES) {
     const briefTa = page.getByTestId("brief-textarea");
     await briefTa.waitFor({ timeout: 5000 });
 
-    // Partial brief → two ticks, still disabled.
+    // Type mode shows the checklist as a stack: item 1 on top, nothing ticked.
+    await expect(page.getByTestId("brief-stack-current")).toHaveAttribute("data-item", "audience");
+
+    // Partial brief → two ticks (dots), the stack has moved on to the first open item, still disabled.
     await briefTa.fill(BRIEF_SHORT);
     await expect(page.getByTestId("brief-item-goal")).toHaveAttribute("data-satisfied", "true", { timeout: 5000 });
     await expect(page.getByTestId("brief-item-tone")).toHaveAttribute("data-satisfied", "false");
+    await expect(page.getByTestId("brief-stack-current")).toHaveAttribute("data-item", "purpose", { timeout: 3000 });
     await expect(page.getByTestId("brief-continue")).toBeDisabled();
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03-brief-partial.png` });
 
-    // Full brief → all five ticks, CTA enabled.
+    // Full brief → all five ticks, the stack is done, CTA enabled.
     await briefTa.fill(BRIEF_FULL);
     await expect(page.getByTestId("brief-item-length")).toHaveAttribute("data-satisfied", "true", { timeout: 5000 });
+    await expect(page.getByTestId("brief-stack-done")).toBeVisible({ timeout: 3000 });
     await expect(page.getByTestId("brief-continue")).toBeEnabled();
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/04-brief-complete.png` });
+
+    // Switching modes keeps everything: back to voice seeds the transcript with the
+    // typed brief, back to text brings it into the textarea again, ticks intact.
+    await page.getByRole("button", { name: /switch to voice/i }).click();
+    await expect(page.getByTestId("brief-transcript")).toContainText("five questions at most", { timeout: 5000 });
+    await expect(page.getByTestId("brief-item-length")).toHaveAttribute("data-satisfied", "true");
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${OUT}/04b-brief-back-to-voice.png` });
+    await page.getByRole("button", { name: /type instead/i }).click();
+    await expect(page.getByTestId("brief-textarea")).toHaveValue(/five questions at most/, { timeout: 5000 });
+    await expect(page.getByTestId("brief-stack-done")).toBeVisible();
+    await expect(page.getByTestId("brief-continue")).toBeEnabled();
     await page.getByTestId("brief-continue").click();
 
     // ── Follow-up 1 & 2 → checkpoint ──

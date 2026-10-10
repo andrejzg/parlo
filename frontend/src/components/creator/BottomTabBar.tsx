@@ -62,7 +62,7 @@ export default function BottomTabBar({
       </button>
 
       {/* Create (+ button) */}
-      <Button size="icon" onClick={onCreateNew} aria-label="Create new survey" className="-mt-1">
+      <Button size="icon" onClick={onCreateNew} aria-label="Create new parlo" className="-mt-1">
         <Plus className="!size-5" aria-hidden />
       </Button>
 

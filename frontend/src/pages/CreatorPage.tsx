@@ -5,6 +5,7 @@ import CreateLanding from "@/components/creator/CreateLanding";
 import ConsentScreen from "@/components/ConsentScreen";
 import CreationQuestionScreen from "@/components/creator/CreationQuestionScreen";
 import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
+import CreateModeSheet, { type BriefMode } from "@/components/creator/CreateModeSheet";
 import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import ReviewQuestionsScreen from "@/components/creator/ReviewQuestionsScreen";
@@ -36,6 +37,7 @@ import {
   type ClarifyingQuestion,
 } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
+import { finalizeRecording } from "@/lib/audioTrim";
 import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
@@ -81,6 +83,10 @@ export default function CreatorPage() {
 
   // Sidebar
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // "+" → voice or type? The survey is only created once a mode is picked.
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   // Home screen state
   const [mySurveys, setMySurveys] = useState<MySurvey[]>([]);
@@ -194,8 +200,9 @@ export default function CreatorPage() {
     setScreenKey((k) => k + 1);
   };
 
-  const handleStart = async () => {
-    trackEvent("survey_creation_started");
+  /** Create a survey and open the brief — in `mode` if given, else whatever the creator used last. */
+  const handleStart = async (mode?: BriefMode) => {
+    trackEvent("survey_creation_started", { mode: mode ?? preferredMode });
     trackEvent("consent_accepted", { role: "creator" });
 
     try {
@@ -205,12 +212,25 @@ export default function CreatorPage() {
       setDashboardCode(result.dashboardCode);
       setUploadUrls(result.uploadUrls);
       resetBriefFlow();
+      if (mode) setPreferredMode(mode);
 
       goForward("brief");
+      return true;
     } catch (err) {
       captureException(err, { location: "CreatorPage.handleStart" });
       toast.error("Something went wrong. Please try again.");
+      return false;
     }
+  };
+
+  const openCreateSheet = () => setCreateSheetOpen(true);
+
+  const handleChooseCreateMode = async (mode: BriefMode) => {
+    if (creating) return;
+    setCreating(true);
+    const ok = await handleStart(mode);
+    setCreating(false);
+    if (ok) setCreateSheetOpen(false);
   };
 
   const resetBriefFlow = () => {
@@ -269,7 +289,10 @@ export default function CreatorPage() {
     // Keep the raw recording for the future "proper agent" work (voice persona
     // etc). Fire and forget; the transcript is what the pipeline needs today.
     if (result.blob && uploadUrls?.brief) {
-      const uploadPromise = uploadAudioBlob(uploadUrls.brief, result.blob).catch((err) => {
+      const briefUploadUrl = uploadUrls.brief;
+      const uploadPromise = finalizeRecording({ blob: result.blob, durationMs: result.durationMs }, "brief")
+        .then((final) => uploadAudioBlob(briefUploadUrl, final.blob))
+        .catch((err) => {
         captureException(err, { location: "CreatorPage.uploadBrief" });
         return false as boolean;
       });
@@ -339,7 +362,7 @@ export default function CreatorPage() {
 
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
     if (!surveyId) {
-      toast.error("Survey not found. Please start over.");
+      toast.error("Parlo not found. Please start over.");
       return undefined;
     }
     if (!brief.trim()) {
@@ -680,7 +703,7 @@ export default function CreatorPage() {
                 phone={devicePhone || phone}
                 linkedInProfile={linkedInProfile}
                 totalNewCount={totalNewCount}
-                onCreateNew={handleStart}
+                onCreateNew={openCreateSheet}
                 onOpenReels={() => {
                   setStage("player");
                   setScreenKey((k) => k + 1);
@@ -732,7 +755,7 @@ export default function CreatorPage() {
                   setStage("player");
                   setScreenKey((k) => k + 1);
                 }}
-                onCreateNew={handleStart}
+                onCreateNew={openCreateSheet}
                 onInbox={() => {
                   setStage("inbox");
                   setScreenKey((k) => k + 1);
@@ -752,7 +775,7 @@ export default function CreatorPage() {
                   setStage("player");
                   setScreenKey((k) => k + 1);
                 }}
-                onCreateNew={handleStart}
+                onCreateNew={openCreateSheet}
                 onProfile={() => {
                   setStage("profile");
                   setScreenKey((k) => k + 1);
@@ -764,7 +787,7 @@ export default function CreatorPage() {
               />
             )}
             {stage === "welcome" && (
-              <CreateLanding onCreateAgent={handleStart} />
+              <CreateLanding onCreateAgent={() => void handleStart()} />
             )}
             {stage === "brief" && surveyId && (
               <BriefScreen
@@ -1001,6 +1024,12 @@ export default function CreatorPage() {
             )}
           </motion.div>
         </AnimatePresence>
+        <CreateModeSheet
+          open={createSheetOpen}
+          busy={creating}
+          onClose={() => setCreateSheetOpen(false)}
+          onChoose={handleChooseCreateMode}
+        />
       </div>
       <div id="recaptcha-container" style={{ position: "fixed", bottom: 0, right: 0, opacity: 0, pointerEvents: "none" }} />
     </div>

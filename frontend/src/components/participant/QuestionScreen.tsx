@@ -10,6 +10,7 @@ import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useSwipeNavigation } from "@/hooks/useSwipeNavigation";
 import { SurveyQuestion, VoiceAnswer, VoiceSegment } from "@/types/survey";
 import { mergeAudioBlobs } from "@/lib/audioMerge";
+import { finalizeRecording } from "@/lib/audioTrim";
 import { stagger, fadeUp, questionFadeUp, transitionSmall, transitionLarge } from "@/lib/animations";
 
 interface QuestionScreenProps {
@@ -213,11 +214,12 @@ export default function QuestionScreen({
       // First-time recording, no segments yet
       if (timerRef.current) clearInterval(timerRef.current);
       const result = await stop();
+      const final = await finalizeRecording(result, "answer");
       onNext({
         questionId: question.id,
-        blob: result.blob,
-        url: result.url,
-        durationMs: result.durationMs,
+        blob: final.blob,
+        url: final.url,
+        durationMs: final.durationMs,
         segments: [{ blob: result.blob, url: result.url, durationMs: result.durationMs }],
       });
     }
@@ -234,7 +236,7 @@ export default function QuestionScreen({
     }
 
     try {
-      const merged = await mergeAudioBlobs(blobs);
+      const merged = await finalizeRecording(await mergeAudioBlobs(blobs), "answer");
       onNext({
         questionId: question.id,
         blob: merged.blob,

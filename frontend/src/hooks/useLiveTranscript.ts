@@ -96,6 +96,12 @@ export function useLiveTranscript({ surveyId, getAudioBlob, analyser, live = fal
   const inFlightRef = useRef<Promise<void> | null>(null);
   const lastSentBytesRef = useRef(0);
   const whisperTextRef = useRef("");
+  /**
+   * Words that are NOT in the recording — text the creator typed before
+   * switching to voice (`seed`). Whisper re-transcribes the whole recording
+   * on every poll, so this has to be put back in front of each result.
+   */
+  const whisperPrefixRef = useRef("");
 
   const latestGetBlob = useRef(getAudioBlob);
   latestGetBlob.current = getAudioBlob;
@@ -118,7 +124,7 @@ export function useLiveTranscript({ surveyId, getAudioBlob, analyser, live = fal
       try {
         const text = await transcribeAudio(surveyId, blob);
         lastSentBytesRef.current = blob.size;
-        whisperTextRef.current = tidy(text);
+        whisperTextRef.current = tidy(`${whisperPrefixRef.current} ${text}`);
         setFinalText(whisperTextRef.current);
         setInterimText("");
       } catch (err) {
@@ -340,6 +346,7 @@ export function useLiveTranscript({ surveyId, getAudioBlob, analyser, live = fal
     sessionFinalRef.current = "";
     interimRef.current = "";
     whisperTextRef.current = "";
+    whisperPrefixRef.current = "";
     lastSentBytesRef.current = 0;
     gotResultRef.current = false;
     voiceMsRef.current = 0;
@@ -357,6 +364,7 @@ export function useLiveTranscript({ surveyId, getAudioBlob, analyser, live = fal
     sessionFinalRef.current = "";
     interimRef.current = "";
     whisperTextRef.current = p;
+    whisperPrefixRef.current = p;
     setFinalText(p);
     setInterimText("");
   }, []);

@@ -37,6 +37,7 @@ parlo/
 - **Offline persistence:** IndexedDB (sessionStore.ts) — stores session state + audio blobs
 - **Background uploads:** uploadQueue.ts — uploads blobs as recorded, retries on failure/offline
 - **Audio merge:** audioMerge.ts — merges multi-segment recordings into single WAV for upload
+- **Silence trimming:** audioTrim.ts — every recording is trimmed on the phone before it's stored/played/uploaded (see "Silence trimming" below)
 - **E2E Testing:** Playwright (frontend/e2e/) — mock audio + API fixtures. Happy-path specs + cross-device visual audit (`device-audit.spec.ts`) covering iPhone SE, Pixel 7, iPhone 15 Pro Max.
 
 ## API Contracts
@@ -187,7 +188,7 @@ Public results (open surveys only). Returns first names + audio.
 
 ### POST /api/webhooks/whatsapp
 Kapso webhook receiver. Handles:
-- `survey <code>` → creator notification opt-in
+- `parlo <code>` / `notify me about parlo <code>` (the prefilled message from the ready screen; `survey <code>` still accepted) → creator notification opt-in
 - `response <code>` → participant confirmation + creator notification
 - Unknown → fallback message
 
@@ -225,7 +226,12 @@ Returns:
 welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → building → review → intro → phone → otp → linkedin → ready
 ```
 
-- **Brief** (`components/creator/BriefScreen.tsx`): one screen, mic auto-starts, the creator describes their research agent in one go. Five checklist items (`lib/briefChecklist.ts`: audience, goal, purpose, tone, length) tick green live. `hooks/useLiveTranscript.ts` streams words (Web Speech API first, Whisper polling via `/transcribe` as fallback); `hooks/useBriefChecklist.ts` debounces the transcript ~650 ms and calls `/brief/evaluate` (TypeSafe Jev). "Continue" unlocks when all five are ticked; a subtle "Continue without the rest" link appears once 3+ are ticked so nobody gets stuck. "Type instead" keeps the heard text in the textarea; switching back to voice seeds the transcript with what was typed. The recording is uploaded to `surveys/{id}/brief.webm` in the background for future use; only the transcript feeds the pipeline today.
+- **"+" → "Create a parlo" sheet, Voice / Type** (`components/creator/CreateModeSheet.tsx`): the tab bar's "+" (home, inbox, profile) opens a bottom sheet with two tiles instead of creating a survey straight away. Picking one calls `handleStart(mode)` in `CreatorPage`, which creates the survey, sets `preferredMode`, and opens the brief in that mode. The landing page's "Create voice agent" still goes straight in (voice, or whatever mode the creator last used).
+- **Brief** (`components/creator/BriefScreen.tsx`): one screen, the creator describes their research agent in one go. Five checklist items (`lib/briefChecklist.ts`: audience, goal, purpose, tone, length) tick green live. `hooks/useLiveTranscript.ts` streams words (Web Speech API first, Whisper polling via `/transcribe` as fallback); `hooks/useBriefChecklist.ts` debounces the transcript ~650 ms and calls `/brief/evaluate` (TypeSafe Jev). "Continue" unlocks when all five are ticked; a subtle "Continue without the rest" link appears once 3+ are ticked so nobody gets stuck. The recording is uploaded to `surveys/{id}/brief.webm` in the background for future use; only the transcript feeds the pipeline today.
+  - **Voice mode**: mic auto-starts; the full five-row list (`BriefChecklistList` in `components/creator/BriefChecklist.tsx`) ticks as they talk, with the live transcript tail underneath. A keyboard icon button beside the waveform switches to type mode.
+  - **Type mode**: a textarea with a mic icon button beside it, and the checklist as a **stack** (`BriefStack`, same file): one card on top of the screen showing the first item still to cover (number, label, hint), two cards peeking out behind it for what's left, and five state dots in the card's corner. Jev still evaluates the whole text as they type; when the card on show gets its tick it holds green for ~650 ms, flies off, and the next open item comes forward. Items can tick out of order (Jev reads the whole brief every time), so "current" is always the first *unsatisfied* item and the dots carry the true per-item state. All five ticked → a green "All five covered" card.
+  - **Switching never loses anything**: voice → text puts everything heard (which already includes anything typed earlier) in the textarea; text → voice `seed()`s the transcript with the typed text so the mic appends to it. `useBriefChecklist` sits above both modes, so ticks carry across. In the Whisper fallback the seeded text lives in `whisperPrefixRef` and is put back in front of every poll result (Whisper re-transcribes the whole recording each time and would otherwise drop it). A recording made before switching to typing is still attached to the text-mode `BriefResult`.
+  - Test ids: `brief-item-{id}` + `data-satisfied` exist in both modes (list rows in voice, the dots in type), `brief-stack-current` + `data-item` / `brief-stack-done` for the stack, `brief-mode-toggle` for the icon button (aria-labels "Type instead" / "Switch to voice"), `create-mode-sheet` / `create-mode-voice` / `create-mode-text` for the sheet.
 - **Clarify** (`CreationQuestionScreen` with `transcriptSurveyId`, `progressLabel`, `ctaLabel`): one Cerebras follow-up per screen via `/clarify`. The live transcript means the answer text is ready the moment the creator taps Continue, so the next question appears in ~0.5 s. Back re-opens the previous follow-up (or the brief) in text mode with the answer editable.
 - **Checkpoint** (`CheckpointScreen.tsx`): after answer 2, then every answer where `isClarifyCheckpoint(n)` holds (5, 10, 15…): "Create agent" or "Ask me more". Hard cap `MAX_CLARIFICATIONS = 20`.
 - **Building/Review**: unchanged. `handleGenerate` posts `{brief, clarifications}`.
@@ -332,6 +338,7 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 
 ## Design Conventions
 
+- **The thing a creator makes is a "parlo"** in all user-facing copy — "Create a parlo", "Your parlos", "Untitled parlo", "Share this parlo", the WhatsApp bot's replies. Never "survey" on screen. Code identifiers, routes, tables, analytics event names and the API stay `survey`. The two outward-facing explainers keep the category word on purpose: the landing headline ("Voice surveys, made easy.") and the Open Graph meta/image fallbacks in `frontend/functions/s/[code].ts` + `backend/src/routes/og.ts`.
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
@@ -374,6 +381,16 @@ Audio responses are automatically transcribed using Workers AI Whisper when a pa
 - `transcription_status` values: `pending` → `completed` or `failed`
 - Migration: `0003_transcriptions.sql` adds `transcription` and `transcription_status` columns to `response_answers`.
 
+## Silence trimming
+
+`frontend/src/lib/audioTrim.ts` — `finalizeRecording(rec, context)` runs on every voice recording the moment the mic stops: participant answers (single take and the multi-segment merge, in `QuestionScreen`), the creator's intro (`IntroScreen`, before they hear it back) and the archived brief (`CreatorPage.handleBriefContinue`). Cheap and fully client-side:
+
+- Decode via `OfflineAudioContext` (gives a mono 16 kHz mix for free), 20 ms frames, RMS in dBFS. Gate = `max(loud − 30 dB, quiet + 6 dB)` where loud/quiet are the 90th/10th percentile frames, clamped to [−55, −30] dBFS; a frame is voice only with a voiced neighbour (a 20 ms click can't end the leading silence).
+- Leading silence cut leaving a 120 ms pad, trailing leaving 250 ms. Internal pauses ≥ 1 s shortened to 350 ms (room tone from both sides is what's kept). 5 ms fades at every cut.
+- Output is 16-bit mono 16 kHz WAV (`audio/wav`). Only when it saves ≥ 200 ms — otherwise the original compressed blob is kept, since a WAV is ~15× an Opus blob (≈32 KB/s). Anything that can't be decoded (Playwright's fake recorder) falls back to the untouched recording; nothing in the flow blocks on this.
+- WAV bytes under the `.webm` upload key is already how multi-segment answers work; the backend takes the content-type from the request and Whisper/the players read the bytes. `durationMs` on the answer/intro is the trimmed length. PostHog event `audio_trimmed` {context, changed, inputMs, outputMs, removedMs, inputBytes, outputBytes}.
+- `planTrim(pcm, sampleRate)` and `encodeWav` are pure exports — the scratch harness that validated them drives the TS module through the Vite dev server in headless Chromium (synthetic PCM with known pauses + a real MediaRecorder Opus take).
+
 ## Participant Flow
 
 ```
@@ -413,7 +430,7 @@ Test fixtures in `e2e/fixtures/`:
 Current specs:
 - `e2e/participant/happy-path.spec.ts` — functional flow tests (voice recording, mic-denial text mode, session restore). **Note**: this file's `fillPIIAndSubmit` helper references first/last-name screens that no longer exist in the current flow — consider stale until refactored.
 - `e2e/device-audit.spec.ts` — visual audit across **iPhone SE / Pixel 7 / iPhone 15 Pro Max**. Two passes per device: (1) voice-only happy path captures welcome → consent → voice Q → review → phone, (2) two mini mixed-type surveys capture the welcome/consent/capture screens for photo and video. 33 screenshots total dropped in `/tmp/parlo-<device>/`. ~60s runtime. **Known failure (as of 2026-10-10):** pass 3 times out waiting for "All done!" because the participant flow now has a LinkedIn-connect stage after review that the spec predates — `08-stuck.png` shows it. Passes 1–2 still produce every welcome/consent/capture screenshot, so the run is still useful; just don't trust the exit code. Use this whenever you touch participant-facing UI — grep for layout regressions across small / medium / large viewports in one shot.
-- `e2e/creator/brief-flow.spec.ts` — the creator flow on the same three devices, in "Type instead" mode with `/surveys`, `/brief/evaluate`, `/clarify`, `/generate` stubbed: brief (partial → complete ticks, CTA gating) → 2 follow-ups → checkpoint → 3 more → checkpoint → building → review with voice/photo/video badges. 8 screenshots per device in `$PARLO_SHOTS_DIR/parlo-creator-<device>/` (`/tmp` by default). Playwright's Chromium has no speech engine, so the voice path can't be covered here — test it on a real phone.
+- `e2e/creator/brief-flow.spec.ts` — the creator flow on the same three devices, in "Type instead" mode with `/surveys`, `/brief/evaluate`, `/transcribe`, `/clarify`, `/generate` stubbed: brief (voice list → type-mode stack: partial → stack advances, complete → done card, CTA gating; then a text → voice → text round trip asserting the transcript, ticks and textarea all survive) → 2 follow-ups → checkpoint → 3 more → checkpoint → building → review with voice/photo/video badges. 9 screenshots per device in `$PARLO_SHOTS_DIR/parlo-creator-<device>/` (`/tmp` by default). Playwright's Chromium has no speech engine, so the voice path can't be covered here — test it on a real phone. The "+" → Build with sheet needs a logged-in home screen (localStorage `parlo-device-auth` with an `apiKey` + `/api/my/surveys` stubbed) and isn't in this spec.
 
 **Important**: Playwright specs need a running preview server, NOT the Vite dev server — `npm run dev` doesn't load `.env.production`, so Firebase init throws `auth/invalid-api-key` and the React app never mounts (blank white page in screenshots). Start a preview server first:
 
@@ -424,6 +441,8 @@ npx playwright test e2e/device-audit.spec.ts --project=chromium --reporter=list
 ```
 
 The `playwright.config.ts` `webServer` hook is set to `npm run dev`, which is correct for tests that mock Firebase entirely, but for device-audit (which hits the real app bootstrap) you must use preview.
+
+For the Claude desktop app's browser pane, a local (gitignored) `.claude/launch.json` can hold a `frontend-preview` configuration: `runtimeExecutable: "sh"`, `runtimeArgs: ["-c", "cd frontend && npx vite preview --port 5173 --host 127.0.0.1"]`, `port: 5173`. Build first — it serves `dist/`.
 
 ## Common Pitfalls
 

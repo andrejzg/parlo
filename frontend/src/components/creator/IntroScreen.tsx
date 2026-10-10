@@ -7,6 +7,7 @@ import VoiceNotePill from "@/components/VoiceNotePill";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { fadeUp, press, stagger, transitionLarge, transitionSmall } from "@/lib/animations";
 import { trackEvent } from "@/lib/posthog";
+import { finalizeRecording } from "@/lib/audioTrim";
 
 /**
  * Last creative step: the creator records a short hello that participants
@@ -70,11 +71,16 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
     stopTimer();
     const rec = await recorder.stop();
     if (takeUrlRef.current) URL.revokeObjectURL(takeUrlRef.current);
-    takeUrlRef.current = rec.url;
+    takeUrlRef.current = null;
     if (rec.blob.size > 0) {
-      setTake({ blob: rec.blob, url: rec.url, durationMs: rec.durationMs });
+      // Silence trimmed before the creator hears it back, so what they
+      // approve is what participants get.
+      const take = await finalizeRecording(rec, "intro");
+      if (take.url !== rec.url) URL.revokeObjectURL(rec.url);
+      takeUrlRef.current = take.url;
+      setTake({ blob: take.blob, url: take.url, durationMs: take.durationMs });
       setPhase("recorded");
-      trackEvent("intro_recorded", { durationMs: rec.durationMs });
+      trackEvent("intro_recorded", { durationMs: take.durationMs });
     } else {
       setPhase("idle");
     }

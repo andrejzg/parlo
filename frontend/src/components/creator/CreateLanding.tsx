@@ -39,7 +39,7 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
 
         <motion.div variants={fadeUp} className="mt-m sm:mt-xl flex flex-col gap-s w-full">
           <Button size="lg" className="w-full" onClick={onCreateAgent}>
-            Create voice agent
+            Create a parlo
           </Button>
           <p className="text-xs text-muted-foreground text-center">Free to start · No account required</p>
         </motion.div>
