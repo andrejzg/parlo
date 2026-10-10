@@ -41,6 +41,18 @@ export interface Survey {
   visibility: "open" | "private";
   status: "active" | "paused" | "closed";
   created_at: string;
+  brief?: string | null;
+  brief_clarifications?: string | null;
+  /** Creator's voice hello, played on the participant welcome screen. */
+  intro_r2_key?: string | null;
+  intro_duration_ms?: number | null;
+  intro_transcript?: string | null;
+}
+
+export interface SurveyIntro {
+  audioUrl: string;
+  durationMs: number;
+  transcript: string | null;
 }
 
 export interface SurveyAudio {
@@ -179,6 +191,8 @@ export interface SurveyPublicView {
   status: string;
   questions: SurveyQuestion[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
+  /** Null until the creator records one. */
+  intro: SurveyIntro | null;
 }
 
 export interface DashboardView {

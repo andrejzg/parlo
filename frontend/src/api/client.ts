@@ -147,6 +147,24 @@ export function useUpdateQuestions() {
   });
 }
 
+// ── Creator voice intro ───────────────────────────────────────────────
+
+/** Fresh one-time upload URL for `surveys/{id}/intro.webm` (the creation-time URLs expire after 10 min). */
+export async function fetchIntroUploadUrl(surveyId: string): Promise<string> {
+  const data = await apiFetch<{ uploadUrl: string }>(`/surveys/${surveyId}/intro/upload-url`, {
+    method: "POST",
+  });
+  return data.uploadUrl;
+}
+
+/** Tell the backend the intro landed in R2 so it shows up for participants. */
+export function saveIntro(surveyId: string, durationMs: number) {
+  return apiFetch<{ success: true; durationMs: number }>(`/surveys/${surveyId}/intro`, {
+    method: "PUT",
+    body: JSON.stringify({ durationMs }),
+  });
+}
+
 export function loginByPhone(phone: string) {
   return apiFetch<{ apiKey: string | null; creatorId?: string }>("/auth/login", {
     method: "POST",
@@ -277,6 +295,7 @@ interface APISurveyResponse {
     question_type?: "voice" | "photo" | "video";
   }[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
+  intro: { audioUrl: string; durationMs: number; transcript: string | null } | null;
 }
 
 export function useGetSurvey(code: string) {
@@ -300,6 +319,13 @@ export function useGetSurvey(code: string) {
         isOpen: true,
         dashboardCode: "",
         questions,
+        intro: data.intro
+          ? {
+              audioUrl: data.intro.audioUrl,
+              durationMs: data.intro.durationMs,
+              transcript: data.intro.transcript ?? undefined,
+            }
+          : undefined,
       };
     },
     enabled: !!code,

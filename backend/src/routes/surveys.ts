@@ -21,6 +21,8 @@ import { extractCode } from "../services/slug";
 import {
   generatePresignedUploadUrl,
   generateUploadToken,
+  generatePresignedReadUrl,
+  generateReadToken,
 } from "../services/r2";
 import { checkRateLimit } from "../services/ratelimit";
 import {
@@ -496,6 +498,17 @@ surveys.get("/api/s/:code", async (c) => {
     .bind(survey.id)
     .all<{ question_key: string; audio_r2_key: string }>();
 
+  // Creator's voice hello — signed read URL, 1h TTL like dashboard audio.
+  let intro: SurveyPublicView["intro"] = null;
+  if (survey.intro_r2_key) {
+    const token = await generateReadToken(c.env.KV, survey.intro_r2_key);
+    intro = {
+      audioUrl: generatePresignedReadUrl(new URL(c.req.url).origin, survey.intro_r2_key, token),
+      durationMs: survey.intro_duration_ms ?? 0,
+      transcript: survey.intro_transcript ?? null,
+    };
+  }
+
   const view: SurveyPublicView = {
     id: survey.id,
     title: survey.title,
@@ -505,10 +518,106 @@ surveys.get("/api/s/:code", async (c) => {
       questionKey: a.question_key,
       audioR2Key: a.audio_r2_key,
     })),
+    intro,
   };
 
   return c.json(view);
 });
+
+// ── POST /api/surveys/:id/intro/upload-url ── Fresh presigned URL for the voice intro
+//
+// The upload URLs minted at survey creation expire after 10 minutes, and the
+// intro is recorded at the very end of the flow, so it gets its own token.
+surveys.post("/api/surveys/:id/intro/upload-url", async (c) => {
+  const surveyId = c.req.param("id");
+  const survey = await c.env.DB.prepare("SELECT id FROM surveys WHERE id = ?")
+    .bind(surveyId)
+    .first<{ id: string }>();
+  if (!survey) {
+    return c.json({ error: "Survey not found" }, 404);
+  }
+
+  const key = introKey(surveyId);
+  const token = await generateUploadToken(c.env.KV, key);
+  return c.json({
+    uploadUrl: generatePresignedUploadUrl(new URL(c.req.url).origin, key, token),
+  });
+});
+
+// ── PUT /api/surveys/:id/intro ── Record that the intro was uploaded
+//
+// Body: `{durationMs: number}`. Verifies the object landed in R2, stores the
+// key + duration, and transcribes it in the background.
+surveys.put("/api/surveys/:id/intro", async (c) => {
+  const surveyId = c.req.param("id");
+  const db = c.env.DB;
+
+  const survey = await db.prepare("SELECT id FROM surveys WHERE id = ?")
+    .bind(surveyId)
+    .first<{ id: string }>();
+  if (!survey) {
+    return c.json({ error: "Survey not found" }, 404);
+  }
+
+  const body = await c.req.json<{ durationMs?: number }>().catch(() => ({} as { durationMs?: number }));
+  const durationMs =
+    typeof body.durationMs === "number" && Number.isFinite(body.durationMs)
+      ? Math.max(0, Math.round(body.durationMs))
+      : 0;
+
+  const key = introKey(surveyId);
+  const head = await c.env.AUDIO_BUCKET.head(key);
+  if (!head) {
+    return c.json({ error: "Intro audio has not been uploaded yet" }, 409);
+  }
+
+  await db
+    .prepare(
+      "UPDATE surveys SET intro_r2_key = ?, intro_duration_ms = ?, intro_transcript = NULL WHERE id = ?"
+    )
+    .bind(key, durationMs, surveyId)
+    .run();
+
+  trackServerEvent(surveyId, "survey_intro_saved", { surveyId, durationMs });
+
+  // Whisper the intro so it has a text fallback; don't hold up the creator.
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        const obj = await c.env.AUDIO_BUCKET.get(key);
+        if (!obj) return;
+        const text = await transcribeAudio(c.env.AI, await obj.arrayBuffer());
+        await db
+          .prepare("UPDATE surveys SET intro_transcript = ? WHERE id = ? AND intro_r2_key = ?")
+          .bind(text.trim() || null, surveyId, key)
+          .run();
+      } catch (err) {
+        console.error("Intro transcription failed", { surveyId, err });
+      }
+    })()
+  );
+
+  return c.json({ success: true, durationMs });
+});
+
+// ── DELETE /api/surveys/:id/intro ── Remove the voice intro
+surveys.delete("/api/surveys/:id/intro", async (c) => {
+  const surveyId = c.req.param("id");
+  const key = introKey(surveyId);
+  await Promise.all([
+    c.env.AUDIO_BUCKET.delete(key).catch(() => {}),
+    c.env.DB.prepare(
+      "UPDATE surveys SET intro_r2_key = NULL, intro_duration_ms = NULL, intro_transcript = NULL WHERE id = ?"
+    )
+      .bind(surveyId)
+      .run(),
+  ]);
+  return c.json({ success: true });
+});
+
+function introKey(surveyId: string) {
+  return `surveys/${surveyId}/intro.webm`;
+}
 
 // ── POST /api/surveys/:id/claim ── Attach a verified phone to the survey's creator
 surveys.post("/api/surveys/:id/claim", async (c) => {

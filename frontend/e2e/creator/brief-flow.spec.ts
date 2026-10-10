@@ -106,6 +106,22 @@ async function mockCreatorApi(page: Page) {
     if (route.request().method() !== "PUT") return route.fallback();
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ questions: [] }) });
   });
+
+  // Voice intro: fresh upload URL, then the save call once the blob landed.
+  await page.route("**/api/surveys/*/intro/upload-url", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploadUrl: "https://fake-r2.example.com/upload/intro?token=xyz" }),
+    });
+  });
+  await page.route("**/api/surveys/*/intro", async (route: Route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const body = route.request().postDataJSON() as { durationMs?: number };
+    expect(typeof body.durationMs).toBe("number");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ success: true, durationMs: body.durationMs }) });
+  });
 }
 
 const BRIEF_SHORT = "I want to talk to customers who cancelled last quarter to learn why they left.";
@@ -214,6 +230,26 @@ for (const deviceName of DEVICES) {
     await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Video", { exact: true }).first().waitFor({ timeout: 5000 });
+
+    // ── Intro: record a hello, listen back, use it → phone ──
+    const introSaved = page.waitForRequest((r) => r.method() === "PUT" && /\/api\/surveys\/[^/]+\/intro$/.test(r.url()));
+    await page.getByRole("button", { name: /confirm & go live/i }).click();
+    await page.getByTestId("intro-record").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: `${OUT}/09-intro-idle.png`, fullPage: true });
+
+    await page.getByTestId("intro-record").click();
+    await page.getByTestId("intro-stop").waitFor({ timeout: 5000 });
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: `${OUT}/10-intro-recording.png`, fullPage: true });
+    await page.getByTestId("intro-stop").click();
+    await page.getByTestId("intro-use").waitFor({ timeout: 5000 });
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${OUT}/11-intro-recorded.png`, fullPage: true });
+
+    await page.getByTestId("intro-use").click();
+    await page.getByText("What's your phone number?").first().waitFor({ timeout: 10_000 });
+    await introSaved;
 
     await context.close();
     await browser.close();

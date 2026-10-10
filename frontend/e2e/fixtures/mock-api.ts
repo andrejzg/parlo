@@ -36,6 +36,12 @@ export const TEST_SURVEY = {
     { questionKey: "q2-uuid", audioR2Key: "surveys/test-survey-id-001/q2.webm" },
     { questionKey: "q3-uuid", audioR2Key: "surveys/test-survey-id-001/q3.webm" },
   ],
+  // Creator's voice hello — rendered as a play pill on the welcome screen.
+  intro: {
+    audioUrl: "https://fake-r2.example.com/audio/intro.webm?token=abc",
+    durationMs: 23_000,
+    transcript: null,
+  },
 } as const;
 
 export const TEST_RESPONSE = {
