@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
 import { captureException } from "@/lib/posthog";
 
 interface ErrorBoundaryProps {
@@ -29,26 +30,13 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   render() {
     if (this.state.hasError) {
       return (
-        <div
-          className="flex min-h-screen items-center justify-center"
-          style={{ background: "hsl(225 25% 4%)" }}
-        >
-          <div className="text-center px-6">
-            <h1
-              className="mb-4 font-display text-2xl"
-              style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-            >
-              Something went wrong
-            </h1>
-            <p className="mb-6 text-base text-muted-foreground font-light">
-              An unexpected error occurred.
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="inline-block px-8 py-3 rounded-xl bg-primary text-primary-foreground font-display font-semibold text-sm"
-            >
-              Reload
-            </button>
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <div className="flex flex-col items-center gap-l text-center px-l">
+            <div className="flex flex-col gap-xs">
+              <h1 className="font-brand text-l font-heavy text-foreground">Something went wrong</h1>
+              <p className="text-m text-muted-foreground">An unexpected error occurred.</p>
+            </div>
+            <Button onClick={() => window.location.reload()}>Reload</Button>
           </div>
         </div>
       );

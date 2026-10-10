@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { stagger, fadeUp } from "@/lib/animations";
+import { ChevronLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { stagger, fadeUp, transitionSmall } from "@/lib/animations";
 import type { ConfirmationResult } from "@/lib/firebase";
 import { sendWhatsAppOtp, verifyWhatsAppOtp } from "@/api/client";
 import { captureException } from "@/lib/posthog";
@@ -113,7 +117,7 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
 
   return (
     <motion.div
-      className="flex flex-col items-center justify-between h-full px-6 pt-6 pb-safe sm:py-12"
+      className="flex flex-col items-center justify-between h-full px-l pt-l pb-safe sm:py-xxl"
       variants={stagger}
       initial="initial"
       animate="animate"
@@ -121,61 +125,46 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
       {/* Top row: back button + brand mark */}
       <motion.div variants={fadeUp} className="w-full flex items-center justify-between">
         {onBack ? (
-          <motion.button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1 px-2 py-2 -ml-2 rounded-full text-muted-foreground hover:text-foreground transition-colors select-none"
-            whileTap={{ scale: 0.9 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-            <span className="text-sm">Back</span>
-          </motion.button>
+          <Button type="button" variant="ghost" size="icon" onClick={onBack} aria-label="Back" className="-ml-xs">
+            <ChevronLeft className="!size-6" aria-hidden />
+          </Button>
         ) : (
-          <div className="w-10" />
+          <div className="w-11" />
         )}
-        <div className="flex items-center gap-2 opacity-50">
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <span className="text-xs font-display tracking-widest uppercase text-muted-foreground">
-            Parlo
-          </span>
-        </div>
-        <div className="w-10" />
+        <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
+          Parlo
+        </span>
+        <div className="w-11" />
       </motion.div>
 
       {/* Main content */}
-      <div className="flex flex-col items-center gap-6 w-full max-w-sm mx-auto">
+      <div className="flex flex-col items-center gap-l w-full max-w-sm mx-auto">
         <motion.h2
           variants={fadeUp}
-          className="font-display text-xl sm:text-3xl leading-snug text-center text-foreground"
-          style={{ fontWeight: 800 }}
+          className="font-brand text-l sm:text-xl font-heavy text-center text-foreground"
         >
           Enter the code
         </motion.h2>
 
         <motion.div
           variants={fadeUp}
-          className="flex flex-col items-center gap-1"
+          className="flex flex-col items-center gap-xxs"
         >
-          <p className="text-muted-foreground text-base text-center font-light">
+          <p className="text-m text-muted-foreground text-center">
             {whatsappMode ? "Sent via WhatsApp to " : "Sent via SMS to "}
             <span className="text-foreground font-medium">{maskedPhone}</span>
           </p>
           {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="text-sm text-primary hover:underline select-none"
-            >
+            <Button type="button" variant="link" size="sm" onClick={onBack}>
               Wrong number? Change it
-            </button>
+            </Button>
           )}
         </motion.div>
 
-        {/* Code input */}
+        {/* Code input — one field holding all six digits (auto-verifies at
+            six, so paste and OS one-time-code autofill work natively). */}
         <motion.div variants={fadeUp} className="w-full">
-          <input
+          <Input
             ref={inputRef}
             type="tel"
             inputMode="numeric"
@@ -184,19 +173,21 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
             onChange={(e) => handleChange(e.target.value)}
             placeholder="000000"
             aria-label="Verification code"
+            aria-invalid={error ? true : undefined}
             autoFocus
             disabled={verifying}
             data-1p-ignore
             data-lpignore="true"
             data-bwignore
             data-form-type="other"
-            className="w-full h-16 rounded-2xl border px-4 text-center text-2xl tracking-[0.5em] font-mono ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
-            style={{
-              background: "hsl(225 15% 10%)",
-              color: "hsl(40 20% 95%)",
-              borderColor: error ? "hsl(0 70% 50%)" : "hsl(225 15% 18%)",
-              letterSpacing: "0.5em",
-            }}
+            className={cn(
+              // Digits read as data: one text step up, centred. The spacing
+              // between digits borrows the xs space token because the
+              // tracking scale tops out at 0.02em; an arbitrary *property*
+              // is used so it reliably overrides the field's tracking-l.
+              "h-16 text-center font-data text-l font-medium [letter-spacing:var(--space-xs)]",
+              code.length === CODE_LENGTH && "shadow-edge-accent",
+            )}
           />
         </motion.div>
 
@@ -205,7 +196,8 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
           <motion.p
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-sm text-red-400"
+            transition={transitionSmall}
+            className="text-xs text-error"
           >
             {error}
           </motion.p>
@@ -216,37 +208,34 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="text-sm text-muted-foreground"
+            transition={transitionSmall}
+            className="text-s text-muted-foreground"
           >
             Verifying...
           </motion.p>
         )}
 
         {/* Resend + WhatsApp fallback */}
-        <motion.div variants={fadeUp} className="flex flex-col items-center gap-2">
+        <motion.div variants={fadeUp} className="flex flex-col items-center gap-xs">
           {secondsLeft > 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-s text-muted-foreground tabular-nums">
               Resend code in {secondsLeft}s
             </p>
           ) : (
-            <button
-              type="button"
-              onClick={handleResend}
-              className="text-sm text-primary hover:underline select-none"
-            >
+            <Button type="button" variant="link" size="sm" onClick={handleResend}>
               Resend code
-            </button>
+            </Button>
           )}
 
           {!whatsappMode && (
-            <button
+            <Button
               type="button"
+              variant="secondary"
               onClick={handleWhatsAppFallback}
               disabled={whatsappSending}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors select-none disabled:opacity-50"
             >
               {whatsappSending ? "Sending..." : "Didn't get it? Try WhatsApp"}
-            </button>
+            </Button>
           )}
         </motion.div>
       </div>

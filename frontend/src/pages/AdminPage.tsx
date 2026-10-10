@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import {
   getPrompts,
   getPrompt,
@@ -16,6 +19,12 @@ import { captureException } from "@/lib/posthog";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+/** Uppercase section label (Prompts, Template Preview, Version History, Test Generate). */
+const SECTION_LABEL = "font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground";
+
+/** Version chip; pair with `bg-badge text-badge-foreground` (current) or `bg-muted text-neutral-8`. */
+const VERSION_CHIP = "rounded-full px-s py-xxs font-data text-xxs font-medium";
+
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
     month: "short",
@@ -27,13 +36,13 @@ function fmtDate(iso: string) {
 }
 
 /** Renders prompt content with {{placeholders}} highlighted. */
-function PromptPreview({ content }: { content: string }) {
+function PromptPreview({ content, className }: { content: string; className?: string }) {
   const parts = content.split(/(\{\{[^}]+\}\})/g);
   return (
-    <pre className="whitespace-pre-wrap text-sm font-mono leading-relaxed text-muted-foreground">
+    <pre className={cn("whitespace-pre-wrap rounded-s bg-card p-s font-data text-xs text-neutral-8", className)}>
       {parts.map((part, i) =>
         /^\{\{[^}]+\}\}$/.test(part) ? (
-          <span key={i} className="text-primary font-semibold">
+          <span key={i} className="font-medium text-color-1">
             {part}
           </span>
         ) : (
@@ -182,10 +191,8 @@ export default function AdminPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
-      <header className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <h1 className="font-display text-xl font-bold tracking-tight">
-          Parlo <span className="text-primary">Admin</span>
-        </h1>
+      <header className="flex items-center justify-between px-l py-m shadow-edge-b">
+        <h1 className="font-brand text-l font-heavy text-foreground">Parlo Admin</h1>
         <Button variant="outline" size="sm" onClick={handleSeed} disabled={loading}>
           Seed Defaults
         </Button>
@@ -194,10 +201,10 @@ export default function AdminPage() {
       {/* Feedback bar */}
       {(error || successMsg) && (
         <div
-          className={`px-6 py-2 text-sm ${
+          className={`px-l py-xs text-s ${
             error
-              ? "bg-destructive/20 text-destructive"
-              : "bg-primary/20 text-primary"
+              ? "bg-error-transparent text-error"
+              : "bg-success-transparent text-success"
           }`}
         >
           {error || successMsg}
@@ -206,28 +213,29 @@ export default function AdminPage() {
 
       <div className="flex flex-col lg:flex-row">
         {/* ── Sidebar: Prompt List ───────────────────────────────────── */}
-        <aside className="lg:w-64 border-b lg:border-b-0 lg:border-r border-border p-4 shrink-0">
-          <h2 className="text-xs uppercase tracking-wider text-muted-foreground mb-3 font-semibold">
+        <aside className="shrink-0 p-m shadow-edge-b lg:w-64 lg:shadow-edge-r">
+          <h2 className={`${SECTION_LABEL} mb-s`}>
             Prompts
           </h2>
           {prompts.length === 0 && (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-s text-muted-foreground">
               No prompts found. Click "Seed Defaults" to initialize.
             </p>
           )}
-          <ul className="space-y-1">
+          <ul className="space-y-xxs">
             {prompts.map((p) => (
               <li key={p.name}>
                 <button
+                  type="button"
                   onClick={() => selectPrompt(p.name)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                  className={`w-full rounded-s px-s py-xs text-left text-s transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring ${
                     selected?.name === p.name
-                      ? "bg-primary/20 text-primary"
-                      : "hover:bg-secondary text-foreground"
+                      ? "bg-color-1-transparent text-color-1"
+                      : "text-foreground hover:bg-accent"
                   }`}
                 >
                   <span className="font-medium">{p.name}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">
+                  <span className="ml-xs text-xs text-muted-foreground">
                     v{p.currentVersion}
                   </span>
                 </button>
@@ -237,40 +245,40 @@ export default function AdminPage() {
         </aside>
 
         {/* ── Main Content ──────────────────────────────────────────── */}
-        <main className="flex-1 p-6 space-y-6 min-w-0">
+        <main className="min-w-0 flex-1 space-y-l p-l">
           {!selected && !loading && (
-            <p className="text-muted-foreground">
+            <p className="text-m text-muted-foreground">
               Select a prompt from the sidebar to edit it.
             </p>
           )}
 
           {loading && !selected && (
-            <p className="text-muted-foreground">Loading...</p>
+            <p className="text-m text-muted-foreground">Loading...</p>
           )}
 
           {selected && (
             <>
               {/* Editor header */}
-              <div className="flex items-center gap-3 flex-wrap">
-                <h2 className="font-display text-lg font-bold">{selected.name}</h2>
-                <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
+              <div className="flex flex-wrap items-center gap-s">
+                <h2 className="font-brand text-l font-heavy text-foreground">{selected.name}</h2>
+                <span className={`${VERSION_CHIP} bg-badge text-badge-foreground`}>
                   v{selected.currentVersion}
                 </span>
                 {isDirty && (
-                  <span className="text-xs text-primary">unsaved changes</span>
+                  <span className="text-xs text-color-1">unsaved changes</span>
                 )}
               </div>
 
-              {/* Textarea editor */}
-              <textarea
+              {/* Textarea editor — prompts are code-like, so the data role replaces monospace. */}
+              <Textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={14}
-                className="w-full rounded-md border border-input bg-background px-4 py-3 text-sm font-mono leading-relaxed ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-y"
+                className="min-h-[12rem] resize-y whitespace-pre-wrap font-data text-s"
                 spellCheck={false}
               />
 
-              <div className="flex gap-3">
+              <div className="flex gap-s">
                 <Button onClick={handleSave} disabled={loading || !isDirty}>
                   {loading ? "Saving..." : "Save new version"}
                 </Button>
@@ -287,8 +295,8 @@ export default function AdminPage() {
               </div>
 
               {/* Template preview */}
-              <div className="rounded-md border border-border bg-secondary/30 p-4">
-                <h3 className="text-xs uppercase tracking-wider text-muted-foreground mb-2 font-semibold">
+              <div>
+                <h3 className={`${SECTION_LABEL} mb-xs`}>
                   Template Preview
                 </h3>
                 <PromptPreview
@@ -300,89 +308,91 @@ export default function AdminPage() {
 
               {/* Version history */}
               <div>
-                <h3 className="text-xs uppercase tracking-wider text-muted-foreground mb-3 font-semibold">
+                <h3 className={`${SECTION_LABEL} mb-s`}>
                   Version History
                 </h3>
-                <div className="space-y-2 max-h-80 overflow-y-auto">
+                <div className="max-h-80 space-y-xs overflow-y-auto">
                   {(selected.versions ?? [])
                     .slice()
                     .sort((a, b) => b.version - a.version)
-                    .map((v) => (
-                      <div
-                        key={v.version}
-                        className={`rounded-md border p-3 text-sm ${
-                          viewingVersion?.version === v.version
-                            ? "border-primary bg-primary/10"
-                            : "border-border bg-secondary/20"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3 flex-wrap">
-                          <span className="font-medium">v{v.version}</span>
-                          <span className="text-muted-foreground text-xs">
-                            {fmtDate(v.createdAt)}
-                          </span>
-                          <span className="text-muted-foreground text-xs">
-                            by {v.createdBy}
-                          </span>
-                          <div className="ml-auto flex gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() =>
-                                setViewingVersion(
-                                  viewingVersion?.version === v.version ? null : v,
-                                )
-                              }
+                    .map((v) => {
+                      const isViewing = viewingVersion?.version === v.version;
+                      const isCurrent = v.version === selected.currentVersion;
+                      return (
+                        <div
+                          key={v.version}
+                          className={`rounded-s bg-card px-m py-s text-s${isViewing ? " shadow-edge-accent" : ""}`}
+                        >
+                          <div className="flex flex-wrap items-center gap-s">
+                            <span
+                              className={`${VERSION_CHIP} ${
+                                isCurrent ? "bg-badge text-badge-foreground" : "bg-muted text-neutral-8"
+                              }`}
                             >
-                              {viewingVersion?.version === v.version
-                                ? "Hide"
-                                : "View"}
-                            </Button>
-                            {v.version !== selected.currentVersion && (
+                              v{v.version}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {fmtDate(v.createdAt)}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              by {v.createdBy}
+                            </span>
+                            <div className="ml-auto flex gap-xs">
                               <Button
-                                variant="outline"
+                                variant="ghost"
                                 size="sm"
-                                onClick={() => handleRevert(v.version)}
-                                disabled={loading}
+                                onClick={() =>
+                                  setViewingVersion(isViewing ? null : v)
+                                }
                               >
-                                Revert
+                                {isViewing ? "Hide" : "View"}
                               </Button>
-                            )}
+                              {!isCurrent && (
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => handleRevert(v.version)}
+                                  disabled={loading}
+                                >
+                                  Revert
+                                </Button>
+                              )}
+                            </div>
                           </div>
+                          {isViewing && (
+                            <PromptPreview content={v.content} className="mt-s bg-background" />
+                          )}
                         </div>
-                        {viewingVersion?.version === v.version && (
-                          <div className="mt-3 rounded border border-border bg-background p-3">
-                            <PromptPreview content={v.content} />
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                 </div>
               </div>
             </>
           )}
 
           {/* ── Test Panel ──────────────────────────────────────────── */}
-          <div className="rounded-md border border-border p-4 space-y-4">
-            <h3 className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+          <div className="space-y-m rounded-s bg-card p-m">
+            <h3 className={SECTION_LABEL}>
               Test Generate
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-m md:grid-cols-2">
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">
+                <Label htmlFor="admin-test-audience" className="mb-xxs block">
                   Audience
-                </label>
+                </Label>
                 <Input
+                  id="admin-test-audience"
                   value={testAudience}
                   onChange={(e) => setTestAudience(e.target.value)}
                   placeholder="e.g. startup founders"
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">
+                <Label htmlFor="admin-test-gather" className="mb-xxs block">
                   Gather
-                </label>
+                </Label>
                 <Input
+                  id="admin-test-gather"
                   value={testGather}
                   onChange={(e) => setTestGather(e.target.value)}
                   placeholder="e.g. product feedback"
@@ -397,7 +407,7 @@ export default function AdminPage() {
               {testLoading ? "Generating..." : "Test Generate"}
             </Button>
             {testResult && (
-              <pre className="mt-2 rounded-md border border-border bg-background p-3 text-xs font-mono whitespace-pre-wrap max-h-60 overflow-y-auto">
+              <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-s bg-background p-s font-data text-xs text-neutral-8">
                 {testResult}
               </pre>
             )}

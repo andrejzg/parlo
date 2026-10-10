@@ -12,14 +12,13 @@ const HEARTBEAT_INTERVAL_MS = 1000;
 /**
  * WhatsApp-style scrolling waveform.
  * New amplitude samples push onto the right, oldest drops off the left.
- * Ported from PlaybookLM's ptt-waveform approach, adapted for Parlo's
- * shared mic stream and orange color palette.
+ * Bars are the theme accent (color-1); amplitude drives their opacity.
  */
 export default function VoiceWave({ analyser, isRecording }: VoiceWaveProps) {
   const [bars, setBars] = useState<number[]>(() => Array(BAR_COUNT).fill(0));
   const rafRef = useRef<number>(0);
   const lastTickRef = useRef<number>(0);
-  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const lastHeartbeatRef = useRef<number>(0);
 
   useEffect(() => {
@@ -27,7 +26,7 @@ export default function VoiceWave({ analyser, isRecording }: VoiceWaveProps) {
       dataArrayRef.current = null;
       return;
     }
-    dataArrayRef.current = new Uint8Array(analyser.fftSize);
+    dataArrayRef.current = new Uint8Array(new ArrayBuffer(analyser.fftSize));
   }, [analyser]);
 
   useEffect(() => {
@@ -89,10 +88,10 @@ export default function VoiceWave({ analyser, isRecording }: VoiceWaveProps) {
         {bars.map((v, i) => (
           <div
             key={i}
-            className="w-[3px] rounded-full"
+            className="w-[3px] rounded-full bg-color-1"
             style={{
               height: `${Math.max(4, v * 36)}px`,
-              background: `hsla(22, 95%, ${55 + v * 20}%, ${isRecording ? 0.5 + v * 0.4 : 0.3})`,
+              opacity: isRecording ? 0.5 + v * 0.5 : 0.3,
             }}
           />
         ))}

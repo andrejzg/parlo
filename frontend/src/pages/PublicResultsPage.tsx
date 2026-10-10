@@ -1,19 +1,9 @@
 import { useParams } from "react-router-dom";
 import { motion } from "framer-motion";
+import { Play } from "lucide-react";
 import { useGetPublicResults } from "@/api/client";
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
-};
-
-const fadeUp = {
-  initial: { opacity: 0, y: 18 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
+import { Button } from "@/components/ui/button";
+import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
 export default function PublicResultsPage() {
   const { code } = useParams<{ code: string }>();
@@ -33,110 +23,68 @@ export default function PublicResultsPage() {
 
   if (isLoading) {
     return (
-      <div
-        className="min-h-screen w-full flex items-center justify-center"
-        style={{ background: "var(--gradient-hero)" }}
-      >
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <p className="text-muted-foreground text-sm font-display">Loading results...</p>
+      <div className="min-h-screen w-full flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-m">
+          <div className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+          <p className="text-s text-muted-foreground">Loading results...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div
-      className="min-h-screen w-full flex items-center justify-center"
-      style={{ background: "var(--gradient-hero)" }}
-    >
+    <div className="min-h-screen w-full flex items-center justify-center bg-background">
+      {/* max-w-md / max-h-[812px] are the phone-frame shell dimensions (structural). */}
       <div className="relative w-full max-w-md h-screen max-h-[812px] overflow-hidden bg-background">
-        <div
-          className="flex flex-col h-full px-6 py-10"
-          style={{ background: "hsl(225 25% 4%)" }}
-        >
+        <div className="flex flex-col h-full px-l py-xl">
           {/* Header */}
           <motion.div
-            className="flex flex-col items-center gap-4 mb-8"
+            className="flex flex-col items-center gap-m mb-xl"
             variants={stagger}
             initial="initial"
             animate="animate"
           >
-            <motion.div variants={fadeUp} className="flex items-center gap-2 opacity-50">
-              <div className="w-2 h-2 rounded-full bg-primary" />
-              <span className="text-xs font-display tracking-widest uppercase text-muted-foreground">
-                Parlo
-              </span>
-            </motion.div>
-
-            <motion.h1
+            <motion.span
               variants={fadeUp}
-              className="font-display text-2xl font-bold text-center"
-              style={{ color: "hsl(40 20% 95%)" }}
+              className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground"
             >
+              Parlo
+            </motion.span>
+
+            <motion.h1 variants={fadeUp} className="font-brand text-l font-heavy text-foreground text-center">
               {surveyTitle}
             </motion.h1>
 
-            <motion.p
-              variants={fadeUp}
-              className="text-sm text-center"
-              style={{ color: "hsl(225 10% 45%)" }}
-            >
+            <motion.p variants={fadeUp} className="text-s text-muted-foreground text-center">
               {results.length} response{results.length !== 1 ? "s" : ""}
             </motion.p>
           </motion.div>
 
           {/* Results list */}
           <motion.div
-            className="flex flex-col gap-2 flex-1 overflow-y-auto"
+            className="flex flex-col gap-xs flex-1 min-h-0 overflow-y-auto"
             variants={stagger}
             initial="initial"
             animate="animate"
           >
             {results.map((result, i) => (
-              <motion.div
-                key={i}
-                variants={fadeUp}
-                className="flex items-center gap-4 rounded-xl px-4 py-4"
-                style={{ background: "hsl(225 15% 8%)" }}
-              >
+              <motion.div key={i} variants={fadeUp} className="flex items-center gap-m rounded-m bg-card p-m">
                 {/* Avatar */}
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 text-sm font-display font-bold"
-                  style={{
-                    background: "hsl(var(--primary) / 0.15)",
-                    color: "hsl(var(--primary))",
-                  }}
-                >
+                <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-muted text-neutral-8 text-s font-medium">
                   {result.firstName.charAt(0)}
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <p
-                    className="text-sm font-display font-semibold"
-                    style={{ color: "hsl(40 20% 95%)" }}
-                  >
-                    {result.firstName}
-                  </p>
-                  <p className="text-xs" style={{ color: "hsl(225 10% 40%)" }}>
+                  <p className="text-s font-medium text-foreground">{result.firstName}</p>
+                  <p className="text-xs text-muted-foreground">
                     {result.answers.length} answer{result.answers.length !== 1 ? "s" : ""}
                   </p>
                 </div>
 
                 {/* Play button placeholder */}
-                <button
-                  className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
-                  style={{ background: "hsl(var(--primary) / 0.12)" }}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="hsl(22, 95%, 62%)"
-                  >
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </button>
+                <Button type="button" variant="secondary" size="icon" className="shrink-0" aria-label="Play">
+                  <Play fill="currentColor" aria-hidden />
+                </Button>
               </motion.div>
             ))}
           </motion.div>
@@ -145,14 +93,10 @@ export default function PublicResultsPage() {
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.6, duration: 0.4 }}
-            className="text-center text-xs mt-6"
-            style={{ color: "hsl(225 10% 35%)" }}
+            transition={{ ...transitionLarge, delay: 0.6 }}
+            className="text-center text-xs text-muted-foreground mt-l"
           >
-            Powered by{" "}
-            <span className="font-display" style={{ color: "hsl(225 10% 50%)" }}>
-              Parlo
-            </span>
+            Powered by <span className="font-brand text-neutral-8">Parlo</span>
           </motion.p>
         </div>
       </div>

@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
+import { ChevronLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { stagger, fadeUp } from "@/lib/animations";
 
 interface PhoneScreenProps {
@@ -282,7 +285,7 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
 
   return (
     <motion.div
-      className="flex flex-col items-center justify-between h-full px-6 pt-6 pb-safe sm:py-12"
+      className="flex flex-col items-center justify-between h-full px-l pt-l pb-safe sm:py-xxl"
       variants={stagger}
       initial="initial"
       animate="animate"
@@ -290,66 +293,51 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
       {/* Top row: back button + brand mark */}
       <motion.div variants={fadeUp} className="w-full flex items-center justify-between">
         {onBack ? (
-          <motion.button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1 px-2 py-2 -ml-2 rounded-full text-muted-foreground hover:text-foreground transition-colors"
-            whileTap={{ scale: 0.9 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-            <span className="text-sm">Back</span>
-          </motion.button>
+          <Button type="button" variant="ghost" size="icon" onClick={onBack} aria-label="Back" className="-ml-xs">
+            <ChevronLeft className="!size-6" aria-hidden />
+          </Button>
         ) : (
-          <div className="w-10" />
+          <div className="w-11" />
         )}
-        <div className="flex items-center gap-2 opacity-50">
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <span className="text-xs font-display tracking-widest uppercase text-muted-foreground">
-            Parlo
-          </span>
-        </div>
-        <div className="w-10" />
+        <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
+          Parlo
+        </span>
+        <div className="w-11" />
       </motion.div>
 
       {/* Main content */}
-      <div className="flex flex-col items-center gap-6 w-full max-w-sm mx-auto">
+      <div className="flex flex-col items-center gap-l w-full max-w-sm mx-auto">
         <motion.h2
           variants={fadeUp}
-          className="font-display text-xl sm:text-3xl leading-snug text-center text-foreground"
-          style={{ fontWeight: 800 }}
+          className="font-brand text-l sm:text-xl font-heavy text-center text-foreground"
         >
           What's your phone number?
         </motion.h2>
 
         <motion.p
           variants={fadeUp}
-          className="text-muted-foreground text-base text-center font-light"
+          className="text-m text-muted-foreground text-center"
         >
           We'll only contact you about this survey.
         </motion.p>
 
         {/* Phone input */}
-        <motion.div variants={fadeUp} className="w-full flex gap-2 min-w-0">
-          <div
-            className="shrink-0 relative h-14 rounded-2xl border"
-            style={{
-              background: "hsl(225 15% 10%)",
-              borderColor: "hsl(225 15% 18%)",
-            }}
-          >
+        <motion.div variants={fadeUp} className="w-full flex items-stretch gap-xs min-w-0">
+          {/* Country code — a text-field surface with the native <select> laid
+              invisibly on top, so phones get their own picker. focus-within
+              draws the field's focus outline when the select has focus. */}
+          <div className="shrink-0 relative rounded-s bg-input focus-within:outline focus-within:outline-2 focus-within:outline-offset-0 focus-within:outline-ring">
             {/* Display: flag + code — size to content so narrow viewports
                 (e.g. iPhone SE at 375px) don't squeeze the phone input. */}
-            <div className="relative flex items-center gap-2 px-3 h-full pointer-events-none">
+            <div className="relative flex items-center gap-xs px-s h-full pointer-events-none">
               {selectedCountry && (
                 <img
                   src={flagUrl(selectedCountry.iso)}
                   alt={`${selectedCountry.iso.toUpperCase()} flag`}
-                  className="w-5 h-4 rounded-[2px] object-cover shrink-0"
+                  className="w-5 h-4 object-cover shrink-0"
                 />
               )}
-              <span style={{ color: "hsl(40 20% 95%)", fontSize: "0.9rem" }}>{countryCode}</span>
+              <span className="text-s text-foreground">{countryCode}</span>
             </div>
             {/* Invisible native select */}
             <select
@@ -365,7 +353,7 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
               ))}
             </select>
           </div>
-          <input
+          <Input
             type="tel"
             value={phone}
             onChange={(e) => handlePhoneChange(e.target.value)}
@@ -375,12 +363,7 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
             autoComplete="tel"
             data-1p-ignore
             data-lpignore="true"
-            className="min-w-0 flex-1 h-14 rounded-2xl border px-4 text-lg ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            style={{
-              background: "hsl(225 15% 10%)",
-              color: "hsl(40 20% 95%)",
-              borderColor: "hsl(225 15% 18%)",
-            }}
+            className="min-w-0 flex-1"
             onKeyDown={(e) => {
               if (e.key === "Enter") handleSubmit();
             }}
@@ -390,17 +373,11 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
 
       {/* CTA */}
       <motion.div variants={fadeUp} className="w-full max-w-xs">
-        <motion.button
-          onClick={handleSubmit}
-          disabled={!canSubmit}
-          className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{ fontWeight: 700 }}
-          whileTap={canSubmit ? { scale: 0.96, transition: { duration: 0.08 } } : {}}
-          whileHover={canSubmit ? { filter: "brightness(1.12)", transition: { duration: 0.15 } } : {}}
-        >
+        <Button size="lg" className="w-full" onClick={handleSubmit} disabled={!canSubmit}>
           {submitting ? "Sending..." : "Next"}
-        </motion.button>
-        <p className="text-[10px] text-muted-foreground/60 text-center mt-3 leading-tight">
+        </Button>
+        {/* reCAPTCHA disclosure — required by Google's TOS because the badge is hidden. */}
+        <p className="text-xxs text-neutral-6 text-center mt-s">
           Protected by reCAPTCHA. Google{" "}
           <a
             href="https://policies.google.com/privacy"

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { EASE, transitionLarge } from "@/lib/animations";
 
 function useIsLandscape() {
   const [isLandscape, setIsLandscape] = useState(false);
@@ -22,19 +23,18 @@ export default function LandscapeOverlay() {
     <AnimatePresence>
       {isLandscape && (
         <motion.div
-          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-8 px-8"
-          style={{ background: "hsl(225 20% 6%)" }}
+          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-xl px-xl bg-background"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
+          transition={transitionLarge}
         >
           {/* Phone with rotation arrow */}
           <motion.div
             className="relative"
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
+            transition={transitionLarge}
           >
             <svg
               width="120"
@@ -42,6 +42,7 @@ export default function LandscapeOverlay() {
               viewBox="0 0 120 120"
               fill="none"
               xmlns="http://www.w3.org/2000/svg"
+              aria-hidden
             >
               {/* Phone body (landscape orientation) */}
               <motion.rect
@@ -50,7 +51,7 @@ export default function LandscapeOverlay() {
                 width="88"
                 height="52"
                 rx="8"
-                stroke="hsl(22, 95%, 62%)"
+                className="stroke-color-1"
                 strokeWidth="2.5"
                 fill="none"
                 initial={{ rotate: 0 }}
@@ -58,7 +59,7 @@ export default function LandscapeOverlay() {
                 transition={{
                   duration: 1.2,
                   delay: 0.6,
-                  ease: [0.22, 1, 0.36, 1],
+                  ease: EASE,
                   repeat: Infinity,
                   repeatDelay: 2,
                 }}
@@ -70,7 +71,7 @@ export default function LandscapeOverlay() {
                 y1="80"
                 x2="70"
                 y2="80"
-                stroke="hsl(22, 95%, 62%)"
+                className="stroke-color-1"
                 strokeWidth="2"
                 strokeLinecap="round"
                 opacity={0.5}
@@ -79,32 +80,24 @@ export default function LandscapeOverlay() {
                 transition={{
                   duration: 1.2,
                   delay: 0.6,
-                  ease: [0.22, 1, 0.36, 1],
+                  ease: EASE,
                   repeat: Infinity,
                   repeatDelay: 2,
                 }}
                 style={{ transformOrigin: "60px 62px" }}
               />
-
             </svg>
           </motion.div>
 
           {/* Text */}
           <motion.div
-            className="text-center space-y-3"
+            className="text-center flex flex-col gap-xs"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.25 }}
+            transition={transitionLarge}
           >
-            <h2
-              className="font-display text-xl tracking-tight"
-              style={{ fontWeight: 700, color: "hsl(40 20% 95%)" }}
-            >
-              Rotate your phone
-            </h2>
-            <p style={{ color: "hsl(225 10% 50%)", fontSize: "0.9rem", lineHeight: 1.5 }}>
-              This experience works best in portrait mode
-            </p>
+            <h2 className="font-brand text-l font-medium text-foreground">Rotate your phone</h2>
+            <p className="text-s text-muted-foreground">This experience works best in portrait mode</p>
           </motion.div>
         </motion.div>
       )}

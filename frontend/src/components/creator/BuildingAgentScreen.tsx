@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
+import { Check, Mic } from "lucide-react";
+import { stagger, fadeUp, transitionLarge } from "@/lib/animations";
 
 interface BuildingAgentScreenProps {
   /** If provided, called on mount. The screen waits for both the promise AND
@@ -7,19 +9,6 @@ interface BuildingAgentScreenProps {
   onGenerate?: () => Promise<unknown>;
   onDone: (result?: unknown) => void;
 }
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.09, delayChildren: 0.1 } },
-};
-
-const fadeUp = {
-  initial: { opacity: 0, y: 20 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
 
 const STEPS = [
   "Reading your brief...",
@@ -29,6 +18,9 @@ const STEPS = [
 ];
 
 const MIN_DISPLAY_MS = 3000;
+
+/** A completed step's tick popping in: theme small-motion duration with a light bounce. */
+const tickPop = { type: "spring" as const, visualDuration: 0.2, bounce: 0.2 };
 
 export default function BuildingAgentScreen({ onGenerate, onDone }: BuildingAgentScreenProps) {
   const [currentStep, setCurrentStep] = useState(0);
@@ -77,111 +69,69 @@ export default function BuildingAgentScreen({ onGenerate, onDone }: BuildingAgen
   }, [onGenerate, onDone]);
 
   return (
-    <div
-      className="flex flex-col h-full items-center justify-center px-6"
-      style={{ background: "hsl(225 25% 4%)" }}
-    >
+    <div className="flex flex-col h-full items-center justify-center px-l bg-background">
       <motion.div
-        className="flex flex-col items-center gap-8 w-full max-w-sm"
+        className="flex flex-col items-center gap-xl w-full max-w-sm"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
-        {/* Animated pulse icon */}
+        {/* Processing indicator: slow-turning mic inside a pulsing ring (status loops keep their own cadence) */}
         <motion.div variants={fadeUp} className="relative flex items-center justify-center">
-          <div
-            className="w-24 h-24 rounded-full flex items-center justify-center"
-            style={{ background: "hsl(var(--primary) / 0.12)" }}
-          >
-            <div
-              className="w-16 h-16 rounded-full flex items-center justify-center"
-              style={{ background: "hsl(var(--primary) / 0.22)" }}
+          <div className="w-24 h-24 rounded-full flex items-center justify-center bg-color-1-transparent text-color-1">
+            <motion.span
+              className="flex"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
             >
-              <motion.svg
-                width="30"
-                height="30"
-                viewBox="0 0 24 24"
-                fill="none"
-                animate={{ rotate: 360 }}
-                transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-              >
-                <path
-                  d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"
-                  stroke="hsl(22, 95%, 62%)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"
-                  stroke="hsl(22, 95%, 62%)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-              </motion.svg>
-            </div>
+              <Mic size={30} aria-hidden />
+            </motion.span>
           </div>
           <div
-            className="absolute inset-0 w-24 h-24 rounded-full border-2 pulse-ring"
-            style={{ borderColor: "hsl(var(--primary) / 0.3)" }}
+            className="absolute inset-0 w-24 h-24 rounded-full shadow-[inset_0_0_0_2px_var(--color-1-transparent)] pulse-ring"
+            aria-hidden
           />
         </motion.div>
 
         {/* Headline */}
-        <motion.div variants={fadeUp} className="text-center space-y-3">
-          <h1
-            className="font-display leading-tight"
-            style={{
-              fontSize: "clamp(2rem, 8vw, 2.6rem)",
-              fontWeight: 800,
-              color: "hsl(40 20% 95%)",
-            }}
-          >
-            Building your agent...
-          </h1>
-        </motion.div>
+        <motion.h1 variants={fadeUp} className="font-brand text-l sm:text-xl font-heavy text-foreground text-center">
+          Building your agent...
+        </motion.h1>
 
         {/* Step progress */}
-        <motion.div variants={fadeUp} className="w-full space-y-3">
+        <motion.div variants={fadeUp} className="w-full flex flex-col gap-s">
           {STEPS.map((step, i) => (
             <motion.div
               key={i}
-              className="flex items-center gap-3 px-4 py-3 rounded-xl"
+              className={`flex items-center gap-s px-m py-s rounded-s transition-colors ${
+                i <= currentStep ? "bg-card" : "bg-transparent"
+              }`}
               initial={{ opacity: 0, x: -12 }}
               animate={{
                 opacity: i <= currentStep ? 1 : 0.3,
                 x: 0,
               }}
-              transition={{ delay: i * 0.15, duration: 0.35 }}
-              style={{
-                background: i <= currentStep ? "hsl(225 15% 10%)" : "transparent",
-              }}
+              transition={{ ...transitionLarge, delay: i * 0.15 }}
             >
               {i < currentStep ? (
-                <motion.div
+                <motion.span
+                  className="flex items-center justify-center w-4 h-4 rounded-full bg-color-1-transparent text-color-1"
                   initial={{ scale: 0 }}
                   animate={{ scale: 1 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                  transition={tickPop}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <circle cx="8" cy="8" r="8" fill="hsl(22, 95%, 62%)" fillOpacity="0.2" />
-                    <path d="M4.5 8L7 10.5L11.5 5.5" stroke="hsl(22, 95%, 62%)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </motion.div>
+                  <Check size={10} aria-hidden />
+                </motion.span>
               ) : i === currentStep ? (
-                <div className="w-4 h-4 flex items-center justify-center">
-                  <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-                </div>
+                <span className="w-4 h-4 flex items-center justify-center">
+                  <span className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+                </span>
               ) : (
-                <div className="w-4 h-4 flex items-center justify-center">
-                  <div className="w-1.5 h-1.5 rounded-full" style={{ background: "hsl(225 10% 30%)" }} />
-                </div>
+                <span className="w-4 h-4 flex items-center justify-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-neutral-5" />
+                </span>
               )}
-              <span
-                className="text-sm"
-                style={{
-                  color: i <= currentStep ? "hsl(40 20% 85%)" : "hsl(225 10% 35%)",
-                }}
-              >
+              <span className={`text-s ${i === currentStep ? "text-foreground" : "text-muted-foreground"}`}>
                 {step}
               </span>
             </motion.div>

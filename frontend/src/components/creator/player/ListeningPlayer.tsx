@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { CircleCheckBig, LoaderCircle, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { transitionLarge } from "@/lib/animations";
 import { useFeedBuffer } from "@/hooks/useFeedBuffer";
 import { useSwipe2D } from "@/hooks/useSwipe2D";
 import PlayerCard from "./PlayerCard";
@@ -165,17 +168,9 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
   // Loading state
   if (loading) {
     return (
-      <div
-        className="flex flex-col items-center justify-center h-full gap-3"
-        style={{ background: "hsl(225 25% 4%)" }}
-      >
-        <div
-          className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
-          style={{ borderColor: "hsl(22 95% 62%)", borderTopColor: "transparent" }}
-        />
-        <p className="text-sm font-display" style={{ color: "hsl(225 10% 45%)" }}>
-          Loading responses...
-        </p>
+      <div className="flex h-full flex-col items-center justify-center gap-s bg-background">
+        <LoaderCircle size={32} className="animate-spin text-color-1" aria-hidden />
+        <p className="text-s text-muted-foreground">Loading responses...</p>
       </div>
     );
   }
@@ -183,37 +178,15 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
   // Empty / all caught up
   if (items.length === 0) {
     return (
-      <div
-        className="flex flex-col items-center justify-center h-full gap-5 px-6"
-        style={{ background: "hsl(225 25% 4%)" }}
-      >
-        <div
-          className="w-16 h-16 rounded-full flex items-center justify-center"
-          style={{ background: "hsl(225 15% 10%)" }}
-        >
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="hsl(225 10% 35%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
+      <div className="flex h-full flex-col items-center justify-center gap-l bg-background px-l">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-card text-neutral-6">
+          <CircleCheckBig size={28} aria-hidden />
         </div>
-        <div className="text-center space-y-2">
-          <h2 className="font-display text-xl font-bold" style={{ color: "hsl(40 20% 95%)" }}>
-            You're all caught up
-          </h2>
-          <p className="text-sm font-light" style={{ color: "hsl(225 10% 45%)" }}>
-            Share your surveys to get more responses
-          </p>
+        <div className="space-y-xs text-center">
+          <h2 className="font-brand text-l font-heavy text-foreground">You're all caught up</h2>
+          <p className="text-s text-muted-foreground">Share your surveys to get more responses</p>
         </div>
-        <button
-          onClick={onExit}
-          className="px-6 py-3 rounded-xl font-display font-semibold text-sm"
-          style={{
-            background: "hsl(var(--primary))",
-            color: "hsl(var(--primary-foreground))",
-          }}
-        >
-          Go to surveys
-        </button>
+        <Button onClick={onExit}>Go to surveys</Button>
       </div>
     );
   }
@@ -236,29 +209,20 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
 
   return (
     <div
-      className="relative flex flex-col h-full overflow-hidden select-none"
-      style={{ background: "hsl(225 25% 4%)" }}
+      className="relative flex h-full select-none flex-col overflow-hidden bg-background"
       {...handlers}
     >
       {/* Top bar: exit + survey badge + progress */}
-      <div className="absolute top-0 left-0 right-0 z-20 px-4 pt-4 space-y-3">
+      <div className="absolute left-0 right-0 top-0 z-20 space-y-s px-m pt-m">
         {/* Survey badge row */}
         <div className="flex items-center justify-between">
-          <button
-            onClick={onExit}
-            className="flex items-center justify-center w-8 h-8 rounded-full"
-            style={{ background: "hsl(225 15% 10% / 0.7)", color: "hsl(225 10% 55%)" }}
-            aria-label="Exit player"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <Button type="button" variant="ghost" size="icon" onClick={onExit} aria-label="Exit player">
+            <X aria-hidden />
+          </Button>
           {currentItem && (
             <SurveyBadge title={currentItem.surveyTitle} />
           )}
-          <div className="w-8" /> {/* spacer for centering */}
+          <div className="w-11" /> {/* spacer for centering */}
         </div>
 
         {/* Progress bar */}
@@ -269,10 +233,9 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
 
       {/* Card area with swipe visual feedback */}
       <div
-        className="flex-1 relative"
+        className={`relative flex-1 ${isSwiping ? "transition-none" : "transition-transform duration-large ease-large"}`}
         style={{
           transform: isSwiping ? `translate(${offset.x * 0.4}px, ${offset.y * 0.4}px)` : undefined,
-          transition: isSwiping ? "none" : "transform 0.3s ease",
         }}
       >
         <AnimatePresence mode="wait" custom={transitionDir}>
@@ -285,7 +248,7 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
               initial="enter"
               animate="center"
               exit="exit"
-              transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+              transition={transitionLarge}
             >
               <PlayerCard
                 questionText={currentAnswer.questionText}
@@ -337,34 +300,27 @@ export default function ListeningPlayer({ apiKey, onExit }: ListeningPlayerProps
         )}
       </div>
 
-      {/* Bottom bar: respondent info + controls */}
-      <div className="absolute bottom-0 left-0 right-0 z-20 px-5 pb-6 pt-12"
-        style={{ background: "linear-gradient(transparent, hsl(225 25% 4%) 40%)" }}
-      >
+      {/* Bottom bar: respondent info + controls. The scrim keeps the name
+          readable over photo/video cards; on voice cards it is invisible. */}
+      <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-background from-60% to-transparent px-l pb-l pt-xxl">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-display font-bold"
-              style={{
-                background: "hsl(var(--primary) / 0.15)",
-                color: "hsl(var(--primary))",
-              }}
-            >
+          <div className="flex items-center gap-s">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted font-brand text-xs font-medium text-neutral-8">
               {respondentInitial}
             </div>
             <div>
-              <p className="text-sm font-display font-semibold" style={{ color: "hsl(40 20% 95%)" }}>
+              <p className="font-brand text-m font-medium text-foreground">
                 {respondentName}
               </p>
-              <p className="text-[10px]" style={{ color: "hsl(225 10% 40%)" }}>
+              <p className="text-xs text-muted-foreground">
                 {formatTimeAgo(currentItem?.response.submittedAt ?? null)}
                 {items.length > 1 && (
-                  <span className="ml-2">{respondentIdx + 1} of {items.length}</span>
+                  <span className="ml-xs">{respondentIdx + 1} of {items.length}</span>
                 )}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-xs">
             {currentAnswer?.questionType === "voice" && (
               <SpeedControl speed={playbackSpeed} onToggle={cycleSpeed} />
             )}

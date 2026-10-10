@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { AlignLeft, Camera, ChevronRight, Pause, Play, Video } from "lucide-react";
 import { VoiceAnswer } from "@/types/survey";
 import { useUploadProgress } from "@/lib/useUploadProgress";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { stagger, fadeUp, press, transitionSmall, transitionLarge } from "@/lib/animations";
 
 interface ReviewScreenProps {
   answers: VoiceAnswer[];
@@ -16,19 +20,6 @@ function formatDuration(ms: number) {
   const sec = s % 60;
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } },
-};
-
-const fadeUp = {
-  initial: { opacity: 0, y: 18 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
 
 interface AnswerRowProps {
   answer: VoiceAnswer;
@@ -128,56 +119,51 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
     }
   };
 
+  const iconLabel = isAudio
+    ? isExpanded && playing
+      ? "Stop"
+      : "Play"
+    : isExpanded
+    ? "Collapse"
+    : "Expand";
+
   return (
-    <div className="rounded-xl overflow-hidden">
-      <div
-        className="w-full flex items-center gap-3 px-3 py-3 text-left transition-colors"
-        style={{ background: isExpanded ? "hsl(225 15% 10%)" : "transparent" }}
-      >
+    <div className="rounded-s overflow-hidden">
+      <div className="w-full flex items-center gap-s px-m py-s text-left">
         <motion.button
           type="button"
           onClick={handleIconTap}
-          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors"
-          style={{ background: isExpanded ? "hsl(22 95% 62% / 0.15)" : "hsl(225 15% 14%)" }}
-          whileTap={{ scale: 0.9 }}
+          className={cn(
+            "shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring",
+            isExpanded ? "bg-color-1-transparent text-color-1" : "bg-muted text-muted-foreground",
+          )}
+          whileTap={press}
+          aria-label={iconLabel}
         >
           {isText ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isExpanded ? "hsl(22, 95%, 62%)" : "hsl(225 10% 50%)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 7h16M4 12h10M4 17h12" />
-            </svg>
+            <AlignLeft size={16} aria-hidden />
           ) : isPhoto ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isExpanded ? "hsl(22, 95%, 62%)" : "hsl(225 10% 50%)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
+            <Camera size={16} aria-hidden />
           ) : isVideo ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isExpanded ? "hsl(22, 95%, 62%)" : "hsl(225 10% 50%)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="23 7 16 12 23 17 23 7" />
-              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-            </svg>
+            <Video size={16} aria-hidden />
           ) : isExpanded && playing ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="hsl(22, 95%, 62%)" stroke="none">
-              <rect x="6" y="4" width="4" height="16" rx="1" />
-              <rect x="14" y="4" width="4" height="16" rx="1" />
-            </svg>
+            <Pause size={14} fill="currentColor" aria-hidden />
           ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill={isExpanded ? "hsl(22, 95%, 62%)" : "hsl(225 10% 50%)"} stroke="none">
-              <polygon points="6,4 20,12 6,20" />
-            </svg>
+            <Play size={14} fill="currentColor" aria-hidden />
           )}
         </motion.button>
 
         <motion.button
           type="button"
           onClick={onTap}
-          className="flex-1 min-w-0 flex items-center gap-2 text-left"
-          whileTap={{ scale: 0.98 }}
+          className="flex-1 min-w-0 flex items-center gap-xs text-left"
+          whileTap={press}
         >
           <div className="flex-1 min-w-0">
-            <p className={`text-sm line-clamp-1 ${isExpanded ? "text-foreground" : "text-foreground/80"}`}>
+            <p className="text-s font-medium text-foreground line-clamp-1">
               {question?.text}
             </p>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-xs text-muted-foreground mt-xxs">
               {isText
                 ? "Text response"
                 : isPhoto
@@ -189,15 +175,14 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
                 : formatDuration(answer.durationMs)}
             </p>
           </div>
-          <motion.svg
-            width="16" height="16" viewBox="0 0 24 24" fill="none"
-            stroke="hsl(225 10% 35%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-            className="shrink-0"
+          <motion.span
+            className="shrink-0 flex text-neutral-6"
             animate={{ rotate: isExpanded ? 90 : 0 }}
-            transition={{ duration: 0.2 }}
+            transition={transitionSmall}
+            aria-hidden
           >
-            <polyline points="9 18 15 12 9 6" />
-          </motion.svg>
+            <ChevronRight size={16} aria-hidden />
+          </motion.span>
         </motion.button>
       </div>
 
@@ -207,24 +192,20 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={transitionLarge}
             className="overflow-hidden"
-            style={{ background: "hsl(225 15% 10%)" }}
           >
-            <div className="px-4 pb-4 pt-1 space-y-3">
-              <p className="text-sm text-foreground/70 leading-relaxed">
+            <div className="px-m pb-m pt-xxs flex flex-col gap-s">
+              <p className="text-s text-neutral-8">
                 {question?.text}
               </p>
 
               {isText ? (
-                <div
-                  className="rounded-xl px-4 py-3 text-sm text-foreground/80 leading-relaxed"
-                  style={{ background: "hsl(225 15% 14%)" }}
-                >
+                <div className="rounded-s bg-muted px-m py-s text-s text-neutral-8">
                   {answer.textContent}
                 </div>
               ) : isPhoto && answer.url ? (
-                <div className="rounded-xl overflow-hidden border border-border" style={{ background: "hsl(225 25% 4%)" }}>
+                <div className="rounded-s overflow-hidden bg-background">
                   <img
                     src={answer.url}
                     alt={question?.text ?? "Your photo answer"}
@@ -232,8 +213,8 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
                   />
                 </div>
               ) : isVideo && answer.url ? (
-                <div className="space-y-2">
-                  <div className="rounded-xl overflow-hidden border border-border" style={{ background: "hsl(225 25% 4%)" }}>
+                <div className="flex flex-col gap-xs">
+                  <div className="rounded-s overflow-hidden bg-background">
                     <video
                       src={answer.url}
                       controls
@@ -242,63 +223,55 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
                     />
                   </div>
                   {showUploadProgress ? (
-                    <div className="space-y-1">
-                      <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "hsl(225 15% 18%)" }}>
+                    <div className="flex flex-col gap-xxs">
+                      <div className="w-full h-xxs rounded-full overflow-hidden bg-muted">
                         <motion.div
-                          className="h-full rounded-full"
-                          style={{ background: "hsl(22, 95%, 62%)" }}
+                          className="h-full rounded-full bg-color-1"
                           animate={{ width: `${uploadPct}%` }}
-                          transition={{ duration: 0.2 }}
+                          transition={transitionSmall}
                         />
                       </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-muted-foreground">Uploading video…</span>
-                        <span className="text-muted-foreground tabular-nums">
+                      <div className="flex justify-between items-center text-xs text-muted-foreground">
+                        <span>Uploading video…</span>
+                        <span className="font-data tabular-nums">
                           {Math.round(uploadPct!)}%
                         </span>
                       </div>
                     </div>
                   ) : (
                     <div className="flex justify-end">
-                      <span className="text-xs text-muted-foreground tabular-nums">
+                      <span className="font-data text-xs tabular-nums text-muted-foreground">
                         {formatDuration(answer.durationMs)}
                       </span>
                     </div>
                   )}
                 </div>
               ) : canPlay ? (
-                <div className="space-y-2">
-                  <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "hsl(225 15% 18%)" }}>
+                <div className="flex flex-col gap-xs">
+                  <div className="w-full h-xxs rounded-full overflow-hidden bg-muted">
                     <motion.div
-                      className="h-full rounded-full"
-                      style={{ background: "hsl(22, 95%, 62%)" }}
+                      className="h-full rounded-full bg-color-1"
                       animate={{ width: `${progress * 100}%` }}
-                      transition={{ duration: 0.1 }}
+                      transition={transitionSmall}
                     />
                   </div>
                   <div className="flex justify-end">
-                    <span className="text-xs text-muted-foreground tabular-nums">
+                    <span className="font-data text-xs tabular-nums text-muted-foreground">
                       {formatDuration(answer.durationMs)}
                     </span>
                   </div>
                 </div>
               ) : null}
 
-              <motion.button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
+                className="w-full"
                 onClick={(e) => { e.stopPropagation(); onRedo(); }}
-                className="w-full py-3 rounded-xl text-sm font-display transition-colors"
-                style={{
-                  fontWeight: 600,
-                  background: "hsl(225 15% 14%)",
-                  color: "hsl(225 10% 65%)",
-                  border: "1px solid hsl(225 15% 20%)",
-                }}
-                whileTap={{ scale: 0.97 }}
-                whileHover={{ borderColor: "hsl(225 15% 28%)", color: "hsl(225 10% 80%)" }}
               >
                 Redo this answer
-              </motion.button>
+              </Button>
             </div>
           </motion.div>
         )}
@@ -317,15 +290,14 @@ export default function ReviewScreen({ answers, questions, onContinue, onRedo }:
 
   return (
     <motion.div
-      className="flex flex-col items-center justify-between h-full px-6 pt-6 pb-safe sm:py-12"
+      className="flex flex-col items-center justify-between h-full px-l pt-l pb-safe sm:py-xxl"
       variants={stagger}
       initial="initial"
       animate="animate"
     >
       {/* Brand mark */}
-      <motion.div variants={fadeUp} className="flex items-center gap-2 opacity-50">
-        <div className="w-2 h-2 rounded-full bg-primary" />
-        <span className="text-xs font-display tracking-widest uppercase text-muted-foreground">
+      <motion.div variants={fadeUp} className="flex items-center">
+        <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
           Parlo
         </span>
       </motion.div>
@@ -335,12 +307,12 @@ export default function ReviewScreen({ answers, questions, onContinue, onRedo }:
           its content size. Without it, an expanded photo/video answer grows
           the middle section past the viewport and the overflow-y-auto never
           kicks in — the content gets clipped behind the CTA instead. */}
-      <div className="flex flex-col items-center gap-5 max-w-sm mx-auto w-full overflow-y-auto flex-1 min-h-0 py-4">
-        <motion.div variants={fadeUp} className="space-y-2 text-center">
-          <h1 className="font-display text-xl sm:text-3xl leading-tight text-foreground" style={{ fontWeight: 800 }}>
+      <div className="flex flex-col items-center gap-l max-w-sm mx-auto w-full overflow-y-auto flex-1 min-h-0 py-m">
+        <motion.div variants={fadeUp} className="flex flex-col gap-xs text-center">
+          <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
             Review your answers
           </h1>
-          <p className="text-secondary-foreground/70 text-sm leading-relaxed font-light">
+          <p className="text-s text-muted-foreground">
             Tap to listen back, redo any you're not happy with
           </p>
         </motion.div>
@@ -348,18 +320,18 @@ export default function ReviewScreen({ answers, questions, onContinue, onRedo }:
         {/* Answers card */}
         <motion.div
           variants={fadeUp}
-          className="w-full bg-card rounded-2xl border border-border overflow-hidden text-left"
+          className="w-full rounded-m bg-card overflow-hidden text-left"
         >
-          <div className="flex items-center justify-between px-5 pt-4 pb-2">
-            <p className="font-display text-xs text-muted-foreground tracking-widest uppercase">
+          <div className="flex items-center justify-between px-l pt-m pb-xs">
+            <p className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
               Your responses
             </p>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="font-data text-xs tabular-nums text-muted-foreground">
               {formatDuration(totalMs)} total
             </span>
           </div>
 
-          <div className="px-2 pb-2">
+          <div className="px-xs pb-xs">
             {answers.map((answer, idx) => {
               const q = questions.find((q) => q.id === answer.questionId);
               return (
@@ -379,15 +351,9 @@ export default function ReviewScreen({ answers, questions, onContinue, onRedo }:
 
       {/* Continue button */}
       <motion.div variants={fadeUp} className="w-full max-w-sm shrink-0">
-        <motion.button
-          onClick={onContinue}
-          className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-display text-lg tracking-wide glow-primary"
-          style={{ fontWeight: 700 }}
-          whileTap={{ scale: 0.96, transition: { duration: 0.08 } }}
-          whileHover={{ filter: "brightness(1.12)", transition: { duration: 0.15 } }}
-        >
+        <Button size="lg" className="w-full" onClick={onContinue}>
           Looks good, continue
-        </motion.button>
+        </Button>
       </motion.div>
     </motion.div>
   );

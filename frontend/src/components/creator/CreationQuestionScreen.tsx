@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Check, ChevronLeft, Keyboard, Mic } from "lucide-react";
 import VoiceWave from "@/components/VoiceWave";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useLiveTranscript } from "@/hooks/useLiveTranscript";
 import { useSwipeNavigation } from "@/hooks/useSwipeNavigation";
 import { VoiceAnswer } from "@/types/survey";
+import { stagger, fadeUp, questionFadeUp, transitionSmall, transitionLarge } from "@/lib/animations";
 
 interface CreationQuestion {
   id: string;
@@ -44,27 +48,8 @@ function formatDuration(ms: number) {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-const stagger = {
-  animate: { transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
-};
-
-const item = {
-  initial: { opacity: 0, y: 18 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
-
-const questionItem = {
-  initial: { opacity: 0, y: 28 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
+/** The step-chip tick popping in: theme small-motion duration with a light bounce. */
+const tickPop = { type: "spring" as const, visualDuration: 0.2, bounce: 0.2 };
 
 /** Legacy two-question setup flow (still used by the MCP server's prompts). */
 export const CREATION_QUESTIONS: CreationQuestion[] = [
@@ -234,39 +219,29 @@ export default function CreationQuestionScreen({
 
   return (
     <div
-      className="flex flex-col h-full"
-      style={{ background: "hsl(225 25% 4%)" }}
+      className="flex flex-col h-full bg-background"
       onTouchStart={swipe.onTouchStart}
       onTouchEnd={swipe.onTouchEnd}
     >
       {/* Top bar */}
       <motion.div
-        className="flex flex-col gap-3 px-6 pt-12 pb-3"
+        className="flex flex-col gap-s px-l pt-xxl pb-s"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.3, delay: 0.05 }}
+        transition={transitionLarge}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-xs">
           {/* Back button */}
           {onBack && (
-            <motion.button
-              type="button"
-              onClick={handleBack}
-              aria-label="Back"
-              className="flex items-center justify-center w-11 h-11 -ml-2 rounded-full hover:bg-muted/50 transition-colors"
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.25, delay: 0.1 }}
-              whileTap={{ scale: 0.9 }}
-            >
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="hsl(225 10% 55%)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </motion.button>
+            <motion.div initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={transitionSmall}>
+              <Button type="button" variant="ghost" size="icon" onClick={handleBack} aria-label="Back" className="-ml-xs">
+                <ChevronLeft className="!size-6" aria-hidden />
+              </Button>
+            </motion.div>
           )}
 
           {progressLabel && (
-            <span className="text-xs font-display tracking-widest uppercase" style={{ color: "hsl(225 10% 45%)" }}>
+            <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
               {progressLabel}
             </span>
           )}
@@ -277,44 +252,20 @@ export default function CreationQuestionScreen({
             return (
               <motion.div
                 key={i}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+                className={`flex items-center gap-xs rounded-full px-s py-xxs text-xs font-medium ${
+                  isDone || isActive ? "bg-color-1-transparent text-color-1" : "bg-muted text-muted-foreground"
+                }`}
                 animate={{
                   opacity: isDone || isActive ? 1 : 0.35,
                 }}
-                transition={{ duration: 0.3 }}
-                style={{
-                  background: isDone
-                    ? "hsl(var(--primary) / 0.18)"
-                    : isActive
-                    ? "hsl(var(--primary) / 0.12)"
-                    : "hsl(225 15% 10%)",
-                  border: `1px solid ${
-                    isDone
-                      ? "hsl(var(--primary) / 0.5)"
-                      : isActive
-                      ? "hsl(var(--primary) / 0.35)"
-                      : "hsl(225 15% 18%)"
-                  }`,
-                  color: isDone
-                    ? "hsl(var(--primary))"
-                    : isActive
-                    ? "hsl(var(--primary))"
-                    : "hsl(225 10% 45%)",
-                }}
+                transition={transitionSmall}
               >
                 {isDone ? (
-                  <motion.svg
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ type: "spring", stiffness: 400, damping: 20 }}
-                    width="11" height="11" viewBox="0 0 11 11" fill="none"
-                  >
-                    <path d="M2 5.5L4.5 8L9 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                  </motion.svg>
+                  <motion.span className="flex" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={tickPop}>
+                    <Check size={11} aria-hidden />
+                  </motion.span>
                 ) : (
-                  <span style={{ color: isActive ? "hsl(var(--primary) / 0.7)" : "hsl(225 10% 35%)", fontSize: "0.6rem" }}>
-                    {i + 1}
-                  </span>
+                  <span className="font-data text-xxs tabular-nums">{i + 1}</span>
                 )}
                 {label}
               </motion.div>
@@ -325,14 +276,13 @@ export default function CreationQuestionScreen({
           <div className="flex-1" />
           {mode === "voice" && isRecording && (
             <motion.div
-              className="flex items-center gap-2 rounded-lg px-3 py-1.5 shadow-md"
-              style={{ background: "hsla(225, 20%, 8%, 0.85)" }}
+              className="flex items-center gap-xs rounded-full bg-card px-s py-xxs"
               initial={{ opacity: 0, x: 8 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.25 }}
+              transition={transitionSmall}
             >
-              <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-              <span className="text-sm text-primary font-mono font-medium tabular-nums">
+              <span className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+              <span className="font-data text-s font-medium tabular-nums text-color-1">
                 {formatDuration(elapsed)}
               </span>
             </motion.div>
@@ -340,35 +290,25 @@ export default function CreationQuestionScreen({
         </div>
       </motion.div>
 
-      {/* Question — centre stage. Long Cerebras follow-ups get a smaller size,
-          and the block scrolls rather than hiding the hint behind the CTA. */}
+      {/* Question — centre stage. The block scrolls rather than hiding the hint behind the CTA. */}
       <motion.div
-        className="flex-1 min-h-0 flex flex-col px-6 overflow-y-auto"
+        className="flex-1 min-h-0 flex flex-col px-l overflow-y-auto"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {/* my-auto centres when there's room and scrolls from the top when there isn't */}
-        <div className="my-auto py-2 flex flex-col items-start gap-4">
+        <div className="my-auto py-xs flex flex-col items-start gap-m">
           <motion.h2
-            variants={questionItem}
-            className="font-serif leading-tight tracking-tight"
-            style={{
-              fontSize: question.text.length > 70 ? "clamp(1.6rem, 7vw, 2.3rem)" : "clamp(2rem, 8.5vw, 3rem)",
-              fontWeight: 600,
-              color: "hsl(40 20% 95%)",
-            }}
+            variants={questionFadeUp}
+            className="font-editorial text-l sm:text-xl font-medium text-foreground"
             data-testid="creation-question"
           >
             {question.text}
           </motion.h2>
 
           {question.subtext && (
-            <motion.p
-              variants={item}
-              className="text-base leading-relaxed"
-              style={{ color: "hsl(225 10% 55%)", fontWeight: 300 }}
-            >
+            <motion.p variants={fadeUp} className="text-m text-neutral-8">
               {question.subtext}
             </motion.p>
           )}
@@ -377,33 +317,26 @@ export default function CreationQuestionScreen({
 
       {/* Wave / Textarea + CTA */}
       <motion.div
-        className="flex flex-col items-center gap-5 px-6 pb-safe"
+        className="flex flex-col items-center gap-m px-l pb-safe"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {micDeniedNotice && mode === "text" && (
           <motion.div
-            variants={item}
-            className="w-full text-center text-xs rounded-2xl px-4 py-2"
-            style={{ color: "hsl(225 10% 55%)", background: "hsl(225 15% 10%)" }}
+            variants={fadeUp}
+            className="w-full text-center text-xs text-muted-foreground rounded-s bg-card px-m py-xs"
           >
             Mic unavailable — type your answer instead
           </motion.div>
         )}
 
-        {/* Live transcript tail (creator follow-ups) */}
+        {/* Live transcript tail (creator follow-ups). The line clamp is structural:
+            it keeps the newest words visible. */}
         {captureTranscript && mode === "voice" && liveText && (
           <p
-            className="w-full text-sm leading-relaxed"
-            style={{
-              color: "hsl(225 10% 58%)",
-              fontWeight: 300,
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-            }}
+            className="w-full text-s text-muted-foreground"
+            style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
             aria-live="polite"
             data-testid="live-transcript"
           >
@@ -416,11 +349,11 @@ export default function CreationQuestionScreen({
           {mode === "voice" ? (
             <motion.div
               key="waveform"
-              variants={item}
+              variants={fadeUp}
               className="w-full h-16"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+              exit={{ opacity: 0, transition: transitionSmall }}
             >
               <VoiceWave analyser={analyser} isRecording={isRecording} />
             </motion.div>
@@ -429,22 +362,16 @@ export default function CreationQuestionScreen({
               key="textarea"
               className="w-full"
               initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } }}
-              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+              animate={{ opacity: 1, y: 0, transition: transitionLarge }}
+              exit={{ opacity: 0, transition: transitionSmall }}
             >
-              <textarea
+              <Textarea
                 ref={textareaRef}
                 value={textValue}
                 onChange={(e) => setTextValue(e.target.value)}
                 placeholder="Type your answer..."
                 rows={4}
                 data-testid="creation-textarea"
-                className="w-full resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed focus:outline-none focus:ring-1"
-                style={{
-                  background: "hsl(225 15% 10%)",
-                  color: "hsl(40 20% 95%)",
-                  border: "1px solid hsl(225 15% 18%)",
-                }}
               />
             </motion.div>
           )}
@@ -452,11 +379,7 @@ export default function CreationQuestionScreen({
 
         {/* Status text (voice mode only) */}
         {mode === "voice" && (
-          <motion.p
-            variants={item}
-            className="text-xs"
-            style={{ color: "hsl(225 10% 45%)" }}
-          >
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground">
             {!hasStarted
               ? "Starting microphone..."
               : isRecording
@@ -465,59 +388,35 @@ export default function CreationQuestionScreen({
           </motion.p>
         )}
 
-        {/* Escape hatch toggle — pill-sized tap target */}
-        <motion.button
-          type="button"
-          onClick={mode === "voice" ? switchToText : switchToVoice}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1, transition: { duration: 0.35, delay: 0.4 } }}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-full text-sm cursor-pointer transition-colors"
-          style={{
-            background: "hsl(225 15% 10%)",
-            color: "hsl(225 10% 50%)",
-            border: "1px solid hsl(225 15% 18%)",
-          }}
-          whileHover={{ borderColor: "hsl(225 15% 25%)", color: "hsl(225 10% 65%)" }}
-          whileTap={{ scale: 0.96 }}
-        >
-          {mode === "voice" ? (
-            <>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path d="M2 8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2zm4 2v.01m4-.01v.01m4-.01v.01m4-.01v.01M6 14v.01M18 14v.01M10 14l4 .01"/></svg>
-              Type instead?
-            </>
-          ) : (
-            <>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-              Switch to voice
-            </>
-          )}
-        </motion.button>
+        {/* Escape hatch toggle */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { ...transitionLarge, delay: 0.4 } }}>
+          <Button type="button" variant="outline" size="sm" onClick={mode === "voice" ? switchToText : switchToVoice}>
+            {mode === "voice" ? (
+              <>
+                <Keyboard size={16} aria-hidden />
+                Type instead?
+              </>
+            ) : (
+              <>
+                <Mic size={16} aria-hidden />
+                Switch to voice
+              </>
+            )}
+          </Button>
+        </motion.div>
 
         {/* CTA */}
-        <motion.button
-          variants={item}
-          onClick={handleNext}
-          disabled={!canSubmit}
-          data-testid="creation-next"
-          className="w-full py-5 rounded-2xl font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{
-            fontWeight: 700,
-            background: "hsl(var(--primary))",
-            color: "hsl(var(--primary-foreground))",
-          }}
-          whileTap={
-            canSubmit
-              ? { scale: 0.96, transition: { duration: 0.07 } }
-              : {}
-          }
-          whileHover={
-            canSubmit
-              ? { filter: "brightness(1.12)", transition: { duration: 0.12 } }
-              : {}
-          }
-        >
-          {busy ? "Thinking…" : ctaLabel ?? (isLast ? "Finish" : "Next")}
-        </motion.button>
+        <motion.div variants={fadeUp} className="w-full">
+          <Button
+            size="lg"
+            className="w-full"
+            onClick={handleNext}
+            disabled={!canSubmit}
+            data-testid="creation-next"
+          >
+            {busy ? "Thinking…" : ctaLabel ?? (isLast ? "Finish" : "Next")}
+          </Button>
+        </motion.div>
       </motion.div>
     </div>
   );

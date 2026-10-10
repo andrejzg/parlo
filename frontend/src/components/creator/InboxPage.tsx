@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
+import { Layers, Mail, MessageSquare, Star } from "lucide-react";
 import {
   fetchNotifications,
   markNotificationsRead,
   type Notification,
   type LinkedInProfile,
 } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import { transitionLarge } from "@/lib/animations";
 import BottomTabBar from "./BottomTabBar";
 
 interface InboxPageProps {
@@ -35,42 +38,13 @@ function timeAgo(dateStr: string): string {
   return `${diffWeek}w`;
 }
 
+/** Notification category glyph; colour comes from the parent's text utility. */
 function NotificationIcon({ type }: { type: string }) {
-  const color = "hsl(22 95% 62%)";
-
-  if (type === "milestone") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-      </svg>
-    );
-  }
-
-  if (type === "featured") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2L2 7l10 5 10-5-10-5z" />
-        <path d="M2 17l10 5 10-5" />
-        <path d="M2 12l10 5 10-5" />
-      </svg>
-    );
-  }
-
-  if (type === "parlo_invite") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-        <polyline points="22,6 12,13 2,6" />
-      </svg>
-    );
-  }
-
+  if (type === "milestone") return <Star size={18} aria-hidden />;
+  if (type === "featured") return <Layers size={18} aria-hidden />;
+  if (type === "parlo_invite") return <Mail size={18} aria-hidden />;
   // Default: new_response — speech bubble
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
+  return <MessageSquare size={18} aria-hidden />;
 }
 
 export default function InboxPage({
@@ -140,139 +114,89 @@ export default function InboxPage({
   };
 
   return (
-    <div
-      className="flex flex-col h-full overflow-hidden"
-      style={{ background: "hsl(225 25% 4%)" }}
-    >
+    <div className="flex flex-col h-full overflow-hidden bg-background">
       {/* Header */}
-      <div className="shrink-0 pt-14 pb-2 px-6">
-        <h1
-          className="font-display text-xl font-bold"
-          style={{ color: "hsl(40 20% 95%)" }}
-        >
+      <div className="shrink-0 pt-xxl pb-xs px-l">
+        <h1 className="font-brand text-l font-heavy text-foreground">
           Inbox
         </h1>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-24">
+      {/* Content — pb-24 clears the 72px tab bar plus its safe-area padding */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-l pb-24">
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="flex items-center gap-2 opacity-45">
-              <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-              <span
-                className="text-xs font-display tracking-widest uppercase"
-                style={{ color: "hsl(225 10% 55%)" }}
-              >
+          <div className="flex items-center justify-center py-xxl">
+            <div className="flex items-center gap-xs text-muted-foreground">
+              <span className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+              <span className="font-brand text-xs font-medium tracking-xl uppercase">
                 Loading
               </span>
             </div>
           </div>
         ) : notifications.length === 0 ? (
           <motion.div
-            className="flex flex-col items-center justify-center py-20 gap-4"
+            className="flex flex-col items-center justify-center py-xxl"
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
+            transition={transitionLarge}
           >
-            <div
-              className="w-16 h-16 rounded-full flex items-center justify-center"
-              style={{ background: "hsl(225 15% 10%)" }}
-            >
-              <svg
-                width="28"
-                height="28"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="hsl(225 10% 30%)"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-            </div>
-            <p
-              className="text-sm font-display"
-              style={{ color: "hsl(225 10% 40%)" }}
-            >
+            <p className="text-s text-muted-foreground">
               No notifications yet
             </p>
           </motion.div>
         ) : (
-          <div className="space-y-2 mt-2">
+          <div className="space-y-xs mt-xs">
             {notifications.map((notif, idx) => (
               <motion.button
                 key={notif.id}
                 onClick={() => handleTap(notif)}
-                className="flex items-start gap-3 w-full rounded-2xl px-4 py-4 text-left"
-                style={{
-                  background: "hsl(225 15% 10%)",
-                  border: "1px solid hsl(225 15% 14%)",
-                }}
+                className="flex items-start gap-s w-full rounded-m bg-card p-m text-left transition-colors hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring"
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.03, duration: 0.3 }}
+                transition={{ ...transitionLarge, delay: idx * 0.03 }}
               >
                 {/* Unread dot */}
-                <div className="flex items-center justify-center w-3 pt-1.5 shrink-0">
+                <div className="flex items-center justify-center w-3 pt-xs shrink-0">
                   {!notif.read && (
-                    <div
-                      className="w-2 h-2 rounded-full"
-                      style={{ background: "hsl(22 95% 62%)" }}
-                    />
+                    <div className="w-2 h-2 rounded-full bg-color-1" />
                   )}
                 </div>
 
                 {/* Icon */}
-                <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                  style={{ background: "hsl(22 95% 62% / 0.12)" }}
-                >
+                <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 mt-xxs bg-color-1-transparent text-color-1">
                   <NotificationIcon type={notif.type} />
                 </div>
 
                 {/* Text */}
                 <div className="flex-1 min-w-0">
-                  <p
-                    className="text-sm leading-snug"
-                    style={{
-                      color: "hsl(40 20% 95%)",
-                      fontWeight: notif.read ? 400 : 600,
-                    }}
-                  >
+                  <p className={`text-s text-foreground ${notif.read ? "font-regular" : "font-medium"}`}>
                     {notif.title}
                   </p>
                   {notif.body && (
-                    <p
-                      className="text-xs mt-1 leading-relaxed line-clamp-2"
-                      style={{ color: "hsl(225 10% 45%)" }}
-                    >
+                    <p className="text-xs text-muted-foreground mt-xxs line-clamp-2">
                       {notif.body}
                     </p>
                   )}
                 </div>
 
                 {/* Time */}
-                <span
-                  className="text-[11px] font-display shrink-0 pt-0.5"
-                  style={{ color: "hsl(225 10% 40%)" }}
-                >
+                <span className="font-data text-xxs tabular-nums text-muted-foreground shrink-0 pt-xxs">
                   {timeAgo(notif.createdAt)}
                 </span>
               </motion.button>
             ))}
 
             {hasMore && (
-              <button
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="w-full"
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="w-full py-3 text-center text-sm font-display"
-                style={{ color: "hsl(22 95% 62%)" }}
               >
                 {loadingMore ? "Loading..." : "Load more"}
-              </button>
+              </Button>
             )}
           </div>
         )}

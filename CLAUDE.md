@@ -8,6 +8,7 @@ Voice interview app. Creators speak (or type) their agent config, share via What
 2. **Update this file** whenever you add or change an API endpoint, rename a key, add a new service, or discover a new pitfall. Keep it in sync with the code.
 3. **Verify API response shapes** by reading the actual backend route handler before writing frontend code that calls it. Do not guess field names.
 4. **Use the exact deploy commands** listed below. Getting these wrong deploys to the wrong target.
+5. **For UI work, follow `GUI.md`** (project root) and the Parlo1 theme references in `gui/`. Use the `graphical-ui` skill to build or edit screens with the current theme, `graphical-convert` to bring old UI onto it, and `graphical-audit` to find theme drift. The skills live in `.agents/skills/`; read them directly if your harness doesn't surface them.
 
 ## Project Structure
 
@@ -104,6 +105,17 @@ Returns:
 }
 ```
 
+### POST /api/surveys/:id/intro/upload-url
+Fresh one-time presigned URL for the creator's voice intro (`surveys/{id}/intro.webm`). Needed because the upload URLs from `POST /api/surveys` expire after 10 min and the intro is recorded at the end of the flow.
+Returns: `{uploadUrl: "string"}`
+
+### PUT /api/surveys/:id/intro
+Mark the intro as uploaded. Body: `{durationMs: number}`. Checks the object exists in R2 (409 if not), writes `intro_r2_key` + `intro_duration_ms` on the `surveys` row, and transcribes it with Whisper via `waitUntil()` into `intro_transcript`.
+Returns: `{success: true, durationMs: number}`
+
+### DELETE /api/surveys/:id/intro
+Removes the R2 object and nulls the three `intro_*` columns. Returns `{success: true}`.
+
 ### GET /api/s/:code
 Get survey for participant. Returns:
 ```json
@@ -112,10 +124,11 @@ Get survey for participant. Returns:
   "title": "string | null",
   "status": "string",
   "questions": [{"id": "string", "survey_id": "string", "sort_order": number, "text": "string", "hint": "string | null"}],
-  "audioKeys": [{"questionKey": "string", "audioR2Key": "string"}]
+  "audioKeys": [{"questionKey": "string", "audioR2Key": "string"}],
+  "intro": {"audioUrl": "string (signed, 1h)", "durationMs": number, "transcript": "string | null"} | null
 }
 ```
-Note: Frontend must map this to its own Survey type (see api/client.ts useGetSurvey).
+Note: Frontend must map this to its own Survey type (see api/client.ts useGetSurvey). `audioKeys` comes from the `survey_audio` table, which nothing writes to — it's always empty.
 
 ### POST /api/s/:code/responses
 Start a response session. Returns:
@@ -144,7 +157,7 @@ Returns:
 ```
 
 ### GET /api/og/:code.png
-Open Graph preview image for share URLs. Generates a unique 1200×630 PNG per survey in Vienna Secession style (tiled SVG pattern, cream card with title).
+Open Graph preview image for share URLs. Generates a unique 1200×630 PNG per survey in the Parlo1 style: black canvas with a subtle seeded tile texture (neutral-4), one flat neutral-2 card (radius 42, no border), the title in Open Runde Bold (fetched from `parlo.me/fonts/open-runde/OpenRunde-Bold.woff` at render time and edge-cached; falls back to the library default font if unavailable), and an accent pill with black text.
 - `:code` may be a slug like `lemonade-pirates-2rbee8p6` — only the trailing 6-12 char alphanumeric segment is used.
 - Uses `workers-og` (Satori port for Workers) to render an HTML/CSS template to PNG.
 - Cached at the edge: `Cache-Control: public, max-age=86400, s-maxage=604800`.
@@ -209,15 +222,21 @@ Returns:
 ## Creator flow (agent brief)
 
 ```
-welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → building → review → phone → otp → linkedin → ready
+welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → building → review → intro → phone → otp → linkedin → ready
 ```
 
 - **Brief** (`components/creator/BriefScreen.tsx`): one screen, mic auto-starts, the creator describes their research agent in one go. Five checklist items (`lib/briefChecklist.ts`: audience, goal, purpose, tone, length) tick green live. `hooks/useLiveTranscript.ts` streams words (Web Speech API first, Whisper polling via `/transcribe` as fallback); `hooks/useBriefChecklist.ts` debounces the transcript ~650 ms and calls `/brief/evaluate` (TypeSafe Jev). "Continue" unlocks when all five are ticked; a subtle "Continue without the rest" link appears once 3+ are ticked so nobody gets stuck. "Type instead" keeps the heard text in the textarea; switching back to voice seeds the transcript with what was typed. The recording is uploaded to `surveys/{id}/brief.webm` in the background for future use; only the transcript feeds the pipeline today.
 - **Clarify** (`CreationQuestionScreen` with `transcriptSurveyId`, `progressLabel`, `ctaLabel`): one Cerebras follow-up per screen via `/clarify`. The live transcript means the answer text is ready the moment the creator taps Continue, so the next question appears in ~0.5 s. Back re-opens the previous follow-up (or the brief) in text mode with the answer editable.
 - **Checkpoint** (`CheckpointScreen.tsx`): after answer 2, then every answer where `isClarifyCheckpoint(n)` holds (5, 10, 15…): "Create agent" or "Ask me more". Hard cap `MAX_CLARIFICATIONS = 20`.
-- **Building/Review/Ready**: unchanged. `handleGenerate` posts `{brief, clarifications}`.
+- **Building/Review**: unchanged. `handleGenerate` posts `{brief, clarifications}`.
+- **Intro** (`components/creator/IntroScreen.tsx`): after "Confirm & go live" the creator records a ≤60 s voice hello that participants hear on the welcome screen. Tap-to-record (not auto-start — it's a small performance), playback via `VoiceNotePill` with a bin to re-take, "Use this hello" or "Skip for now" (always available; mic denial just leaves skip). `handleIntroContinue` uploads in the background: `fetchIntroUploadUrl` → `uploadAudioBlob` → `saveIntro`; the share link works whether or not the upload lands. The phone screen's Back goes to `intro`, not `review`.
+- **Ready**: unchanged.
 - Checklist ids/order are duplicated in `frontend/src/lib/briefChecklist.ts` and `backend/src/services/brief.ts` — change both together.
 - The legacy two-question flow (`CREATION_QUESTIONS`, audience/gather) is no longer reachable from the UI; the MCP server still uses the legacy generate mode.
+
+## Creator voice intro (participant side)
+
+`useGetSurvey` maps `intro` from `GET /api/s/:code` to `survey.intro?: {audioUrl, durationMs, transcript?}`. `WelcomeScreen` renders a read-only `VoiceNotePill` ("A hello from the person asking") between the description and the meta row when it's set. `VoiceNotePill`'s `onDelete` is optional — omit it for read-only playback. Columns: `surveys.intro_r2_key`, `intro_duration_ms`, `intro_transcript` (migration `0011_survey_intro.sql`).
 
 ## Question types
 
@@ -276,7 +295,7 @@ Survey share URLs (`/s/*`) get dynamic OG meta tags via a Cloudflare Pages Funct
 
 Pages Functions are scoped to `/s/*` and `/api/*` via `frontend/public/_routes.json` — without this, Pages would invoke the Function on every request.
 
-OG images are generated dynamically by the backend Worker at `GET /api/og/:code.png` using `workers-og` (Satori port). Each survey gets a unique deterministic Vienna Secession-style design (tiled pattern + cream card with title).
+OG images are generated dynamically by the backend Worker at `GET /api/og/:code.png` using `workers-og` (Satori port). Each survey gets a unique deterministic texture variant on the Parlo1 black canvas; the palette constants in `backend/src/routes/og.ts` mirror the dark-mode tokens in `gui/themes/parlo1.md` (the Worker has no CSS variables).
 
 ## WhatsApp (Kapso)
 
@@ -316,7 +335,16 @@ WARNING: Running `wrangler deploy` from the backend directory without `--name pa
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
-- Orange accent color (hsl 22 95% 62%), Syne (display) + Inter (body) sans pairing for UI; Cormorant Garamond serif (`font-serif`) reserved for big question headings (QuestionScreen / PhotoQuestionScreen / VideoQuestionScreen / CreationQuestionScreen) and the unlogged-in landing headline (CreateLanding) — evokes 1980s Apple marketing type, i.e. ITC Garamond Condensed used on Mac manuals and "Think Different" era ads. Do not apply `font-serif` elsewhere.
+- **Parlo1 design language** (Graphical theme, adopted 2026-10-10). Source of truth: `GUI.md` + `gui/themes/parlo1.md` (values) + `gui/themes/parlo1-components.md` (per-component assignments). Runtime tokens are CSS variables in `frontend/src/index.css`; `frontend/tailwind.config.ts` replaces Tailwind's default palette/type/radius/shadow scales with theme vocabulary, so only theme utilities exist:
+  - Colours: `neutral-1…10` (+`-transparent`), `color-1…4` (+`-transparent`), `success` / `warning` / `error` (+`-transparent`), plus the shadcn roles `background`, `foreground`, `card`, `popover`, `primary`, `secondary`, `muted`, `accent`, `destructive`, `border`, `input`, `ring`, and `badge` / `nav-active` for the accent-on-fill roles. `primary` is **neutral-10** (white in dark, black in light) — the theme's primary action colour; the red-orange accent `color-1` (#dd4222) is for indicators, waveforms, progress, active nav and focus, never for button fills. Text on an accent fill is black (`text-badge-foreground`). `linkedin` is a documented third-party brand exception.
+  - Type: one family, Open Runde (`public/fonts/open-runde/`, OFL), via font roles `font-ui` / `font-brand` / `font-editorial` / `font-data`; steps `text-xxs … text-xxl` carry line height + tracking (never add `leading-*`); weights `font-regular` (400) / `font-medium` (700) / `font-heavy` (900 → falls back to Bold, the family has no Black face); tracking `tracking-xs…xl`. Roles: screen titles `font-brand text-l sm:text-xl font-heavy`; big question headings `font-editorial text-l sm:text-xl font-medium`; uppercase labels `font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground`; numbers/timers `font-data tabular-nums`.
+  - Spacing: `xxs 4 · xs 8 · s 12 · m 16 · l 24 · xl 32 · xxl 48` as `p-m`, `gap-s`, `px-l`… (numeric classes remain for widths/heights/offsets only). Radii `rounded-xs 8 · s 16 · m 23 · l 29 · xl 42 · full`; buttons are pills, inputs `rounded-s`, cards `rounded-m`.
+  - Surfaces: no native borders anywhere (border width tokens are 0). Flat fills: canvas `bg-background`, cards `bg-card` (neutral-2), inputs/chips `bg-muted` (neutral-3). A needed edge is an inset shadow: `shadow-edge`, `shadow-edge-t/b/l/r`, `shadow-edge-accent`. Elevation only on popups/toasts: `shadow-m`.
+  - Motion: `--motion-duration` 160 ms / `--motion-large-duration` 280 ms / easing `cubic-bezier(.16,1,.3,1)`, press = 1 px (`active:translate-y-press`), popup scale 0.96. Framer values live in `frontend/src/lib/animations.ts` (`transitionSmall`, `transitionLarge`, `press`, `fadeUp`, `stagger`, `pageVariants`). `transition-colors` already uses the theme duration/easing; `duration-large ease-large` for large surfaces.
+  - Icons: `lucide-react` (outline; the theme's "filled" style is a known gap). Decorative icons get `aria-hidden`; colour via `currentColor`.
+  - Modes: both light and dark tokens are defined; the app's established mode is dark, set by `class="dark"` on `<html>` in `index.html`. Sonner reads that class.
+  - Shared components (`frontend/src/components/ui/`): `Button` (variants default/secondary/outline/ghost/destructive/link; sizes default 44 px, `sm`, `lg` 56 px for the main bottom CTA, `icon`), `Input`, `Textarea`, `Label`, `Select`, `Switch`, `Toast`/`Sonner`, `Tooltip`. Prefer them over hand-styled buttons/inputs.
+  - Gaps vs. the reference, resolved locally: `controlSize` names (checkbox/switch/track) map to the same-named spacing tokens; Open Runde has no 900 weight; Lucide has no filled set.
 - Voice-first with "Type instead" escape hatch (auto-switches on mic denial)
 - `pb-safe` utility class for safe-area-inset-bottom on all screens with bottom CTAs
 - `h-svh` uses `100dvh` (dynamic viewport height) for mobile browser chrome handling
@@ -384,7 +412,7 @@ Test fixtures in `e2e/fixtures/`:
 
 Current specs:
 - `e2e/participant/happy-path.spec.ts` — functional flow tests (voice recording, mic-denial text mode, session restore). **Note**: this file's `fillPIIAndSubmit` helper references first/last-name screens that no longer exist in the current flow — consider stale until refactored.
-- `e2e/device-audit.spec.ts` — visual audit across **iPhone SE / Pixel 7 / iPhone 15 Pro Max**. Two passes per device: (1) voice-only happy path captures welcome → consent → voice Q → review → phone, (2) two mini mixed-type surveys capture the welcome/consent/capture screens for photo and video. 33 screenshots total dropped in `/tmp/parlo-<device>/`. ~60s runtime. Use this whenever you touch participant-facing UI — grep for layout regressions across small / medium / large viewports in one shot.
+- `e2e/device-audit.spec.ts` — visual audit across **iPhone SE / Pixel 7 / iPhone 15 Pro Max**. Two passes per device: (1) voice-only happy path captures welcome → consent → voice Q → review → phone, (2) two mini mixed-type surveys capture the welcome/consent/capture screens for photo and video. 33 screenshots total dropped in `/tmp/parlo-<device>/`. ~60s runtime. **Known failure (as of 2026-10-10):** pass 3 times out waiting for "All done!" because the participant flow now has a LinkedIn-connect stage after review that the spec predates — `08-stuck.png` shows it. Passes 1–2 still produce every welcome/consent/capture screenshot, so the run is still useful; just don't trust the exit code. Use this whenever you touch participant-facing UI — grep for layout regressions across small / medium / large viewports in one shot.
 - `e2e/creator/brief-flow.spec.ts` — the creator flow on the same three devices, in "Type instead" mode with `/surveys`, `/brief/evaluate`, `/clarify`, `/generate` stubbed: brief (partial → complete ticks, CTA gating) → 2 follow-ups → checkpoint → 3 more → checkpoint → building → review with voice/photo/video badges. 8 screenshots per device in `$PARLO_SHOTS_DIR/parlo-creator-<device>/` (`/tmp` by default). Playwright's Chromium has no speech engine, so the voice path can't be covered here — test it on a real phone.
 
 **Important**: Playwright specs need a running preview server, NOT the Vite dev server — `npm run dev` doesn't load `.env.production`, so Firebase init throws `auth/invalid-api-key` and the React app never mounts (blank white page in screenshots). Start a preview server first:
@@ -414,4 +442,7 @@ The `playwright.config.ts` `webServer` hook is set to `npm run dev`, which is co
 13. **Welcome/Consent copy adapts to media mix**: Don't hardcode "voice responses" / "Start recording" strings — use `getMediaMix()` from `lib/mediaMix.ts`. See the "Media-mix copy adaptation" section above.
 14. **Secret sync must run before `wrangler deploy` in CI**: `wrangler secret bulk` PATCHes Worker settings and re-sends the non-secret bindings it reads back. On 2026-10-09 that read raced the deploy that had just finished and the PATCH wiped D1/R2/KV/AI, so every request 500'd with `Cannot read properties of undefined (reading 'get')`. `deploy.yml` now syncs secrets first, deploys last (bindings from `wrangler.toml` always win, secrets are kept), and a "Verify Worker bindings" step fails the job if DB/AUDIO_BUCKET/KV/AI are missing. If you ever see that error in prod, re-run the backend deploy command — it restores the bindings.
 15. **Web Speech API isn't everywhere**: `useLiveTranscript` falls back to Whisper (`/transcribe`) when `SpeechRecognition` is missing, errors with `network`/`not-allowed`/etc., or the watchdog hears voice for 2.5 s with no words after 8 s. Chrome restarts recognition every ~60 s (handled in `onend`); Safari and Chrome disagree on `resultIndex`, so results are always rebuilt from the full `results` list. Firefox and Playwright's Chromium always use the fallback.
-16. **Brief checklist ids live in two places**: `frontend/src/lib/briefChecklist.ts` (labels/hints) and `backend/src/services/brief.ts` (TypeSafe rubric). Keep ids and order identical.
+16. **D1 migration tracker was out of sync**: 0009 and 0010 were applied by hand without being recorded, so `wrangler d1 migrations apply parlo --remote` failed on 0009 with "duplicate column". Fixed on 2026-10-10 by backfilling `d1_migrations` rows for 0009–0011; `migrations apply` is clean again. If a future apply fails with a duplicate column, check `SELECT name FROM d1_migrations` against `PRAGMA table_info(...)` before re-running anything.
+17. **Brief checklist ids live in two places**: `frontend/src/lib/briefChecklist.ts` (labels/hints) and `backend/src/services/brief.ts` (TypeSafe rubric). Keep ids and order identical.
+18. **`wrangler pages deploy` ships the current git branch**: Pages production (`parlo.me`) is the `main` branch deployment. Running the documented frontend deploy command from a feature branch creates a *preview* deployment at `https://<branch>.parlo-d04.pages.dev` and leaves production untouched. To ship a feature branch to production deliberately, add `--branch main`. The backend command has no branch concept — it always deploys `api.parlo.me`.
+19. **Pages answers unknown paths with 200 HTML (SPA fallback)**: anything that fetches a static asset from `parlo.me` (e.g. the OG route loading `fonts/open-runde/OpenRunde-Bold.woff`) must validate the bytes, not just `res.ok` — on 2026-10-10 the Worker cached that HTML as "font data" and the OG endpoint streamed empty 200 PNGs until fixed. `routes/og.ts` now checks the WOFF magic, renders the PNG into memory before responding, and returns `no-store` on failure.

@@ -1,10 +1,16 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
+import { Pause, Play, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { press, transitionSmall } from "@/lib/animations";
 
 interface VoiceNotePillProps {
   url: string;
   durationMs: number;
-  onDelete: () => void;
+  /** Omit to hide the delete button (read-only playback). */
+  onDelete?: () => void;
+  /** Surface override, e.g. `bg-muted` when the pill sits inside a `bg-card` card. */
+  className?: string;
 }
 
 function formatDuration(ms: number) {
@@ -14,7 +20,7 @@ function formatDuration(ms: number) {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-export default function VoiceNotePill({ url, durationMs, onDelete }: VoiceNotePillProps) {
+export default function VoiceNotePill({ url, durationMs, onDelete, className }: VoiceNotePillProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -24,7 +30,10 @@ export default function VoiceNotePill({ url, durationMs, onDelete }: VoiceNotePi
   const rafRef = useRef<number>(0);
 
   useEffect(() => {
-    const audio = new Audio(url);
+    const audio = new Audio();
+    // Load on first play: feeds render many pills, each pointing at a signed URL.
+    audio.preload = "none";
+    audio.src = url;
     audioRef.current = audio;
 
     const handleEnded = () => {
@@ -122,31 +131,23 @@ export default function VoiceNotePill({ url, durationMs, onDelete }: VoiceNotePi
 
   return (
     <motion.div
-      className="w-full flex items-center gap-3 rounded-2xl px-4 py-4"
-      style={{ background: "hsl(225 15% 11%)", border: "1px solid hsl(225 15% 18%)" }}
+      className={cn("w-full flex items-center gap-s rounded-m bg-card px-m py-s", className)}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+      transition={transitionSmall}
     >
       {/* Play/Pause — 44px touch target */}
       <motion.button
         type="button"
         onClick={togglePlay}
-        className="shrink-0 flex items-center justify-center w-11 h-11 rounded-full transition-colors"
-        style={{ background: isPlaying ? "hsl(var(--primary) / 0.2)" : "hsl(var(--primary) / 0.12)" }}
-        whileTap={{ scale: 0.9 }}
-        whileHover={{ background: "hsl(var(--primary) / 0.25)" }}
+        className="shrink-0 flex items-center justify-center w-11 h-11 rounded-full bg-secondary text-secondary-foreground transition-colors hover:bg-neutral-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring"
+        whileTap={press}
         aria-label={isPlaying ? "Pause" : "Play"}
       >
         {isPlaying ? (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="hsl(var(--primary))" stroke="none">
-            <rect x="6" y="4" width="4" height="16" rx="1" />
-            <rect x="14" y="4" width="4" height="16" rx="1" />
-          </svg>
+          <Pause size={18} fill="currentColor" aria-hidden />
         ) : (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="hsl(var(--primary))" stroke="none" style={{ marginLeft: 2 }}>
-            <path d="M8 5v14l11-7z" />
-          </svg>
+          <Play size={18} fill="currentColor" className="ml-px" aria-hidden />
         )}
       </motion.button>
 
@@ -170,41 +171,30 @@ export default function VoiceNotePill({ url, durationMs, onDelete }: VoiceNotePi
           return (
             <div
               key={i}
-              className="flex-1 rounded-full"
-              style={{
-                height: `${h * 100}%`,
-                minHeight: 3,
-                background: isPast
-                  ? "hsl(var(--primary) / 0.85)"
-                  : "hsl(225 15% 20%)",
-                transition: "background-color 80ms ease",
-              }}
+              className={`flex-1 rounded-full transition-colors ${isPast ? "bg-color-1" : "bg-neutral-4"}`}
+              style={{ height: `${h * 100}%`, minHeight: 3 }}
             />
           );
         })}
       </div>
 
       {/* Duration */}
-      <span
-        className="shrink-0 text-xs font-medium tabular-nums"
-        style={{ color: "hsl(225 10% 50%)", minWidth: "2.5rem", textAlign: "right" }}
-      >
+      <span className="shrink-0 min-w-[2.5rem] text-right font-data text-xs tabular-nums text-muted-foreground">
         {displayTime}
       </span>
 
       {/* Delete — 44px touch target */}
-      <motion.button
-        type="button"
-        onClick={onDelete}
-        className="shrink-0 flex items-center justify-center w-11 h-11 -mr-1 rounded-full hover:bg-destructive/10 transition-colors"
-        whileTap={{ scale: 0.85 }}
-        aria-label="Delete recording"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="hsl(225 10% 38%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-        </svg>
-      </motion.button>
+      {onDelete && (
+        <motion.button
+          type="button"
+          onClick={onDelete}
+          className="shrink-0 flex items-center justify-center w-11 h-11 -mr-xxs rounded-full text-muted-foreground transition-colors hover:bg-error-transparent hover:text-error focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring"
+          whileTap={press}
+          aria-label="Delete recording"
+        >
+          <Trash2 size={16} aria-hidden />
+        </motion.button>
+      )}
     </motion.div>
   );
 }

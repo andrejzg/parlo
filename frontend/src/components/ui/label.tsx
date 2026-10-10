@@ -4,7 +4,8 @@ import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
 
-const labelVariants = cva("text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70");
+/** Parlo1 field label: text s / ui / medium / tracking l, neutral-6 when disabled. */
+const labelVariants = cva("font-ui text-s font-medium tracking-l text-foreground peer-disabled:cursor-not-allowed peer-disabled:text-neutral-6");
 
 const Label = React.forwardRef<
   React.ElementRef<typeof LabelPrimitive.Root>,

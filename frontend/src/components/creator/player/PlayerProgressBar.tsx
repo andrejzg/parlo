@@ -11,7 +11,7 @@ export default function PlayerProgressBar({
   activeProgress = 0,
 }: PlayerProgressBarProps) {
   return (
-    <div className="flex gap-1 w-full">
+    <div className="flex w-full gap-xxs">
       {Array.from({ length: totalSegments }).map((_, i) => {
         const isPast = i < activeSegment;
         const isActive = i === activeSegment;
@@ -21,15 +21,14 @@ export default function PlayerProgressBar({
         return (
           <div
             key={i}
-            className="flex-1 rounded-full overflow-hidden relative"
-            style={{
-              height: 3,
-              background: "hsl(225 10% 25%)",
-            }}
+            className="relative h-xxs flex-1 overflow-hidden rounded-full bg-muted"
           >
             <div
-              className={`absolute inset-y-0 left-0 rounded-full${isBuffering ? " progress-pulse" : ""}`}
+              className={`absolute inset-y-0 left-0 rounded-full ${
+                isPast || isCompleted ? "bg-neutral-8" : "bg-color-1"
+              }${isBuffering ? " progress-pulse" : ""}`}
               style={{
+                // Structural: fill width is the playback position.
                 width: isPast
                   ? "100%"
                   : isActive
@@ -37,24 +36,13 @@ export default function PlayerProgressBar({
                       ? "100%"
                       : `${activeProgress * 100}%`
                     : "0%",
-                background: isPast || isCompleted
-                  ? "hsl(40 20% 80%)"
-                  : "hsl(22 95% 62%)",
-                opacity: isBuffering ? undefined : 1,
               }}
             />
           </div>
         );
       })}
-      <style>{`
-        @keyframes progress-pulse {
-          0%, 100% { opacity: 0.15; }
-          50% { opacity: 0.4; }
-        }
-        .progress-pulse {
-          animation: progress-pulse 1.5s ease-in-out infinite;
-        }
-      `}</style>
+      {/* Status loop (segment is buffering) — keeps its own cadence like
+          rec-blink / pulse-ring in index.css rather than --motion-duration. */}
     </div>
   );
 }

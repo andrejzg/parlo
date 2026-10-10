@@ -8,12 +8,15 @@ import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen"
 import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import ReviewQuestionsScreen from "@/components/creator/ReviewQuestionsScreen";
+import IntroScreen, { type IntroResult } from "@/components/creator/IntroScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
 import PhoneScreen from "@/components/participant/PhoneScreen";
 import OtpScreen from "@/components/participant/OtpScreen";
 import CreatorSidebar, { MenuButton } from "@/components/creator/CreatorSidebar";
 import { VoiceAnswer } from "@/types/survey";
-import { pageVariants } from "@/lib/animations";
+import { fadeUp, pageVariants, popup, stagger } from "@/lib/animations";
+import { Check, CircleAlert } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
 import { forceReleaseSharedStream } from "@/hooks/useVoiceRecorder";
 import CreatorHome from "@/components/creator/CreatorHome";
@@ -21,7 +24,7 @@ import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import ListeningPlayer from "@/components/creator/player/ListeningPlayer";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, type MySurvey, type LinkedInProfile } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -43,9 +46,10 @@ import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
  *   welcome → brief (one screen, 5-item checklist ticks live via TypeSafe Jev)
  *           → clarify ×N (one Cerebras follow-up per screen)
  *           → checkpoint after answer 2, 5, 10, 15… ("Create agent" / "Ask me more")
- *           → building → review → phone/otp → linkedin → ready
+ *           → building → review → intro (voice hello, skippable)
+ *           → phone/otp → linkedin → ready
  */
-type Stage = "home" | "player" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "player" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -416,6 +420,25 @@ export default function CreatorPage() {
       );
     }
 
+    goForward("intro");
+  };
+
+  /**
+   * The creator recorded (or skipped) their voice hello. Upload it in the
+   * background — the share link works either way — then move on to auth.
+   */
+  const handleIntroContinue = (intro: IntroResult | null) => {
+    if (intro && surveyId) {
+      const id = surveyId;
+      fetchIntroUploadUrl(id)
+        .then((url) => uploadAudioBlob(url, intro.blob))
+        .then(() => saveIntro(id, intro.durationMs))
+        .catch((err) => {
+          captureException(err, { location: "CreatorPage.uploadIntro" });
+          toast.error("Couldn't save your hello. Your link still works.");
+        });
+    }
+
     // If returning device, skip phone/OTP — but still check LinkedIn
     if (devicePhone) {
       setPhone(devicePhone);
@@ -569,6 +592,8 @@ export default function CreatorPage() {
       ? "building"
       : stage === "review"
       ? "review"
+      : stage === "intro"
+      ? "intro"
       : stage === "ready"
       ? "ready"
       : stage === "phone"
@@ -595,12 +620,7 @@ export default function CreatorPage() {
         className="w-full flex items-center justify-center overflow-hidden bg-background"
         style={{ height: "var(--vvh, 100svh)" }}
       >
-        <div className="flex items-center gap-2 opacity-45">
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <span className="text-xs font-display tracking-widest uppercase" style={{ color: "hsl(225 10% 55%)" }}>
-            Parlo
-          </span>
-        </div>
+        <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">Parlo</span>
       </div>
     );
   }
@@ -634,7 +654,7 @@ export default function CreatorPage() {
           setScreenKey((k) => k + 1);
         }}
       />
-      <div className="relative w-full sm:max-w-[480px] h-full sm:max-h-[812px] overflow-hidden bg-background sm:rounded-2xl sm:border sm:border-border/30">
+      <div className="relative w-full sm:max-w-[480px] h-full sm:max-h-[812px] overflow-hidden bg-background sm:rounded-xl sm:shadow-edge">
         <AnimatePresence mode="sync" initial={false} custom={direction}>
           <motion.div
             key={pageKey}
@@ -792,29 +812,25 @@ export default function CreatorPage() {
             )}
             {stage === "building" && (
               buildError ? (
-                <div className="flex flex-col items-center justify-center h-full px-6 gap-6" style={{ background: "hsl(225 25% 4%)" }}>
-                  <div
-                    className="w-20 h-20 rounded-full flex items-center justify-center"
-                    style={{ background: "hsl(var(--destructive) / 0.15)" }}
-                  >
-                    <span className="text-3xl" style={{ color: "hsl(var(--destructive))" }}>!</span>
+                <div className="flex flex-col items-center justify-center h-full px-l gap-l bg-background text-center">
+                  <div className="w-20 h-20 rounded-full flex items-center justify-center bg-error-transparent text-error">
+                    <CircleAlert size={32} aria-hidden />
                   </div>
-                  <h2 className="font-display text-2xl text-center" style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}>
+                  <h2 className="font-brand text-l sm:text-xl font-heavy text-foreground">
                     Something went wrong
                   </h2>
-                  <p className="text-muted-foreground text-sm text-center">
+                  <p className="text-s text-muted-foreground">
                     We couldn't generate your questions. Please try again.
                   </p>
-                  <button
+                  <Button
                     onClick={() => {
                       setBuildError(false);
                       // Re-trigger building by bumping the screen key
                       setScreenKey((k) => k + 1);
                     }}
-                    className="px-8 py-3 rounded-xl bg-primary text-primary-foreground font-display font-semibold text-sm"
                   >
                     Retry
-                  </button>
+                  </Button>
                 </div>
               ) : (
                 <BuildingAgentScreen
@@ -830,6 +846,16 @@ export default function CreatorPage() {
                 onRegenerate={handleRegenerate}
               />
             )}
+            {stage === "intro" && (
+              <IntroScreen
+                onContinue={handleIntroContinue}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage("review");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
             {stage === "ready" && (
               <AgentReadyScreen
                 surveyCode={surveyCode}
@@ -843,7 +869,7 @@ export default function CreatorPage() {
                 onNext={handlePhone}
                 onBack={() => {
                   setDirection(-1);
-                  setStage(surveyId ? "review" : "welcome");
+                  setStage(surveyId ? "intro" : "welcome");
                   setScreenKey((k) => k + 1);
                 }}
                 initialValue={phone}
@@ -858,87 +884,61 @@ export default function CreatorPage() {
               />
             )}
             {stage === "linkedin-connect" && (
-              <div
-                className="flex flex-col items-center justify-between h-full px-6 py-14"
-                style={{ background: "hsl(225 25% 4%)" }}
+              <motion.div
+                className="flex flex-col items-center justify-between h-full px-l py-xxl bg-background"
+                variants={stagger}
+                initial="initial"
+                animate="animate"
               >
                 <div />
 
-                <motion.div
-                  className="flex flex-col items-center gap-6"
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <div
-                    className="w-20 h-20 rounded-full flex items-center justify-center"
-                    style={{ background: "#0A66C2" }}
-                  >
-                    <svg width="36" height="36" viewBox="0 0 24 24" fill="#fff">
+                <motion.div className="flex flex-col items-center gap-l" variants={fadeUp}>
+                  {/* LinkedIn's own glyph stays inline (third-party artwork); colour comes from the text utilities. */}
+                  <div className="w-20 h-20 rounded-full flex items-center justify-center bg-linkedin text-neutral-1 dark:text-neutral-10">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
                       <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
                     </svg>
                   </div>
 
-                  <div className="text-center space-y-3">
-                    <h1
-                      className="font-display text-2xl leading-tight"
-                      style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-                    >
+                  <div className="flex flex-col gap-s text-center">
+                    <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
                       Connect your LinkedIn
                     </h1>
-                    <p
-                      className="text-sm leading-relaxed font-light"
-                      style={{ color: "hsl(225 10% 50%)" }}
-                    >
+                    <p className="text-s text-muted-foreground">
                       We use LinkedIn to verify your identity and pull in your name and photo. It takes 5 seconds.
                     </p>
                   </div>
                 </motion.div>
 
-                <motion.button
-                  onClick={() => {
-                    saveCreatorSession();
-                    const apiBase = import.meta.env.VITE_API_URL || "/api";
-                    const p = devicePhone || phone;
-                    window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}`;
-                  }}
-                  className="w-full py-5 rounded-2xl font-display text-lg tracking-wide"
-                  style={{ fontWeight: 700, background: "#0A66C2", color: "#fff" }}
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3, duration: 0.4 }}
-                  whileTap={{ scale: 0.96, transition: { duration: 0.07 } }}
-                >
-                  Continue with LinkedIn
-                </motion.button>
-              </div>
+                <motion.div className="w-full" variants={fadeUp}>
+                  <Button
+                    size="lg"
+                    className="w-full bg-linkedin text-neutral-1 dark:text-neutral-10"
+                    onClick={() => {
+                      saveCreatorSession();
+                      const apiBase = import.meta.env.VITE_API_URL || "/api";
+                      const p = devicePhone || phone;
+                      window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}`;
+                    }}
+                  >
+                    Continue with LinkedIn
+                  </Button>
+                </motion.div>
+              </motion.div>
             )}
             {stage === "linkedin-success" && linkedInProfile && (
-              <div
-                className="flex flex-col items-center justify-between h-full px-6 py-14"
-                style={{
-                  background: "linear-gradient(180deg, hsl(210 80% 12%) 0%, hsl(210 60% 8%) 50%, hsl(225 25% 4%) 100%)",
-                }}
+              <motion.div
+                className="flex flex-col items-center justify-between h-full px-l py-xxl bg-background"
+                variants={stagger}
+                initial="initial"
+                animate="animate"
               >
                 <div />
 
-                <motion.div
-                  className="flex flex-col items-center gap-6"
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  {/* Checkmark ring */}
-                  <motion.div
-                    className="relative"
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ delay: 0.2, type: "spring", stiffness: 300, damping: 20 }}
-                  >
-                    <div
-                      className="w-28 h-28 rounded-full flex items-center justify-center"
-                      style={{ background: "hsl(210 70% 20% / 0.4)", border: "2px solid hsl(210 70% 35% / 0.3)" }}
-                    >
+                <div className="flex flex-col items-center gap-l">
+                  {/* Avatar ring */}
+                  <motion.div className="relative" variants={popup}>
+                    <div className="w-28 h-28 rounded-full flex items-center justify-center bg-muted">
                       {linkedInProfile.photoUrl ? (
                         <img
                           src={linkedInProfile.photoUrl}
@@ -946,80 +946,55 @@ export default function CreatorPage() {
                           className="w-24 h-24 rounded-full object-cover"
                         />
                       ) : (
-                        <div
-                          className="w-24 h-24 rounded-full flex items-center justify-center font-display text-3xl font-bold"
-                          style={{ background: "#0A66C2", color: "#fff" }}
-                        >
+                        <div className="w-24 h-24 rounded-full flex items-center justify-center bg-linkedin font-brand text-xl font-medium text-neutral-1 dark:text-neutral-10">
                           {(linkedInProfile.name ?? "?").charAt(0)}
                         </div>
                       )}
                     </div>
-                    {/* LinkedIn badge */}
+                    {/* LinkedIn badge — its ring is a shadow in the page background (no native stroke) */}
                     <motion.div
-                      className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full flex items-center justify-center"
-                      style={{ background: "#0A66C2", border: "3px solid hsl(210 60% 8%)" }}
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      transition={{ delay: 0.5, type: "spring", stiffness: 400, damping: 15 }}
+                      className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full flex items-center justify-center bg-linkedin text-neutral-1 dark:text-neutral-10 shadow-[0_0_0_3px_var(--background)]"
+                      variants={popup}
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff">
-                        <path d="M20 6L9 17l-5-5" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                      </svg>
+                      <Check size={16} aria-hidden />
                     </motion.div>
                   </motion.div>
 
-                  <motion.div
-                    className="text-center space-y-2"
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.35, duration: 0.4 }}
-                  >
-                    <h1
-                      className="font-display text-2xl leading-tight"
-                      style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-                    >
+                  <motion.div className="flex flex-col gap-xs text-center" variants={fadeUp}>
+                    <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
                       You're connected!
                     </h1>
-                    <p
-                      className="text-lg font-display font-semibold"
-                      style={{ color: "hsl(210 60% 70%)" }}
-                    >
+                    <p className="text-m font-medium text-foreground">
                       {linkedInProfile.name}
                     </p>
                     {linkedInProfile.email && (
-                      <p className="text-sm" style={{ color: "hsl(225 10% 45%)" }}>
+                      <p className="text-s text-muted-foreground">
                         {linkedInProfile.email}
                       </p>
                     )}
                   </motion.div>
-                </motion.div>
+                </div>
 
-                <motion.button
-                  onClick={() => {
-                    if (mySurveys.length > 0) {
-                      goForward("home");
-                    } else {
-                      goForward("welcome");
-                    }
-                  }}
-                  className="w-full py-5 rounded-2xl font-display text-lg tracking-wide"
-                  style={{
-                    fontWeight: 700,
-                    background: "#0A66C2",
-                    color: "#fff",
-                  }}
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.6, duration: 0.4 }}
-                  whileTap={{ scale: 0.96, transition: { duration: 0.07 } }}
-                >
-                  Continue
-                </motion.button>
-              </div>
+                <motion.div className="w-full" variants={fadeUp}>
+                  <Button
+                    size="lg"
+                    className="w-full"
+                    onClick={() => {
+                      if (mySurveys.length > 0) {
+                        goForward("home");
+                      } else {
+                        goForward("welcome");
+                      }
+                    }}
+                  >
+                    Continue
+                  </Button>
+                </motion.div>
+              </motion.div>
             )}
             {stage === "dashboard" && (
               <div className="flex items-center justify-center h-full">
-                <p className="text-sm" style={{ color: "hsl(225 10% 45%)" }}>
+                <p className="text-s text-muted-foreground">
                   Redirecting to dashboard...
                 </p>
               </div>
