@@ -201,6 +201,27 @@ export interface MySurvey {
   newCount?: number;
   latestResponseAt?: string | null;
   reportUpdatedAt?: string | null;
+  /** First line of prose from the agent's report, for the row preview. */
+  reportPreview?: string | null;
+  /** Newest of: created, last answer, report, a later round sent, a proposal. The list sorts by it. */
+  lastActivityAt?: string;
+  /** The latest sent round and how it is going. `targets` is 0 when there is no fixed audience (round 1). */
+  round?: { number: number; kind: ParloRoundKind; sentAt: string | null; answered: number; targets: number } | null;
+  /** A round the agent planned that still needs approval. Owner/admin only. */
+  proposedRound?: { number: number; kind: ParloRoundKind; createdAt: string } | null;
+  /** Asks waiting for this viewer. Members only; always 0 for owner/admin. */
+  pendingAsks?: number;
+  /** Up to three other members, for the avatar cluster. */
+  faces?: ParloFace[];
+}
+
+export type ParloRoundKind = "poll" | "probe";
+
+export interface ParloFace {
+  userId: string;
+  name: string | null;
+  /** Stable `GET /api/users/:id/photo` URL, or null when they have no photo. */
+  photoUrl: string | null;
 }
 
 export function fetchMySurveys(apiKey: string) {
@@ -544,75 +565,13 @@ export function fetchLinkedInProfile(phone: string) {
   return apiFetch<LinkedInProfile>(`/auth/linkedin/profile?phone=${encodeURIComponent(phone)}`);
 }
 
-// ── Listening Player Feed ────────────────────────────────────────────
+// ── Read state ────────────────────────────────────────────────────────
 
-export interface FeedAnswer {
-  id: string;
-  questionId: string;
-  questionText: string;
-  questionType: "voice" | "photo" | "video";
-  audioUrl: string | null;
-  imageUrl: string | null;
-  videoUrl: string | null;
-  transcription: string | null;
-  transcriptionStatus: string | null;
-  durationMs: number;
-}
-
-export interface FeedItem {
-  surveyId: string;
-  surveyTitle: string;
-  response: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    submittedAt: string | null;
-    isRead: boolean;
-  };
-  answers: FeedAnswer[];
-}
-
-export interface FeedResponse {
-  items: FeedItem[];
-  cursor: { before: string; beforeId: string } | null;
-  hasMore: boolean;
-  totalUnread: number;
-}
-
-export function fetchFeed(
-  apiKey: string,
-  params?: {
-    limit?: number;
-    before?: string;
-    beforeId?: string;
-    unreadOnly?: boolean;
-    surveyId?: string;
-  },
-): Promise<FeedResponse> {
-  const qs = new URLSearchParams();
-  if (params?.limit) qs.set("limit", String(params.limit));
-  if (params?.before) qs.set("before", params.before);
-  if (params?.beforeId) qs.set("beforeId", params.beforeId);
-  if (params?.unreadOnly) qs.set("unreadOnly", "true");
-  if (params?.surveyId) qs.set("surveyId", params.surveyId);
-  const query = qs.toString();
-  return apiFetch<FeedResponse>(`/my/feed${query ? `?${query}` : ""}`, {
-    headers: { "X-Parlo-Api-Key": apiKey },
-  });
-}
-
-export function markResponseRead(apiKey: string, responseId: string) {
-  return apiFetch<{ ok: boolean }>(`/my/responses/${responseId}/read`, {
+/** Mark every answer in a parlo as read; clears its unread dot and `newCount` on the home list. */
+export function markSurveyRead(apiKey: string, surveyId: string) {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/read`, {
     method: "POST",
     headers: { "X-Parlo-Api-Key": apiKey },
-  });
-}
-
-export function markResponsesRead(apiKey: string, responseIds: string[]) {
-  return apiFetch<{ ok: boolean }>("/my/responses/read", {
-    method: "POST",
-    headers: { "X-Parlo-Api-Key": apiKey },
-    body: JSON.stringify({ responseIds }),
   });
 }
 

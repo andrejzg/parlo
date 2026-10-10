@@ -14,9 +14,7 @@ import BottomTabBar from "./BottomTabBar";
 interface InboxPageProps {
   apiKey: string;
   linkedInProfile?: LinkedInProfile | null;
-  totalNewCount: number;
   onHome: () => void;
-  onReels: () => void;
   onCreateNew: () => void;
   onProfile: () => void;
   onOpenSurvey: (surveyId: string) => void;
@@ -50,9 +48,7 @@ function NotificationIcon({ type }: { type: string }) {
 export default function InboxPage({
   apiKey,
   linkedInProfile,
-  totalNewCount,
   onHome,
-  onReels,
   onCreateNew,
   onProfile,
   onOpenSurvey,
@@ -204,10 +200,8 @@ export default function InboxPage({
 
       <BottomTabBar
         activeTab="content"
-        totalNewCount={totalNewCount}
         linkedInProfile={linkedInProfile}
         onHome={onHome}
-        onSearch={onReels}
         onCreateNew={onCreateNew}
         onContent={() => {}}
         onProfile={onProfile}

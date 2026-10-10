@@ -18,6 +18,7 @@ import {
   transferOwnership,
   type GroupRole,
   type SurveyMember,
+  markSurveyRead,
 } from "@/api/client";
 import AgentPanel from "@/components/creator/AgentPanel";
 import { toast } from "@/components/ui/sonner";
@@ -31,6 +32,8 @@ import { MOTION, transitionLarge, transitionSmall } from "@/lib/animations";
 interface AgentDashboardProps {
   data: DashboardData;
   dashboardCode: string;
+  /** Open on this tab instead of Responses (the home list sends "agent" for a pending round). */
+  initialTab?: "responses" | "agent";
 }
 
 type SortMode = "latest" | "by-question";
@@ -348,6 +351,7 @@ function MemberRow({
 export default function AgentDashboard({
   data: initialData,
   dashboardCode,
+  initialTab,
 }: AgentDashboardProps) {
   const navigate = useNavigate();
   const [sort, setSort] = useState<SortMode>("latest");
@@ -365,7 +369,7 @@ export default function AgentDashboard({
   const [deleting, setDeleting] = useState(false);
 
   // ── Tab + Members state ──
-  const [activeTab, setActiveTab] = useState<DashboardTab>("responses");
+  const [activeTab, setActiveTab] = useState<DashboardTab>(initialTab ?? "responses");
   const [members, setMembers] = useState<SurveyMember[]>([]);
   const [you, setYou] = useState<{ userId: string; role: GroupRole } | null>(null);
   const [membersLoading, setMembersLoading] = useState(false);
@@ -376,8 +380,14 @@ export default function AgentDashboard({
   // The dashboard URL is a secret link; member and agent actions still need
   // the signed-in owner's key.
   useEffect(() => {
-    getDeviceAuth().then((auth) => setApiKey(auth?.apiKey ?? null)).catch(() => setApiKey(null));
-  }, []);
+    getDeviceAuth()
+      .then((auth) => {
+        setApiKey(auth?.apiKey ?? null);
+        // Opening the dashboard is reading it: clear the unread dot on the home list.
+        if (auth?.apiKey) markSurveyRead(auth.apiKey, survey.id).catch(() => {});
+      })
+      .catch(() => setApiKey(null));
+  }, [survey.id]);
 
   const loadMembers = useCallback(async () => {
     setMembersLoading(true);

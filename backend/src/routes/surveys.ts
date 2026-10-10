@@ -37,6 +37,19 @@ import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, displayNameFor, ensureMember, getMemberByToken, normalizePhone } from "../services/groups";
 import { ensureRound1, latestSentRound, pendingAsksFor } from "../services/rounds";
+import {
+  batchAll,
+  facesStmt,
+  latestOf,
+  openRoundStmt,
+  proposedRoundStmt,
+  reportPreview,
+  toFace,
+  toIso,
+  type FaceRow,
+  type OpenRoundRow,
+  type ProposedRoundRow,
+} from "../services/home";
 
 /** Longest creator audio we'll transcribe in one go (≈10 min of Opus). */
 const MAX_TRANSCRIBE_BYTES = 12 * 1024 * 1024;
@@ -706,6 +719,10 @@ surveys.get("/api/auth/validate", async (c) => {
 });
 
 // ── GET /api/my/surveys ── Every parlo the authenticated user is in, with their role
+// ── GET /api/my/surveys ── Every parlo you're in, shaped for the home
+// screen's chat-style list: newest activity first, each row carrying the
+// open round and how many answered it, any proposal waiting on the owner, a
+// few faces for the avatar cluster, and the first line of the agent's report.
 surveys.get("/api/my/surveys", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
@@ -713,6 +730,7 @@ surveys.get("/api/my/surveys", async (c) => {
   }
 
   const db = c.env.DB;
+  const baseUrl = new URL(c.req.url).origin;
 
   const rows = await db
     .prepare(
@@ -725,6 +743,7 @@ surveys.get("/api/my/surveys", async (c) => {
         s.visibility,
         s.created_at,
         s.report_updated_at,
+        substr(s.report_md, 1, 2000) AS report_head,
         gm.role,
         gm.access_token,
         (SELECT COUNT(*) FROM survey_questions sq WHERE sq.survey_id = s.id) AS question_count,
@@ -741,8 +760,7 @@ surveys.get("/api/my/surveys", async (c) => {
       LEFT JOIN responses r ON r.survey_id = s.id
       LEFT JOIN creator_survey_cursors csc ON csc.survey_id = s.id AND csc.creator_id = ?
       WHERE gm.user_id = ? AND gm.removed_at IS NULL AND s.status != 'deleted'
-      GROUP BY s.id
-      ORDER BY s.created_at DESC`
+      GROUP BY s.id`
     )
     .bind(userId, userId)
     .all<{
@@ -754,6 +772,7 @@ surveys.get("/api/my/surveys", async (c) => {
       visibility: string;
       created_at: string;
       report_updated_at: string | null;
+      report_head: string | null;
       role: "owner" | "admin" | "member";
       access_token: string;
       question_count: number;
@@ -763,24 +782,76 @@ surveys.get("/api/my/surveys", async (c) => {
       latest_response_at: string | null;
     }>();
 
-  const surveys_list = rows.results.map((r) => ({
-    id: r.id,
-    code: r.code,
-    // Members never see the dashboard code; it would let them read raw answers.
-    dashboardCode: r.role === "member" ? "" : r.dashboard_code,
-    title: r.title,
-    status: r.status,
-    visibility: r.visibility === "open" ? "open" : "private",
-    createdAt: r.created_at,
-    role: r.role,
-    memberToken: r.access_token,
-    questionCount: r.question_count,
-    memberCount: r.member_count,
-    responseCount: r.response_count,
-    newCount: r.role === "member" ? 0 : r.new_count,
-    latestResponseAt: r.latest_response_at,
-    reportUpdatedAt: r.report_updated_at,
-  }));
+  if (rows.results.length === 0) return c.json({ surveys: [] });
+
+  // Three statements per parlo, one round trip: open round, proposal, faces.
+  const detail = await batchAll(
+    db,
+    rows.results.flatMap((s) => [openRoundStmt(db, s.id), proposedRoundStmt(db, s.id), facesStmt(db, s.id, userId)])
+  );
+
+  const surveys_list = await Promise.all(
+    rows.results.map(async (r, i) => {
+      const open = detail[i * 3].results[0] as unknown as OpenRoundRow | undefined;
+      const proposed = detail[i * 3 + 1].results[0] as unknown as ProposedRoundRow | undefined;
+      const faces = (detail[i * 3 + 2].results as unknown as FaceRow[]).map((f) => toFace(f, baseUrl));
+      const manager = r.role !== "member";
+      // Owners and admins never answered round 1 themselves, so "pending asks"
+      // would always be non-zero for them; the signal only means something
+      // for members.
+      const pendingAsks = manager ? 0 : (await pendingAsksFor(db, r.id, userId)).length;
+
+      const round = open
+        ? {
+            number: open.number,
+            kind: open.kind,
+            sentAt: toIso(open.sent_at),
+            answered: open.answered,
+            // A poll reaches every member but the owner, who asked it; a probe
+            // reaches the members it was aimed at.
+            targets: open.kind === "probe" ? open.targeted : Math.max(0, r.member_count - 1),
+          }
+        : null;
+
+      const lastActivityAt =
+        latestOf([
+          r.created_at,
+          r.latest_response_at,
+          r.report_updated_at,
+          // Round 1 is sent the moment the parlo is created; only later rounds are news.
+          open && open.number > 1 ? open.sent_at : null,
+          manager && proposed ? proposed.created_at : null,
+        ]) ?? new Date().toISOString();
+
+      return {
+        id: r.id,
+        code: r.code,
+        // Members never see the dashboard code; it would let them read raw answers.
+        dashboardCode: manager ? r.dashboard_code : "",
+        title: r.title,
+        status: r.status,
+        visibility: r.visibility === "open" ? "open" : "private",
+        createdAt: toIso(r.created_at) ?? r.created_at,
+        role: r.role,
+        memberToken: r.access_token,
+        questionCount: r.question_count,
+        memberCount: r.member_count,
+        responseCount: r.response_count,
+        newCount: manager ? r.new_count : 0,
+        latestResponseAt: toIso(r.latest_response_at),
+        reportUpdatedAt: toIso(r.report_updated_at),
+        reportPreview: reportPreview(r.report_head),
+        lastActivityAt,
+        round,
+        // Proposals are the owner's and admins' business; members only ever see sent rounds.
+        proposedRound: manager && proposed ? { number: proposed.number, kind: proposed.kind, createdAt: toIso(proposed.created_at) ?? proposed.created_at } : null,
+        pendingAsks,
+        faces,
+      };
+    })
+  );
+
+  surveys_list.sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
 
   return c.json({ surveys: surveys_list });
 });
