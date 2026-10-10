@@ -1,5 +1,7 @@
 import { motion } from "framer-motion";
+import { ChevronRight } from "lucide-react";
 import type { MySurvey, LinkedInProfile } from "@/api/client";
+import { fadeUp, press, transitionLarge } from "@/lib/animations";
 import BottomTabBar from "./BottomTabBar";
 
 interface CreatorHomeProps {
@@ -14,29 +16,14 @@ interface CreatorHomeProps {
   onInbox: () => void;
 }
 
-// Spring-based stagger — each card overshoots slightly and settles
+// Staggered fade-up — each card follows the previous by one stagger step
 const cardVariants = {
-  initial: { opacity: 0, y: 24, scale: 0.97 },
+  initial: { opacity: 0, y: 12 },
   animate: (i: number) => ({
     opacity: 1,
     y: 0,
-    scale: 1,
-    transition: {
-      delay: 0.12 + i * 0.08,
-      type: "spring" as const,
-      stiffness: 260,
-      damping: 20,
-    },
+    transition: { ...transitionLarge, delay: 0.04 + i * 0.04 },
   }),
-};
-
-const headerVariants = {
-  initial: { opacity: 0, y: 16 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
 };
 
 function formatDate(iso: string) {
@@ -54,6 +41,9 @@ function formatTimeAgo(iso: string) {
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
 }
+
+const cardClass =
+  "w-full block text-left rounded-m bg-card p-m mb-s transition-colors hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring";
 
 function SurveyCard({
   survey,
@@ -74,37 +64,23 @@ function SurveyCard({
       variants={cardVariants}
       initial="initial"
       animate="animate"
-      className="w-full block text-left rounded-2xl px-5 py-4 mb-3"
-      style={{
-        background: "hsl(225 15% 10%)",
-        border: "1px solid hsl(225 15% 14%)",
-      }}
-      whileTap={{ scale: 0.97, transition: { type: "spring", stiffness: 400, damping: 25 } }}
-      whileHover={{ borderColor: "hsl(225 15% 22%)" }}
+      className={cardClass}
+      whileTap={press}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-s">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2.5">
-            <p
-              className="font-display text-base font-semibold truncate"
-              style={{ color: "hsl(40 20% 95%)" }}
-            >
+          <div className="flex items-center gap-xs">
+            <p className="text-m font-medium text-foreground truncate">
               {survey.title || "Untitled Survey"}
             </p>
             {/* Response count badge */}
             {hasResponses && (
-              <span
-                className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 rounded-full px-1.5 text-[10px] font-display font-bold"
-                style={{
-                  background: "hsl(var(--primary) / 0.15)",
-                  color: "hsl(var(--primary))",
-                }}
-              >
+              <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 rounded-full px-xxs bg-badge text-badge-foreground font-data text-xxs font-medium">
                 {survey.responseCount}
               </span>
             )}
           </div>
-          <p className="text-xs mt-1.5" style={{ color: "hsl(225 10% 42%)" }}>
+          <p className="text-xs text-muted-foreground mt-xxs">
             {survey.questionCount} question{survey.questionCount !== 1 ? "s" : ""}
             {" · "}
             {survey.responseCount} response{survey.responseCount !== 1 ? "s" : ""}
@@ -112,19 +88,7 @@ function SurveyCard({
             {formatDate(survey.createdAt)}
           </p>
         </div>
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="hsl(225 10% 30%)"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="shrink-0 mt-1.5"
-        >
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
+        <ChevronRight size={16} className="shrink-0 mt-xxs text-neutral-6" aria-hidden />
       </div>
     </motion.button>
   );
@@ -151,30 +115,18 @@ export default function CreatorHome({
     : null;
 
   return (
-    <div
-      className="flex flex-col h-full overflow-hidden"
-      style={{ background: "hsl(225 25% 4%)" }}
-    >
+    <div className="flex flex-col h-full overflow-hidden bg-background">
       {/* Header */}
-      <div className="shrink-0 pt-14 pb-5 px-6">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 0.45 }}
-          transition={{ duration: 0.4 }}
-          className="flex items-center justify-center gap-2 mb-6"
-        >
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <span
-            className="text-xs font-display tracking-widest uppercase"
-            style={{ color: "hsl(225 10% 55%)" }}
-          >
+      <div className="shrink-0 pt-xxl pb-l px-l">
+        <div className="flex items-center justify-center mb-l">
+          <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
             Parlo
           </span>
-        </motion.div>
+        </div>
 
-        <motion.div variants={headerVariants} initial="initial" animate="animate">
+        <motion.div variants={fadeUp} initial="initial" animate="animate">
           {/* Greeting with LinkedIn name or phone */}
-          <div className="flex items-center gap-3 mb-1">
+          <div className="flex items-center gap-s">
             {profile?.connected && profile.photoUrl ? (
               <img
                 src={profile.photoUrl}
@@ -183,18 +135,11 @@ export default function CreatorHome({
               />
             ) : null}
             <div>
-              <h1
-                className="font-display leading-tight"
-                style={{
-                  fontSize: displayName ? "clamp(1.4rem, 6vw, 1.8rem)" : "clamp(1.6rem, 7vw, 2.2rem)",
-                  fontWeight: 800,
-                  color: "hsl(40 20% 95%)",
-                }}
-              >
+              <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
                 {displayName ? `Hey, ${displayName}` : "Your surveys"}
               </h1>
               {displayName && (
-                <p className="text-xs mt-0.5" style={{ color: "hsl(225 10% 42%)" }}>
+                <p className="text-xs text-muted-foreground mt-xxs">
                   {totalResponses} total response{totalResponses !== 1 ? "s" : ""} across {completed.length} survey{completed.length !== 1 ? "s" : ""}
                 </p>
               )}
@@ -203,8 +148,8 @@ export default function CreatorHome({
         </motion.div>
       </div>
 
-      {/* Survey list */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-20">
+      {/* Survey list — pb-20 clears the 72px tab bar */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-l pb-20">
         {completed.map((survey, i) => (
           <SurveyCard
             key={survey.id}
@@ -216,29 +161,25 @@ export default function CreatorHome({
 
         {/* Empty space coaching tip */}
         {completed.length > 0 && completed.length < 3 && (
-          <motion.div
-            className="flex items-center gap-3 rounded-xl px-4 py-3 mt-2"
-            style={{ background: "hsl(225 15% 7%)" }}
+          <motion.p
+            className="px-xxs mt-xs text-xs text-muted-foreground"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.5, duration: 0.5 }}
+            transition={{ ...transitionLarge, delay: 0.2 }}
           >
-            <span className="text-xs" style={{ color: "hsl(225 10% 35%)" }}>
-              {totalResponses === 0
-                ? "Share your survey link on WhatsApp to start getting responses"
-                : `You have ${totalResponses} response${totalResponses !== 1 ? "s" : ""} — share again to keep the momentum going`}
-            </span>
-          </motion.div>
+            {totalResponses === 0
+              ? "Share your survey link on WhatsApp to start getting responses"
+              : `You have ${totalResponses} response${totalResponses !== 1 ? "s" : ""} — share again to keep the momentum going`}
+          </motion.p>
         )}
 
         {drafts.length > 0 && (
           <>
             <motion.p
-              className="text-xs font-display uppercase tracking-widest mt-5 mb-2 px-1"
-              style={{ color: "hsl(225 10% 30%)" }}
+              className="font-brand text-s font-medium tracking-xl uppercase text-muted-foreground mt-l mb-xs px-xxs"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.4 }}
+              transition={{ ...transitionLarge, delay: 0.2 }}
             >
               Drafts
             </motion.p>
@@ -251,26 +192,16 @@ export default function CreatorHome({
                 variants={cardVariants}
                 initial="initial"
                 animate="animate"
-                className="w-full block text-left rounded-2xl px-5 py-4 mb-3"
-                style={{
-                  background: "hsl(225 15% 8%)",
-                  border: "1px dashed hsl(225 15% 16%)",
-                }}
-                whileTap={{ scale: 0.97, transition: { type: "spring", stiffness: 400, damping: 25 } }}
+                className={cardClass}
+                whileTap={press}
               >
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center justify-between gap-s">
                   <div className="min-w-0">
-                    <p
-                      className="font-display text-sm font-semibold"
-                      style={{ color: "hsl(225 10% 45%)" }}
-                    >
+                    <p className="text-s font-medium text-muted-foreground">
                       Draft · {formatDate(survey.createdAt)}
                     </p>
                   </div>
-                  <span
-                    className="text-xs font-display font-semibold shrink-0"
-                    style={{ color: "hsl(var(--primary) / 0.7)" }}
-                  >
+                  <span className="text-xs font-medium text-color-1 shrink-0">
                     Continue
                   </span>
                 </div>

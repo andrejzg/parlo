@@ -8,6 +8,7 @@
 
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { PROMPT_DEFAULTS } from "../services/ai";
 
 const admin = new Hono<{ Bindings: Env }>();
 
@@ -25,28 +26,11 @@ interface PromptMeta {
   versions: PromptVersionEntry[];
 }
 
-// ── Default prompts (must stay in sync with ai.ts) ──
+// ── Default prompts ──
+// Single source of truth is services/ai.ts (system, user, brief, clarify);
+// importing it here means seeding and the AI pipeline can never drift.
 
-const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful assistant that generates voice survey questions. Always respond in valid JSON.";
-
-const DEFAULT_USER_PROMPT = `Create a voice survey based on these creator descriptions:
-
-1. AUDIENCE: {{audience}}
-2. INFO TO GATHER: {{gather}}
-
-Generate a JSON response with:
-- "title": short catchy survey title (max 50 chars)
-- "questions": array of objects, each with "text" (the question) and "hint" (e.g. "Question 1 of 3")
-
-IMPORTANT: Generate the number of questions the creator asked for. If they said "2 questions", generate exactly 2. If they didn't specify a number, default to 3. Pay close attention to what they actually want to ask — use their exact questions if they provided them, just make them sound warm and conversational.
-
-People will answer by speaking, not typing — keep questions open-ended and natural.`;
-
-const DEFAULTS: Record<string, string> = {
-  system: DEFAULT_SYSTEM_PROMPT,
-  user: DEFAULT_USER_PROMPT,
-};
+const DEFAULTS: Record<string, string> = PROMPT_DEFAULTS;
 
 // ── Helpers ──
 

@@ -3,13 +3,19 @@ import * as SwitchPrimitives from "@radix-ui/react-switch";
 
 import { cn } from "@/lib/utils";
 
+/**
+ * Parlo1 switch (gui/themes/parlo1-components.md → Switch).
+ * Track: controlSize xl (32px), neutral-4 at rest, accent when checked,
+ * neutral-3 when disabled. Thumb: controlSize l (24px), neutral-1 fill,
+ * neutral-6 when disabled. No native border; focus draws the accent outline.
+ */
 const Switch = React.forwardRef<
   React.ElementRef<typeof SwitchPrimitives.Root>,
   React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root>
 >(({ className, ...props }, ref) => (
   <SwitchPrimitives.Root
     className={cn(
-      "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors data-[state=checked]:bg-primary data-[state=unchecked]:bg-input focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50",
+      "peer inline-flex h-xl w-[calc(var(--space-xl)*2-var(--space-xs))] shrink-0 cursor-pointer items-center rounded-full p-xxs transition-colors data-[state=unchecked]:bg-neutral-4 data-[state=checked]:bg-color-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring disabled:cursor-not-allowed disabled:bg-muted",
       className,
     )}
     {...props}
@@ -17,7 +23,7 @@ const Switch = React.forwardRef<
   >
     <SwitchPrimitives.Thumb
       className={cn(
-        "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",
+        "pointer-events-none block h-l w-l rounded-full bg-neutral-1 transition-transform data-[state=checked]:translate-x-l data-[state=unchecked]:translate-x-0 peer-disabled:bg-neutral-6 group-disabled:bg-neutral-6",
       )}
     />
   </SwitchPrimitives.Root>

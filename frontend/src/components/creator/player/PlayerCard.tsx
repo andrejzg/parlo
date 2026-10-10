@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { Pause, Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { transitionLarge } from "@/lib/animations";
 
 interface PlayerCardProps {
   questionText: string;
@@ -21,6 +24,15 @@ interface PlayerCardProps {
 
 const PHOTO_DURATION_MS = 3000;
 
+/**
+ * Photo/video cards overlay the question on the media. The scrim fades the
+ * canvas colour into the picture; `pt-20` is structural — it clears the
+ * absolutely positioned top bar (exit button + badge + progress) in
+ * ListeningPlayer.
+ */
+const MEDIA_QUESTION_OVERLAY =
+  "absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-neutral-1 via-neutral-1-transparent to-transparent px-l pb-xxl pt-20";
+
 function estimateVoiceDurationSeconds(durationMs: number, transcription: string | null): number {
   if (durationMs > 0) {
     return durationMs / 1000;
@@ -40,29 +52,21 @@ function WaveformBars({ playing }: { playing: boolean }) {
   const heights = [14, 22, 18, 24, 16];
 
   return (
-    <div className="flex items-center justify-center gap-[5px]" style={{ height: 48 }}>
+    <div className="flex h-12 items-center justify-center gap-xxs">
       {Array.from({ length: barCount }).map((_, i) => (
         <div
           key={i}
-          className="rounded-full"
+          className={`w-1 rounded-full bg-color-1 transition-opacity${playing ? " waveform-pulse" : ""}`}
           style={{
-            width: 4,
+            // Structural: per-bar height and choreography delay drive the loop.
             height: heights[i],
-            background: "hsl(22 95% 62%)",
             opacity: playing ? 1 : 0.4,
-            animation: playing
-              ? `waveform-pulse 1s ease-in-out ${i * 0.15}s infinite alternate`
-              : "none",
-            transition: "opacity 0.3s ease",
+            animationDelay: `${i * 0.15}s`,
           }}
         />
       ))}
-      <style>{`
-        @keyframes waveform-pulse {
-          0% { transform: scaleY(0.4); }
-          100% { transform: scaleY(1); }
-        }
-      `}</style>
+      {/* Status loop (audio is playing) — keeps its own cadence like
+          rec-blink / pulse-ring in index.css rather than --motion-duration. */}
     </div>
   );
 }
@@ -75,27 +79,19 @@ function PlayPauseButton({
   onToggle: () => void;
 }) {
   return (
-    <button
+    <Button
+      type="button"
+      size="icon"
       onClick={onToggle}
-      className="flex items-center justify-center rounded-full select-none"
-      style={{
-        width: 56,
-        height: 56,
-        background: "hsl(22 95% 62%)",
-      }}
+      className="h-14 w-14"
       aria-label={playing ? "Pause" : "Play"}
     >
       {playing ? (
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <rect x="4" y="3" width="4" height="14" rx="1" fill="white" />
-          <rect x="12" y="3" width="4" height="14" rx="1" fill="white" />
-        </svg>
+        <Pause className="!size-5" fill="currentColor" aria-hidden />
       ) : (
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <path d="M6 3.5L16 10L6 16.5V3.5Z" fill="white" />
-        </svg>
+        <Play className="!size-5 ml-px" fill="currentColor" aria-hidden />
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -217,15 +213,9 @@ function VoiceCard({
   };
 
   return (
-    <div
-      className="absolute inset-0 flex flex-col items-center justify-center px-6"
-      style={{ background: "hsl(225 25% 4%)" }}
-    >
+    <div className="absolute inset-0 flex flex-col items-center justify-center bg-background px-l">
       {/* Question text */}
-      <p
-        className="text-lg text-center font-display mb-12 max-w-sm"
-        style={{ color: "hsl(225 10% 50%)" }}
-      >
+      <p className="mb-xxl max-w-sm text-center font-brand text-m text-muted-foreground">
         {questionText}
       </p>
 
@@ -233,7 +223,7 @@ function VoiceCard({
       <WaveformBars playing={playing} />
 
       {/* Play/pause */}
-      <div className="mt-6">
+      <div className="mt-l">
         <PlayPauseButton playing={playing} onToggle={handleToggle} />
       </div>
 
@@ -242,10 +232,10 @@ function VoiceCard({
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: showTranscription ? 1 : 0 }}
-          transition={{ duration: 0.8 }}
-          className="text-sm mt-8 max-w-sm text-center leading-relaxed overflow-y-auto"
+          transition={transitionLarge}
+          className="mt-xl max-w-sm overflow-y-auto text-center text-m text-neutral-8"
           style={{
-            color: "hsl(40 20% 88%)",
+            // Structural: clamps the scrollable transcript box to ~3.5 lines.
             maxHeight: "5.5em",
           }}
         >
@@ -299,7 +289,7 @@ function PhotoCard({
   }, [isActive, onProgress, onTimerEnd]);
 
   return (
-    <div className="relative w-full h-full" style={{ background: "hsl(225 25% 4%)" }}>
+    <div className="relative h-full w-full bg-background">
       {imageUrl && (
         <img
           src={imageUrl}
@@ -309,18 +299,9 @@ function PhotoCard({
         />
       )}
 
-      {/* Gradient overlay for question text */}
-      <div
-        className="absolute inset-x-0 top-0 z-10 px-6 pt-16 pb-12"
-        style={{
-          background:
-            "linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.3) 70%, transparent 100%)",
-        }}
-      >
-        <p
-          className="text-lg font-display text-center"
-          style={{ color: "hsl(40 20% 95%)" }}
-        >
+      {/* Scrim overlay for question text */}
+      <div className={MEDIA_QUESTION_OVERLAY}>
+        <p className="text-center font-brand text-m text-foreground">
           {questionText}
         </p>
       </div>
@@ -380,7 +361,7 @@ function VideoCard({
   }, [isActive, onProgress, onTimerEnd]);
 
   return (
-    <div className="absolute inset-0" style={{ background: "hsl(225 25% 4%)" }}>
+    <div className="absolute inset-0 bg-background">
       {videoUrl && (
         <video
           ref={videoRef}
@@ -392,18 +373,9 @@ function VideoCard({
         />
       )}
 
-      {/* Gradient overlay for question text */}
-      <div
-        className="absolute inset-x-0 top-0 z-10 px-6 pt-16 pb-12"
-        style={{
-          background:
-            "linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.3) 70%, transparent 100%)",
-        }}
-      >
-        <p
-          className="text-lg font-display text-center"
-          style={{ color: "hsl(40 20% 95%)" }}
-        >
+      {/* Scrim overlay for question text */}
+      <div className={MEDIA_QUESTION_OVERLAY}>
+        <p className="text-center font-brand text-m text-foreground">
           {questionText}
         </p>
       </div>

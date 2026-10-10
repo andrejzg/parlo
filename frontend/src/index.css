@@ -1,59 +1,281 @@
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Inter:wght@300;400;500&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Parlo Design System — dark theme, orange accent */
+/*
+ * Parlo1 — Graphical design language.
+ * Tokens come from gui/themes/parlo1.md (see GUI.md). Light values live on
+ * :root, dark values on `.dark`; index.html sets class="dark" because the
+ * app's established mode is dark. Components consume the named variables
+ * through tailwind.config.ts — never copy a resolved value into markup.
+ */
+
+/* Open Runde (OFL-1.1) — github.com/lauridskern/open-runde.
+   Authored weights are 400 / 700 / 900; the family ships 400–700 only, so
+   `--weight-*-heavy` (900) resolves to Bold through CSS font matching. */
+@font-face {
+  font-family: "Open Runde";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/open-runde/OpenRunde-Regular.woff2") format("woff2"),
+    url("/fonts/open-runde/OpenRunde-Regular.woff") format("woff");
+}
+@font-face {
+  font-family: "Open Runde";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/open-runde/OpenRunde-Bold.woff2") format("woff2"),
+    url("/fonts/open-runde/OpenRunde-Bold.woff") format("woff");
+}
 
 @layer base {
   :root {
-    --background: 225 20% 6%;
-    --foreground: 40 20% 95%;
+    color-scheme: light;
 
-    --card: 225 18% 10%;
-    --card-foreground: 40 20% 95%;
+    --theme-name: Parlo1;
+    --theme-icon-family: Lucide;
+    --theme-icon-style: filled;
+    --icon-stroke-width: 2;
 
-    --popover: 225 18% 10%;
-    --popover-foreground: 40 20% 95%;
+    /* Motion */
+    --motion-duration: 160ms;
+    --motion-easing: cubic-bezier(0.16, 1, 0.3, 1);
+    --motion-large-duration: 280ms;
+    --motion-large-easing: cubic-bezier(0.16, 1, 0.3, 1);
+    --motion-popup-scale: 0.96;
+    --motion-press-distance: 1px;
 
-    --primary: 22 95% 62%;
-    --primary-foreground: 225 20% 6%;
+    /* Spacing */
+    --space-zero: 0px;
+    --space-xxs: 4px;
+    --space-xs: 8px;
+    --space-s: 12px;
+    --space-m: 16px;
+    --space-l: 24px;
+    --space-xl: 32px;
+    --space-xxl: 48px;
 
-    --secondary: 225 15% 16%;
-    --secondary-foreground: 40 20% 85%;
+    /* Letter spacing scale */
+    --tracking-xs: -0.02em;
+    --tracking-s: -0.01em;
+    --tracking-m: 0em;
+    --tracking-l: 0.01em;
+    --tracking-xl: 0.02em;
 
-    --muted: 225 15% 14%;
-    --muted-foreground: 225 10% 55%;
+    /* Text steps (size / line height / default tracking) */
+    --size-xxs: 10px;
+    --line-xxs: 14px;
+    --letter-spacing-xxs: 0.02em;
+    --size-xs: 12px;
+    --line-xs: 16px;
+    --letter-spacing-xs: 0.01em;
+    --size-s: 14px;
+    --line-s: 20px;
+    --letter-spacing-s: 0.01em;
+    --size-m: 16px;
+    --line-m: 24px;
+    --letter-spacing-m: 0em;
+    --size-l: 24px;
+    --line-l: 32px;
+    --letter-spacing-l: -0.01em;
+    --size-xl: 36px;
+    --line-xl: 40px;
+    --letter-spacing-xl: -0.01em;
+    --size-xxl: 48px;
+    --line-xxl: 52px;
+    --letter-spacing-xxl: -0.02em;
 
-    --accent: 225 15% 16%;
-    --accent-foreground: 40 20% 95%;
+    /* Radius */
+    --radius-zero: 0px;
+    --radius-xs: 8px;
+    --radius-s: 16px;
+    --radius-m: 23px;
+    --radius-l: 29px;
+    --radius-xl: 42px;
+    --radius-full: 9999px;
 
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 40 20% 95%;
+    /* Borders — Parlo1 draws no native strokes; edges are box shadows. */
+    --border-none: 0px;
+    --border-s: 0px;
+    --border-m: 0px;
+    --border-l: 0px;
+    --border-default-color: #e9e5df33;
+    --border-shadow-none: 0 0 0 0 transparent;
+    --border-shadow-s: 0 0 0 0 transparent;
+    --border-shadow-m: 0 0 0 0 transparent;
+    --border-shadow-l: 0 0 0 0 transparent;
 
-    --border: 225 15% 16%;
-    --input: 225 15% 14%;
-    --ring: 22 95% 62%;
+    /* Font roles */
+    --font-ui: "Open Runde", -apple-system, BlinkMacSystemFont, sans-serif;
+    --weight-ui-regular: 400;
+    --weight-ui-medium: 700;
+    --weight-ui-heavy: 900;
+    --font-brand: "Open Runde", -apple-system, BlinkMacSystemFont, sans-serif;
+    --weight-brand-regular: 400;
+    --weight-brand-medium: 700;
+    --weight-brand-heavy: 900;
+    --font-editorial: "Open Runde", -apple-system, BlinkMacSystemFont, sans-serif;
+    --weight-editorial-regular: 400;
+    --weight-editorial-medium: 700;
+    --weight-editorial-heavy: 900;
+    --font-data: "Open Runde", -apple-system, BlinkMacSystemFont, sans-serif;
+    --weight-data-regular: 400;
+    --weight-data-medium: 700;
+    --weight-data-heavy: 900;
 
-    --radius: 1.25rem;
+    /* Palette */
+    --color-none: transparent;
+    --color-1: #dd4222;
+    --color-1-transparent: #dd422233;
+    --color-2: #07376b;
+    --color-2-transparent: #07376b33;
+    --color-3: #ffb8da;
+    --color-3-transparent: #ffb8da33;
+    --color-4: #b6ebd8;
+    --color-4-transparent: #b6ebd833;
 
-    /* Sidebar (unused but required by shadcn) */
-    --sidebar-background: 225 20% 6%;
-    --sidebar-foreground: 40 20% 95%;
-    --sidebar-primary: 22 95% 62%;
-    --sidebar-primary-foreground: 225 20% 6%;
-    --sidebar-accent: 225 15% 16%;
-    --sidebar-accent-foreground: 40 20% 95%;
-    --sidebar-border: 225 15% 16%;
-    --sidebar-ring: 22 95% 62%;
+    /* Neutrals — light */
+    --neutral-1: #ffffff;
+    --neutral-1-transparent: #ffffff33;
+    --neutral-2: #fcfbfa;
+    --neutral-2-transparent: #fcfbfa33;
+    --neutral-3: #f5f4f1;
+    --neutral-3-transparent: #f5f4f133;
+    --neutral-4: #e9e5df;
+    --neutral-4-transparent: #e9e5df33;
+    --neutral-5: #d2ccbf;
+    --neutral-5-transparent: #d2ccbf33;
+    --neutral-6: #a5a094;
+    --neutral-6-transparent: #a5a09433;
+    --neutral-7: #837e72;
+    --neutral-7-transparent: #837e7233;
+    --neutral-8: #595449;
+    --neutral-8-transparent: #59544933;
+    --neutral-9: #383329;
+    --neutral-9-transparent: #38332933;
+    --neutral-10: #000000;
+    --neutral-10-transparent: #00000033;
 
-    /* Custom tokens */
-    --wave-color: 22 95% 62%;
-    --wave-glow: hsla(22, 95%, 62%, 0.3);
-    --surface-glass: hsla(225, 18%, 12%, 0.8);
-    --gradient-hero: linear-gradient(160deg, hsl(225 20% 8%), hsl(225 18% 4%));
-    --shadow-glow: 0 0 40px hsla(22, 95%, 62%, 0.15);
+    /* Status */
+    --success: #00c853;
+    --success-transparent: #00c85333;
+    --warning: #ffea00;
+    --warning-transparent: #ffea0033;
+    --error: #fc032d;
+    --error-transparent: #fc032d33;
+
+    /* Elevation */
+    --shadow-none: none;
+    --shadow-s: 0px 2px 4px 0px #00000000;
+    --shadow-m: 0px 2px 6px 0px #0000000d, 0px 8px 24px 0px #00000013;
+    --shadow-l: 0px 16px 48px 0px #00000000;
+
+    /* Emphasis + navigation roles */
+    --option-badge-background: #dd4222;
+    --option-badge-foreground: #000000;
+    --navigation-active-background: #dd4222;
+    --navigation-active-foreground: #000000;
+    --emphasis-chart-fill: #dd422233;
+    --emphasis-balance-background: #b6ebd8;
+    --emphasis-rewards-background: #07376b;
+    --emphasis-icon-background: #ffb8da;
+    --emphasis-icon-foreground: #000000;
+    --emphasis-type-background: #dd4222;
+    --emphasis-type-foreground: #000000;
+
+    /* Convenience roles */
+    --cte-canvas: #ffffff;
+    --cte-surface: #fcfbfa;
+    --cte-surface-muted: #f5f4f1;
+    --cte-text: #000000;
+    --cte-text-muted: #837e72;
+    --cte-border: #e9e5df33;
+    --cte-accent: #dd4222;
+    --cte-accent-text: #000000;
+    --cte-danger: #fc032d;
+    --cte-focus: #dd4222;
+    --cte-font: "Open Runde", -apple-system, BlinkMacSystemFont, sans-serif;
+    --cte-font-size: 14px;
+    --cte-font-weight: 400;
+    --cte-line-height: 20px;
+    --cte-letter-spacing: 0.01em;
+    --cte-detail-font-size: 12px;
+    --cte-detail-line-height: 16px;
+    --cte-detail-letter-spacing: 0.01em;
+
+    /* Third-party brand colour — not a theme token, kept for the LinkedIn
+       connect flow where the vendor's own identity must stay recognisable. */
+    --brand-linkedin: #0a66c2;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --border-default-color: #413c3233;
+
+    --neutral-1: #000000;
+    --neutral-1-transparent: #00000033;
+    --neutral-2: #241f16;
+    --neutral-2-transparent: #241f1633;
+    --neutral-3: #2f2a21;
+    --neutral-3-transparent: #2f2a2133;
+    --neutral-4: #413c32;
+    --neutral-4-transparent: #413c3233;
+    --neutral-5: #5b564b;
+    --neutral-5-transparent: #5b564b33;
+    --neutral-6: #888377;
+    --neutral-6-transparent: #88837733;
+    --neutral-7: #b0aa9e;
+    --neutral-7-transparent: #b0aa9e33;
+    --neutral-8: #d4cec2;
+    --neutral-8-transparent: #d4cec233;
+    --neutral-9: #f5f4f1;
+    --neutral-9-transparent: #f5f4f133;
+    --neutral-10: #ffffff;
+    --neutral-10-transparent: #ffffff33;
+
+    --cte-canvas: #000000;
+    --cte-surface: #241f16;
+    --cte-surface-muted: #2f2a21;
+    --cte-text: #ffffff;
+    --cte-text-muted: #b0aa9e;
+    --cte-border: #413c3233;
+  }
+
+  /* App roles (shadcn aliases) resolved onto Parlo1 tokens. Mode-independent
+     because they point at the variables above. */
+  :root {
+    --background: var(--neutral-1);
+    --foreground: var(--neutral-10);
+
+    --card: var(--neutral-2);
+    --card-foreground: var(--neutral-10);
+
+    --popover: var(--neutral-2);
+    --popover-foreground: var(--neutral-10);
+
+    /* Primary action colour is neutral-10 (black in light, white in dark). */
+    --primary: var(--neutral-10);
+    --primary-foreground: var(--neutral-1);
+
+    --secondary: var(--neutral-3);
+    --secondary-foreground: var(--neutral-10);
+
+    --muted: var(--neutral-3);
+    --muted-foreground: var(--neutral-7);
+
+    /* Hover fill for ghost / outline controls. */
+    --accent: var(--neutral-3-transparent);
+    --accent-foreground: var(--neutral-10);
+
+    --destructive: var(--error);
+    --destructive-foreground: var(--neutral-1);
+
+    --border: var(--neutral-4);
+    --input: var(--neutral-3);
+    --ring: var(--cte-focus);
   }
 }
 
@@ -62,12 +284,16 @@
     @apply border-border;
   }
 
-  html, body, #root {
+  html,
+  body,
+  #root {
     @apply h-full;
     -webkit-tap-highlight-color: transparent;
   }
 
-  button, a, [role="button"] {
+  button,
+  a,
+  [role="button"] {
     -webkit-user-select: none;
     user-select: none;
   }
@@ -80,10 +306,27 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-ui);
+    font-weight: var(--weight-ui-regular);
+    font-size: var(--size-m);
+    line-height: var(--line-m);
+    letter-spacing: var(--letter-spacing-m);
+    text-wrap: pretty;
+    -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
   }
 
+  /* Keep stable line breaks where the theme asks for them. */
+  pre,
+  code,
+  kbd,
+  samp,
+  input,
+  textarea,
+  select,
+  button {
+    text-wrap: initial;
+  }
 }
 
 /* Hide reCAPTCHA badge — Google's TOS allows this if we show the
@@ -99,66 +342,84 @@
 }
 
 @layer utilities {
-  .font-display {
-    font-family: 'Syne', sans-serif;
-  }
-
-  .font-serif {
-    font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
-  }
-
-  .glow-primary {
-    box-shadow: var(--shadow-glow);
-  }
-
-  .wave-bar {
-    border-radius: 9999px;
-    transform-origin: center bottom;
-  }
-
   /* Safe-area bottom padding for devices with system nav bars / gesture bars */
   .pb-safe {
-    padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 1.5rem));
+    padding-bottom: max(var(--space-l), env(safe-area-inset-bottom, var(--space-l)));
   }
 }
 
-@keyframes screen-enter {
-  from {
-    opacity: 0;
-    transform: translateY(40px) scale(0.97);
-  }
-  to {
+/* Status loops — these signal live state (recording, processing), not UI
+   transitions, so they keep their own cadence rather than --motion-duration. */
+@keyframes rec-blink {
+  0%,
+  100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
-}
-
-@keyframes screen-exit {
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-40px) scale(1.02);
+  50% {
+    opacity: 0.3;
   }
 }
 
 @keyframes pulse-ring {
-  0% { transform: scale(1); opacity: 0.8; }
-  70% { transform: scale(1.4); opacity: 0; }
-  100% { transform: scale(1.4); opacity: 0; }
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
 }
 
-@keyframes rec-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+/* Player: bars breathe while audio plays. */
+@keyframes waveform-pulse {
+  0% {
+    transform: scaleY(0.4);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+/* Player: the buffering segment of the progress bar pulses. */
+@keyframes progress-pulse {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.rec-blink {
+  animation: rec-blink 1.4s ease-in-out infinite;
 }
 
 .pulse-ring {
   animation: pulse-ring 1.8s ease-out infinite;
 }
 
-.rec-blink {
-  animation: rec-blink 1.4s ease-in-out infinite;
+.waveform-pulse {
+  animation: waveform-pulse 1s ease-in-out infinite alternate;
+}
+
+.progress-pulse {
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-blink,
+  .pulse-ring,
+  .waveform-pulse {
+    animation: none;
+  }
+  .progress-pulse {
+    animation: none;
+    opacity: 0.3;
+  }
 }

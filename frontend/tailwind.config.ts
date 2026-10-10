@@ -1,106 +1,201 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Parlo1 theme scales. Every value here resolves to a CSS variable defined in
+ * src/index.css (see GUI.md and gui/themes/parlo1.md). The default Tailwind
+ * palette, type scale, weights, radii and shadows are intentionally replaced so
+ * that only theme vocabulary exists as utilities.
+ */
+
+const neutrals = Object.fromEntries(
+  Array.from({ length: 10 }, (_, i) => i + 1).flatMap((n) => [
+    [`${n}`, `var(--neutral-${n})`],
+    [`${n}-transparent`, `var(--neutral-${n}-transparent)`],
+  ]),
+);
+
+const palette = Object.fromEntries(
+  [1, 2, 3, 4].flatMap((n) => [
+    [`${n}`, `var(--color-${n})`],
+    [`${n}-transparent`, `var(--color-${n}-transparent)`],
+  ]),
+);
+
+const spacingTokens = {
+  zero: "var(--space-zero)",
+  xxs: "var(--space-xxs)",
+  xs: "var(--space-xs)",
+  s: "var(--space-s)",
+  m: "var(--space-m)",
+  l: "var(--space-l)",
+  xl: "var(--space-xl)",
+  xxl: "var(--space-xxl)",
+};
+
 export default {
   darkMode: ["class"],
-  content: [
-    "./pages/**/*.{ts,tsx}",
-    "./components/**/*.{ts,tsx}",
-    "./app/**/*.{ts,tsx}",
-    "./src/**/*.{ts,tsx}",
-  ],
+  content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
   prefix: "",
   theme: {
     container: {
       center: true,
-      padding: "2rem",
+      padding: "var(--space-xl)",
       screens: {
         "2xl": "1400px",
       },
     },
+    colors: {
+      transparent: "transparent",
+      current: "currentColor",
+      inherit: "inherit",
+
+      // Theme vocabulary
+      neutral: neutrals,
+      color: palette,
+      success: "var(--success)",
+      "success-transparent": "var(--success-transparent)",
+      warning: "var(--warning)",
+      "warning-transparent": "var(--warning-transparent)",
+      error: "var(--error)",
+      "error-transparent": "var(--error-transparent)",
+
+      // App roles (shadcn aliases, resolved in index.css)
+      background: "var(--background)",
+      foreground: "var(--foreground)",
+      border: "var(--border)",
+      input: "var(--input)",
+      ring: "var(--ring)",
+      primary: {
+        DEFAULT: "var(--primary)",
+        foreground: "var(--primary-foreground)",
+      },
+      secondary: {
+        DEFAULT: "var(--secondary)",
+        foreground: "var(--secondary-foreground)",
+      },
+      destructive: {
+        DEFAULT: "var(--destructive)",
+        foreground: "var(--destructive-foreground)",
+      },
+      muted: {
+        DEFAULT: "var(--muted)",
+        foreground: "var(--muted-foreground)",
+      },
+      accent: {
+        DEFAULT: "var(--accent)",
+        foreground: "var(--accent-foreground)",
+      },
+      popover: {
+        DEFAULT: "var(--popover)",
+        foreground: "var(--popover-foreground)",
+      },
+      card: {
+        DEFAULT: "var(--card)",
+        foreground: "var(--card-foreground)",
+      },
+      "nav-active": {
+        DEFAULT: "var(--navigation-active-background)",
+        foreground: "var(--navigation-active-foreground)",
+      },
+      badge: {
+        DEFAULT: "var(--option-badge-background)",
+        foreground: "var(--option-badge-foreground)",
+      },
+
+      // Third-party brand colour (see index.css)
+      linkedin: "var(--brand-linkedin)",
+    },
+    fontFamily: {
+      ui: "var(--font-ui)",
+      brand: "var(--font-brand)",
+      editorial: "var(--font-editorial)",
+      data: "var(--font-data)",
+    },
+    fontSize: {
+      xxs: ["var(--size-xxs)", { lineHeight: "var(--line-xxs)", letterSpacing: "var(--letter-spacing-xxs)" }],
+      xs: ["var(--size-xs)", { lineHeight: "var(--line-xs)", letterSpacing: "var(--letter-spacing-xs)" }],
+      s: ["var(--size-s)", { lineHeight: "var(--line-s)", letterSpacing: "var(--letter-spacing-s)" }],
+      m: ["var(--size-m)", { lineHeight: "var(--line-m)", letterSpacing: "var(--letter-spacing-m)" }],
+      l: ["var(--size-l)", { lineHeight: "var(--line-l)", letterSpacing: "var(--letter-spacing-l)" }],
+      xl: ["var(--size-xl)", { lineHeight: "var(--line-xl)", letterSpacing: "var(--letter-spacing-xl)" }],
+      xxl: ["var(--size-xxl)", { lineHeight: "var(--line-xxl)", letterSpacing: "var(--letter-spacing-xxl)" }],
+    },
+    fontWeight: {
+      regular: "var(--weight-ui-regular)",
+      medium: "var(--weight-ui-medium)",
+      heavy: "var(--weight-ui-heavy)",
+    },
+    lineHeight: {
+      none: "1",
+      xxs: "var(--line-xxs)",
+      xs: "var(--line-xs)",
+      s: "var(--line-s)",
+      m: "var(--line-m)",
+      l: "var(--line-l)",
+      xl: "var(--line-xl)",
+      xxl: "var(--line-xxl)",
+    },
+    letterSpacing: {
+      xs: "var(--tracking-xs)",
+      s: "var(--tracking-s)",
+      m: "var(--tracking-m)",
+      l: "var(--tracking-l)",
+      xl: "var(--tracking-xl)",
+    },
+    borderRadius: {
+      none: "var(--radius-zero)",
+      xs: "var(--radius-xs)",
+      s: "var(--radius-s)",
+      m: "var(--radius-m)",
+      l: "var(--radius-l)",
+      xl: "var(--radius-xl)",
+      full: "var(--radius-full)",
+    },
+    borderWidth: {
+      DEFAULT: "var(--border-s)",
+      0: "0px",
+      s: "var(--border-s)",
+      m: "var(--border-m)",
+      l: "var(--border-l)",
+    },
+    boxShadow: {
+      none: "none",
+      s: "var(--shadow-s)",
+      m: "var(--shadow-m)",
+      l: "var(--shadow-l)",
+      // Edges are drawn as inset shadows (native border width is zero).
+      edge: "inset 0 0 0 1px var(--neutral-4)",
+      "edge-t": "inset 0 1px 0 0 var(--neutral-4)",
+      "edge-b": "inset 0 -1px 0 0 var(--neutral-4)",
+      "edge-l": "inset 1px 0 0 0 var(--neutral-4)",
+      "edge-r": "inset -1px 0 0 0 var(--neutral-4)",
+      "edge-accent": "inset 0 0 0 1px var(--color-1)",
+      "edge-transparent": "inset 0 0 0 1px var(--neutral-4-transparent)",
+    },
+    transitionDuration: {
+      DEFAULT: "var(--motion-duration)",
+      large: "var(--motion-large-duration)",
+      0: "0ms",
+    },
+    transitionTimingFunction: {
+      DEFAULT: "var(--motion-easing)",
+      large: "var(--motion-large-easing)",
+      linear: "linear",
+    },
     extend: {
-      colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
-        },
-        secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
-        },
-        destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
-        },
-        muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
-        },
-        accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
-        },
-        popover: {
-          DEFAULT: "hsl(var(--popover))",
-          foreground: "hsl(var(--popover-foreground))",
-        },
-        card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
-        },
-        sidebar: {
-          DEFAULT: "hsl(var(--sidebar-background))",
-          foreground: "hsl(var(--sidebar-foreground))",
-          primary: "hsl(var(--sidebar-primary))",
-          "primary-foreground": "hsl(var(--sidebar-primary-foreground))",
-          accent: "hsl(var(--sidebar-accent))",
-          "accent-foreground": "hsl(var(--sidebar-accent-foreground))",
-          border: "hsl(var(--sidebar-border))",
-          ring: "hsl(var(--sidebar-ring))",
-        },
+      spacing: spacingTokens,
+      // Control geometry (checkbox / switch / tracks) resolves controlSize
+      // names through the spacing scale, which shares the same key names.
+      height: spacingTokens,
+      width: spacingTokens,
+      size: spacingTokens,
+      minHeight: spacingTokens,
+      minWidth: spacingTokens,
+      scale: {
+        popup: "var(--motion-popup-scale)",
       },
-      borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
-      },
-      fontFamily: {
-        display: ["Syne", "sans-serif"],
-        body: ["Inter", "sans-serif"],
-        serif: ["Cormorant Garamond", "Georgia", "Times New Roman", "serif"],
-      },
-      keyframes: {
-        "accordion-down": {
-          from: { height: "0" },
-          to: { height: "var(--radix-accordion-content-height)" },
-        },
-        "accordion-up": {
-          from: { height: "var(--radix-accordion-content-height)" },
-          to: { height: "0" },
-        },
-        "wave-bar": {
-          "0%, 100%": { transform: "scaleY(0.3)" },
-          "50%": { transform: "scaleY(1)" },
-        },
-        "fade-up": {
-          from: { opacity: "0", transform: "translateY(20px)" },
-          to: { opacity: "1", transform: "translateY(0)" },
-        },
-        "progress-fill": {
-          from: { width: "0%" },
-          to: { width: "100%" },
-        },
-      },
-      animation: {
-        "accordion-down": "accordion-down 0.2s ease-out",
-        "accordion-up": "accordion-up 0.2s ease-out",
-        "wave-bar": "wave-bar 1s ease-in-out infinite",
-        "fade-up": "fade-up 0.5s ease-out forwards",
-        "progress-fill": "progress-fill 0.6s ease-out forwards",
+      translate: {
+        press: "var(--motion-press-distance)",
       },
     },
   },

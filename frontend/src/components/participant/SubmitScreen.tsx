@@ -1,24 +1,14 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { Check, CircleAlert, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { stagger, fadeUp, popup } from "@/lib/animations";
 
 interface SubmitScreenProps {
   onSubmitComplete: () => void;
   /** Called to trigger the actual submission. Should resolve when done. */
   onSubmit: () => Promise<void>;
 }
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.09, delayChildren: 0.1 } },
-};
-
-const fadeUp = {
-  initial: { opacity: 0, y: 20 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
 
 export default function SubmitScreen({ onSubmitComplete, onSubmit }: SubmitScreenProps) {
   const [status, setStatus] = useState<"submitting" | "success" | "error">("submitting");
@@ -49,43 +39,31 @@ export default function SubmitScreen({ onSubmitComplete, onSubmit }: SubmitScree
 
   return (
     <motion.div
-      className="flex flex-col items-center justify-center h-full px-6"
+      className="flex flex-col items-center justify-center h-full px-l"
       variants={stagger}
       initial="initial"
       animate="animate"
     >
       {status === "submitting" && (
-        <motion.div variants={fadeUp} className="flex flex-col items-center gap-6">
+        <motion.div variants={fadeUp} className="flex flex-col items-center gap-l">
           {/* Spinner */}
           <div className="relative flex items-center justify-center">
-            <div
-              className="w-20 h-20 rounded-full flex items-center justify-center"
-              style={{ background: "hsl(var(--primary) / 0.12)" }}
-            >
-              <div
-                className="w-14 h-14 rounded-full flex items-center justify-center"
-                style={{ background: "hsl(var(--primary) / 0.22)" }}
-              >
-                <motion.div
-                  className="w-6 h-6 rounded-full border-2 border-t-transparent"
-                  style={{ borderColor: "hsl(22, 95%, 62%)", borderTopColor: "transparent" }}
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                />
+            <div className="w-20 h-20 rounded-full bg-color-1-transparent flex items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-color-1-transparent text-color-1 flex items-center justify-center">
+                <Loader2 size={24} className="animate-spin" aria-hidden />
               </div>
             </div>
+            {/* Pulsing ring — native borders are zero in this theme, so the
+                2px edge is a local inset shadow in the accent's transparent. */}
             <div
-              className="absolute inset-0 w-20 h-20 rounded-full border-2 pulse-ring"
-              style={{ borderColor: "hsl(var(--primary) / 0.3)" }}
+              className="absolute inset-0 w-20 h-20 rounded-full shadow-[inset_0_0_0_2px_var(--color-1-transparent)] pulse-ring"
+              aria-hidden
             />
           </div>
-          <h2
-            className="font-display text-2xl text-center"
-            style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-          >
+          <h2 className="font-brand text-l font-heavy text-foreground text-center">
             Sending your answers...
           </h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-s text-muted-foreground">
             Almost there...
           </p>
         </motion.div>
@@ -96,39 +74,31 @@ export default function SubmitScreen({ onSubmitComplete, onSubmit }: SubmitScree
           variants={fadeUp}
           initial="initial"
           animate="animate"
-          className="flex flex-col items-center gap-6"
+          className="flex flex-col items-center gap-l"
         >
           <div className="relative flex items-center justify-center">
-            <div className="w-20 h-20 rounded-full bg-primary/15 flex items-center justify-center">
-              <div className="w-14 h-14 rounded-full bg-primary/25 flex items-center justify-center">
-                <motion.svg
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="hsl(22, 95%, 62%)"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+            <div className="w-20 h-20 rounded-full bg-success-transparent flex items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-success-transparent text-success flex items-center justify-center">
+                <motion.span
+                  className="flex"
+                  initial={popup.initial}
+                  animate={popup.animate}
+                  aria-hidden
                 >
-                  <motion.polyline
-                    points="20 6 9 17 4 12"
-                    initial={{ pathLength: 0 }}
-                    animate={{ pathLength: 1 }}
-                    transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                  />
-                </motion.svg>
+                  <Check size={28} aria-hidden />
+                </motion.span>
               </div>
             </div>
-            <div className="absolute inset-0 w-20 h-20 rounded-full border-2 border-primary/30 pulse-ring" />
+            {/* Pulsing ring — same local 2px inset edge, in the success tint. */}
+            <div
+              className="absolute inset-0 w-20 h-20 rounded-full shadow-[inset_0_0_0_2px_var(--success-transparent)] pulse-ring"
+              aria-hidden
+            />
           </div>
-          <h2
-            className="font-display text-2xl text-center"
-            style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-          >
+          <h2 className="font-brand text-l font-heavy text-foreground text-center">
             All done!
           </h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-s text-muted-foreground">
             Taking you to the next screen...
           </p>
         </motion.div>
@@ -139,24 +109,18 @@ export default function SubmitScreen({ onSubmitComplete, onSubmit }: SubmitScree
           variants={fadeUp}
           initial="initial"
           animate="animate"
-          className="flex flex-col items-center gap-6"
+          className="flex flex-col items-center gap-l"
         >
-          <div
-            className="w-20 h-20 rounded-full flex items-center justify-center"
-            style={{ background: "hsl(var(--destructive) / 0.15)" }}
-          >
-            <span className="text-3xl" style={{ color: "hsl(var(--destructive))" }}>!</span>
+          <div className="w-20 h-20 rounded-full bg-error-transparent text-error flex items-center justify-center">
+            <CircleAlert size={32} aria-hidden />
           </div>
-          <h2
-            className="font-display text-2xl text-center"
-            style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-          >
+          <h2 className="font-brand text-l font-heavy text-foreground text-center">
             Something went wrong
           </h2>
-          <p className="text-muted-foreground text-sm text-center">
+          <p className="text-s text-muted-foreground text-center">
             {errorMsg}
           </p>
-          <motion.button
+          <Button
             onClick={() => {
               setStatus("submitting");
               onSubmit()
@@ -169,11 +133,9 @@ export default function SubmitScreen({ onSubmitComplete, onSubmit }: SubmitScree
                   setErrorMsg(err?.message || "Something went wrong");
                 });
             }}
-            className="px-8 py-3 rounded-xl bg-primary text-primary-foreground font-display font-semibold text-sm"
-            whileTap={{ scale: 0.96 }}
           >
             Try again
-          </motion.button>
+          </Button>
         </motion.div>
       )}
     </motion.div>

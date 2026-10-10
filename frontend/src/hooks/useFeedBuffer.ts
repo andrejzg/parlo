@@ -52,7 +52,7 @@ export function useFeedBuffer(options: UseFeedBufferOptions): UseFeedBufferRetur
     async (cursor: Cursor | null, isInitial: boolean) => {
       try {
         const params: Parameters<typeof fetchFeed>[1] = {
-          pageSize,
+          limit: pageSize,
           unreadOnly: isInitial,
           ...(surveyId && { surveyId }),
           ...(cursor && { before: cursor.before, beforeId: cursor.beforeId }),

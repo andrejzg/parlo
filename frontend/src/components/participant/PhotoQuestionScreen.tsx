@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Camera, ChevronLeft } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import { SurveyQuestion, VoiceAnswer } from "@/types/survey";
+import { Button } from "@/components/ui/button";
 import { captureException } from "@/lib/posthog";
+import { stagger, fadeUp, questionFadeUp, popup, transitionLarge } from "@/lib/animations";
 
 interface PhotoQuestionScreenProps {
   question: SurveyQuestion;
@@ -18,28 +21,6 @@ interface PhotoQuestionScreenProps {
   onBack?: () => void;
   onDeleteAnswer?: () => void;
 }
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.06, delayChildren: 0.08 } },
-};
-
-const item = {
-  initial: { opacity: 0, y: 16 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.38, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
-
-const questionItem = {
-  initial: { opacity: 0, y: 24 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
 
 export default function PhotoQuestionScreen({
   question,
@@ -155,61 +136,53 @@ export default function PhotoQuestionScreen({
       />
 
       {/* Progress bar */}
-      <div className="w-full h-0.5 bg-muted">
+      <div className="w-full h-xxs bg-muted">
         <motion.div
-          className="h-full bg-primary origin-left"
+          className="h-full bg-color-1 origin-left"
           initial={{ scaleX: questionIndex / totalQuestions }}
           animate={{ scaleX: progress / 100 }}
-          transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+          transition={transitionLarge}
           style={{ transformOrigin: "left" }}
         />
       </div>
 
       {/* Header */}
       <motion.div
-        className="flex items-center justify-between px-6 pt-4 pb-2"
+        className="flex items-center justify-between px-l pt-m pb-xs"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.3, delay: 0.05 }}
+        transition={transitionLarge}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-s">
           {onBack && (
-            <motion.button
-              type="button"
-              onClick={onBack}
-              className="flex items-center justify-center w-11 h-11 -ml-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              whileTap={{ scale: 0.9 }}
-            >
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </motion.button>
+            <Button type="button" variant="ghost" size="icon" onClick={onBack} aria-label="Back" className="-ml-xs">
+              <ChevronLeft className="!size-6" aria-hidden />
+            </Button>
           )}
-          <span className="font-display text-xs text-muted-foreground tracking-widest uppercase">
+          <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
             {questionIndex + 1} / {totalQuestions}
           </span>
         </div>
-        <span className="font-display text-xs text-muted-foreground tracking-widest uppercase">
+        <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
           PHOTO
         </span>
       </motion.div>
 
       {/* Question — centre stage */}
       <motion.div
-        className="flex-1 min-h-0 flex flex-col items-center justify-center px-6 gap-6 overflow-y-auto"
+        className="flex-1 min-h-0 flex flex-col items-center justify-center px-l gap-l overflow-y-auto"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {question.hint && (
-          <motion.p variants={item} className="text-muted-foreground text-sm text-center">
+          <motion.p variants={fadeUp} className="text-s text-muted-foreground text-center">
             {question.hint}
           </motion.p>
         )}
         <motion.h2
-          variants={questionItem}
-          className="font-serif text-2xl sm:text-4xl leading-snug text-center text-foreground"
-          style={{ fontWeight: 600 }}
+          variants={questionFadeUp}
+          className="font-editorial text-l sm:text-xl font-medium text-center text-foreground"
         >
           {question.text}
         </motion.h2>
@@ -217,15 +190,8 @@ export default function PhotoQuestionScreen({
         {/* Photo preview or capture button */}
         <AnimatePresence mode="wait">
           {previewUrl ? (
-            <motion.div
-              key="preview"
-              variants={item}
-              initial={{ opacity: 0, scale: 0.96 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              className="w-full max-w-sm"
-            >
-              <div className="rounded-2xl overflow-hidden border border-border shadow-lg">
+            <motion.div key="preview" variants={popup} exit="exit" className="w-full max-w-sm">
+              <div className="rounded-m overflow-hidden bg-card">
                 <img
                   src={previewUrl}
                   alt="Your answer"
@@ -234,22 +200,18 @@ export default function PhotoQuestionScreen({
               </div>
             </motion.div>
           ) : (
-            <motion.button
-              key="capture"
-              variants={item}
-              type="button"
-              onClick={triggerCamera}
-              disabled={isCompressing}
-              className="flex items-center justify-center w-32 h-32 rounded-full bg-primary text-primary-foreground glow-primary disabled:opacity-50 select-none"
-              whileTap={{ scale: 0.95 }}
-              whileHover={{ filter: "brightness(1.12)" }}
-            >
-              {/* Camera icon */}
-              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                <circle cx="12" cy="13" r="4" />
-              </svg>
-            </motion.button>
+            <motion.div key="capture" variants={fadeUp}>
+              {/* Shutter button: structural h-32/w-32 keep the circle; the lg padding still fits the icon. */}
+              <Button
+                size="lg"
+                className="h-32 w-32"
+                onClick={triggerCamera}
+                disabled={isCompressing}
+                aria-label="Take a photo"
+              >
+                <Camera className="!size-14" aria-hidden />
+              </Button>
+            </motion.div>
           )}
         </AnimatePresence>
 
@@ -257,37 +219,28 @@ export default function PhotoQuestionScreen({
           <p className="text-xs text-muted-foreground">Processing photo…</p>
         )}
         {error && (
-          <p className="text-xs text-red-400">{error}</p>
+          <p className="text-xs text-error">{error}</p>
         )}
       </motion.div>
 
       {/* Bottom section */}
       <motion.div
-        className="flex flex-col items-center gap-3 px-6 pb-safe flex-shrink-0"
+        className="flex flex-col items-center gap-s px-l pb-safe flex-shrink-0"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {previewUrl ? (
-          <div className="flex items-center gap-3 w-full max-w-sm">
-            <button
-              type="button"
-              onClick={handleRetake}
-              className="flex-1 py-4 rounded-2xl border border-border text-foreground font-display font-semibold text-base select-none"
-              style={{ background: "hsl(225 15% 10%)" }}
-            >
+          <div className="flex items-center gap-s w-full max-w-sm">
+            <Button type="button" size="lg" variant="secondary" className="flex-1" onClick={handleRetake}>
               Retake
-            </button>
-            <button
-              type="button"
-              onClick={handleConfirm}
-              className="flex-1 py-4 rounded-2xl bg-primary text-primary-foreground font-display font-bold text-base glow-primary select-none"
-            >
+            </Button>
+            <Button type="button" size="lg" className="flex-1" onClick={handleConfirm}>
               {isLast ? "Done" : "Next"}
-            </button>
+            </Button>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground text-center max-w-xs pb-2">
+          <p className="text-xs text-muted-foreground text-center max-w-xs pb-xs">
             Tap the camera to take a photo. You can retake before continuing.
           </p>
         )}

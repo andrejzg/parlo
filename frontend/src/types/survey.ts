@@ -6,6 +6,13 @@ export interface SurveyQuestion {
   type?: "voice" | "photo" | "video"; // defaults to voice
 }
 
+/** The creator's voice hello, played on the welcome screen. */
+export interface SurveyIntro {
+  audioUrl: string;
+  durationMs: number;
+  transcript?: string;
+}
+
 export interface Survey {
   id: string;
   code: string;
@@ -16,6 +23,7 @@ export interface Survey {
   accentColor?: string;
   isOpen: boolean;
   dashboardCode: string;
+  intro?: SurveyIntro;
 }
 
 export interface VoiceSegment {
@@ -30,6 +38,8 @@ export interface VoiceAnswer {
   url?: string;
   durationMs: number;
   textContent?: string;
+  /** Live speech-to-text of a voice answer (creator flow only). */
+  transcript?: string;
   segments?: VoiceSegment[];
 }
 

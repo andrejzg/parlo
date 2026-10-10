@@ -10,6 +10,7 @@ export interface Env {
   WHATSAPP_PHONE_NUMBER_ID: string;
   POSTHOG_API_KEY?: string;
   CEREBRAS_API_KEY?: string;
+  TYPESAFE_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   AI: any;
@@ -40,6 +41,18 @@ export interface Survey {
   visibility: "open" | "private";
   status: "active" | "paused" | "closed";
   created_at: string;
+  brief?: string | null;
+  brief_clarifications?: string | null;
+  /** Creator's voice hello, played on the participant welcome screen. */
+  intro_r2_key?: string | null;
+  intro_duration_ms?: number | null;
+  intro_transcript?: string | null;
+}
+
+export interface SurveyIntro {
+  audioUrl: string;
+  durationMs: number;
+  transcript: string | null;
 }
 
 export interface SurveyAudio {
@@ -96,16 +109,55 @@ export interface CreateSurveyResponse {
   dashboardCode: string;
   apiKey: string;
   uploadUrls: {
+    /** Agent brief flow: the creator's single free-form recording. */
+    brief: string;
+    /** Legacy two-question flow (kept for the MCP server / old clients). */
     audience: string;
     gather: string;
   };
 }
 
+export interface Clarification {
+  question: string;
+  answer: string;
+}
+
 export interface GenerateSurveyRequest {
+  /** Agent brief flow — when present, `textAnswers` and the R2 audio are ignored. */
+  brief?: string;
+  clarifications?: Clarification[];
+  /** Legacy two-question flow. */
   textAnswers?: {
     audience?: string;
     gather?: string;
   };
+}
+
+export interface BriefEvaluateRequest {
+  transcript: string;
+}
+
+export interface BriefEvaluateResponse {
+  items: { id: string; satisfied: boolean; probability: number }[];
+  complete: boolean;
+  provider: string;
+  model: string | null;
+}
+
+export interface ClarifyRequest {
+  brief: string;
+  history: Clarification[];
+}
+
+export interface ClarifyResponse {
+  question: string;
+  hint: string | null;
+  /** 1-based position of this question in the clarification sequence. */
+  index: number;
+}
+
+export interface TranscribeResponse {
+  text: string;
 }
 
 export interface GenerateSurveyResponse {
@@ -139,6 +191,8 @@ export interface SurveyPublicView {
   status: string;
   questions: SurveyQuestion[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
+  /** Null until the creator records one. */
+  intro: SurveyIntro | null;
 }
 
 export interface DashboardView {

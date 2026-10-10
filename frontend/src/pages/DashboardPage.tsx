@@ -1,5 +1,7 @@
 import { useParams } from "react-router-dom";
+import { LoaderCircle } from "lucide-react";
 import { useGetDashboard } from "@/api/client";
+import { Button } from "@/components/ui/button";
 import AgentDashboard from "@/components/creator/AgentDashboard";
 
 export default function DashboardPage() {
@@ -12,17 +14,9 @@ export default function DashboardPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-3">
-          <div
-            className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
-            style={{ borderColor: "hsl(22 95% 62%)", borderTopColor: "transparent" }}
-          />
-          <p
-            className="text-sm font-display"
-            style={{ color: "hsl(225 10% 45%)" }}
-          >
-            Loading dashboard...
-          </p>
+        <div className="flex flex-col items-center gap-s">
+          <LoaderCircle size={32} className="animate-spin text-color-1" aria-hidden />
+          <p className="text-s text-muted-foreground">Loading dashboard...</p>
         </div>
       </div>
     );
@@ -31,29 +25,14 @@ export default function DashboardPage() {
   if (isError || !data) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4 px-6 text-center">
-          <p
-            className="text-base font-display font-semibold"
-            style={{ color: "hsl(40 20% 95%)" }}
-          >
-            Could not load dashboard
-          </p>
-          <p
-            className="text-sm"
-            style={{ color: "hsl(225 10% 45%)" }}
-          >
-            {error instanceof Error ? error.message : "Something went wrong"}
-          </p>
-          <button
-            onClick={() => refetch()}
-            className="mt-2 px-5 py-2.5 rounded-xl text-sm font-display font-semibold"
-            style={{
-              background: "hsl(var(--primary))",
-              color: "#fff",
-            }}
-          >
-            Retry
-          </button>
+        <div className="flex flex-col items-center gap-l px-l text-center">
+          <div className="flex flex-col gap-xs">
+            <p className="font-brand text-l font-heavy text-foreground">Could not load dashboard</p>
+            <p className="text-m text-muted-foreground">
+              {error instanceof Error ? error.message : "Something went wrong"}
+            </p>
+          </div>
+          <Button onClick={() => refetch()}>Retry</Button>
         </div>
       </div>
     );
@@ -61,6 +40,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-background">
+      {/* max-w-md / max-h-[812px] are the phone-frame shell dimensions (structural). */}
       <div className="relative w-full max-w-md h-screen max-h-[812px] overflow-hidden bg-background">
         <AgentDashboard data={data} dashboardCode={dashboardCode ?? ""} />
       </div>

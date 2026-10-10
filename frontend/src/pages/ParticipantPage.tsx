@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
+import { Check, CircleX } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/participant/WelcomeScreen";
 import ConsentScreen from "@/components/ConsentScreen";
 import QuestionScreen from "@/components/participant/QuestionScreen";
@@ -12,7 +14,7 @@ import ReviewScreen from "@/components/participant/ReviewScreen";
 import SubmitScreen from "@/components/participant/SubmitScreen";
 import ThankYouScreen from "@/components/participant/ThankYouScreen";
 import { Survey, VoiceAnswer } from "@/types/survey";
-import { pageVariants } from "@/lib/animations";
+import { MOTION, pageVariants, transitionLarge } from "@/lib/animations";
 import {
   useGetSurvey,
   useStartResponse,
@@ -582,15 +584,17 @@ export default function ParticipantPage() {
 
   // ── Loading / restoring state ───────────────────────────────────────
 
+  // `--vvh` is the visual-viewport height from useVisualViewport (structural,
+  // not a theme value), so it stays inline on the page shells below.
   if (surveyQuery.isLoading || !sessionRestored) {
     return (
       <div
-        className="fixed top-0 left-0 right-0 w-full flex items-center justify-center"
-        style={{ background: "var(--gradient-hero)", height: "var(--vvh, 100svh)" }}
+        className="fixed top-0 left-0 right-0 w-full flex items-center justify-center bg-background"
+        style={{ height: "var(--vvh, 100svh)" }}
       >
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-          <p className="text-muted-foreground text-sm font-display">Loading survey...</p>
+        <div className="flex flex-col items-center gap-m">
+          <div className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+          <p className="text-s text-muted-foreground">Loading survey...</p>
         </div>
       </div>
     );
@@ -599,25 +603,16 @@ export default function ParticipantPage() {
   if (surveyQuery.isError || !survey) {
     return (
       <div
-        className="fixed top-0 left-0 right-0 w-full flex items-center justify-center"
-        style={{ background: "var(--gradient-hero)", height: "var(--vvh, 100svh)" }}
+        className="fixed top-0 left-0 right-0 w-full flex items-center justify-center bg-background"
+        style={{ height: "var(--vvh, 100svh)" }}
       >
-        <div className="flex flex-col items-center gap-5 px-8 text-center">
-          <div
-            className="w-14 h-14 rounded-full flex items-center justify-center"
-            style={{ background: "hsl(225 15% 10%)" }}
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="hsl(225 10% 35%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
+        <div className="flex flex-col items-center gap-l px-xl text-center">
+          <div className="w-14 h-14 rounded-full flex items-center justify-center bg-card text-neutral-6">
+            <CircleX size={24} aria-hidden />
           </div>
-          <div className="space-y-2">
-            <h2 className="font-display text-lg font-bold" style={{ color: "hsl(40 20% 95%)" }}>
-              Survey not available
-            </h2>
-            <p className="text-sm" style={{ color: "hsl(225 10% 45%)" }}>
+          <div className="flex flex-col gap-xs">
+            <h2 className="font-brand text-l font-heavy text-foreground">Survey not available</h2>
+            <p className="text-m text-muted-foreground">
               This survey may have been removed or is no longer accepting responses.
             </p>
           </div>
@@ -628,12 +623,13 @@ export default function ParticipantPage() {
 
   return (
     <div
-      className="fixed top-0 left-0 right-0 w-full flex items-center justify-center overflow-hidden"
-      style={{ background: "var(--gradient-hero)", height: "var(--vvh, 100svh)" }}
+      className="fixed top-0 left-0 right-0 w-full flex items-center justify-center overflow-hidden bg-background"
+      style={{ height: "var(--vvh, 100svh)" }}
     >
-      {/* Persistent reCAPTCHA container — must stay mounted across navigation */}
+      {/* Persistent reCAPTCHA container — must stay mounted across navigation (positioning only, kept off-screen) */}
       <div id="recaptcha-container" style={{ position: "fixed", bottom: 0, right: 0, opacity: 0, pointerEvents: "none" }} />
-      <div className="relative w-full sm:max-w-[480px] h-full sm:max-h-[812px] overflow-hidden bg-background sm:rounded-2xl sm:border sm:border-border/30">
+      {/* sm:max-w-[480px] / sm:max-h-[812px] are the phone-frame shell dimensions (structural). */}
+      <div className="relative w-full sm:max-w-[480px] h-full sm:max-h-[812px] overflow-hidden bg-background sm:rounded-xl sm:shadow-edge">
         <AnimatePresence mode="sync" initial={false} custom={direction}>
           <motion.div
             key={pageKey}
@@ -712,133 +708,108 @@ export default function ParticipantPage() {
               />
             )}
             {stage === "linkedin-connect" && (
-              <div
-                className="flex flex-col items-center justify-between h-full px-6 py-14"
-                style={{ background: "hsl(225 25% 4%)" }}
-              >
+              <div className="flex flex-col items-center justify-between h-full px-l pt-xxl pb-safe sm:py-xxl bg-background">
                 <div />
                 <motion.div
-                  className="flex flex-col items-center gap-6"
+                  className="flex flex-col items-center gap-l"
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                  transition={transitionLarge}
                 >
-                  <div
-                    className="w-20 h-20 rounded-full flex items-center justify-center"
-                    style={{ background: "#0A66C2" }}
-                  >
-                    <svg width="36" height="36" viewBox="0 0 24 24" fill="#fff">
+                  {/* LinkedIn glyph is third-party artwork; the vendor's own blue is kept for recognition. */}
+                  <div className="w-20 h-20 rounded-full flex items-center justify-center bg-linkedin text-neutral-1 dark:text-neutral-10">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
                       <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
                     </svg>
                   </div>
-                  <div className="text-center space-y-3">
-                    <h1
-                      className="font-display text-2xl leading-tight"
-                      style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}
-                    >
-                      One last thing
-                    </h1>
-                    <p
-                      className="text-sm leading-relaxed font-light"
-                      style={{ color: "hsl(225 10% 50%)" }}
-                    >
+                  <div className="text-center flex flex-col gap-s">
+                    <h1 className="font-brand text-l font-heavy text-foreground">One last thing</h1>
+                    <p className="text-m text-neutral-8">
                       Connect your LinkedIn so the creator knows who you are. Takes 5 seconds.
                     </p>
                   </div>
                 </motion.div>
-                <motion.button
-                  onClick={() => {
-                    // Save current participant session state before redirect
-                    try {
-                      sessionStorage.setItem(PARTICIPANT_SESSION_KEY, JSON.stringify({
-                        phone: devicePhone || phone,
-                      }));
-                    } catch {}
-                    const apiBase = import.meta.env.VITE_API_URL || "/api";
-                    const p = devicePhone || phone;
-                    const currentPath = window.location.pathname;
-                    window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}&returnTo=${encodeURIComponent(currentPath)}`;
-                  }}
-                  className="w-full py-5 rounded-2xl font-display text-lg tracking-wide"
-                  style={{ fontWeight: 700, background: "#0A66C2", color: "#fff" }}
+                <motion.div
+                  className="w-full"
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3, duration: 0.4 }}
-                  whileTap={{ scale: 0.96, transition: { duration: 0.07 } }}
+                  transition={{ ...transitionLarge, delay: 0.3 }}
                 >
-                  Continue with LinkedIn
-                </motion.button>
+                  <Button
+                    size="lg"
+                    className="w-full bg-linkedin text-neutral-1 dark:text-neutral-10"
+                    onClick={() => {
+                      // Save current participant session state before redirect
+                      try {
+                        sessionStorage.setItem(PARTICIPANT_SESSION_KEY, JSON.stringify({
+                          phone: devicePhone || phone,
+                        }));
+                      } catch {}
+                      const apiBase = import.meta.env.VITE_API_URL || "/api";
+                      const p = devicePhone || phone;
+                      const currentPath = window.location.pathname;
+                      window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}&returnTo=${encodeURIComponent(currentPath)}`;
+                    }}
+                  >
+                    Continue with LinkedIn
+                  </Button>
+                </motion.div>
               </div>
             )}
             {stage === "linkedin-success" && linkedInProfile && (
-              <div
-                className="flex flex-col items-center justify-between h-full px-6 py-14"
-                style={{
-                  background: "linear-gradient(180deg, hsl(210 80% 12%) 0%, hsl(210 60% 8%) 50%, hsl(225 25% 4%) 100%)",
-                }}
-              >
+              <div className="flex flex-col items-center justify-between h-full px-l pt-xxl pb-safe sm:py-xxl bg-background">
                 <div />
                 <motion.div
-                  className="flex flex-col items-center gap-6"
-                  initial={{ opacity: 0, scale: 0.9 }}
+                  className="flex flex-col items-center gap-l"
+                  initial={{ opacity: 0, scale: MOTION.popupScale }}
                   animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                  transition={transitionLarge}
                 >
                   <motion.div
                     className="relative"
                     initial={{ scale: 0 }}
                     animate={{ scale: 1 }}
-                    transition={{ delay: 0.2, type: "spring", stiffness: 300, damping: 20 }}
+                    transition={{ ...transitionLarge, delay: 0.2 }}
                   >
-                    <div
-                      className="w-28 h-28 rounded-full flex items-center justify-center"
-                      style={{ background: "hsl(210 70% 20% / 0.4)", border: "2px solid hsl(210 70% 35% / 0.3)" }}
-                    >
+                    <div className="w-28 h-28 rounded-full flex items-center justify-center bg-muted">
                       {linkedInProfile.photoUrl ? (
                         <img src={linkedInProfile.photoUrl} alt={linkedInProfile.name ?? ""} className="w-24 h-24 rounded-full object-cover" />
                       ) : (
-                        <div className="w-24 h-24 rounded-full flex items-center justify-center font-display text-3xl font-bold" style={{ background: "#0A66C2", color: "#fff" }}>
+                        <div className="w-24 h-24 rounded-full flex items-center justify-center font-brand text-xl font-medium bg-linkedin text-neutral-1 dark:text-neutral-10">
                           {(linkedInProfile.name ?? "?").charAt(0)}
                         </div>
                       )}
                     </div>
+                    {/* Ring is a box shadow in the page background colour (no native border). */}
                     <motion.div
-                      className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full flex items-center justify-center"
-                      style={{ background: "#0A66C2", border: "3px solid hsl(210 60% 8%)" }}
+                      className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full flex items-center justify-center bg-linkedin text-neutral-1 dark:text-neutral-10 shadow-[0_0_0_3px_var(--background)]"
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
-                      transition={{ delay: 0.5, type: "spring", stiffness: 400, damping: 15 }}
+                      transition={{ ...transitionLarge, delay: 0.5 }}
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M20 6L9 17l-5-5" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                      <Check size={16} aria-hidden />
                     </motion.div>
                   </motion.div>
                   <motion.div
-                    className="text-center space-y-2"
+                    className="text-center flex flex-col gap-xs"
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.35, duration: 0.4 }}
+                    transition={{ ...transitionLarge, delay: 0.35 }}
                   >
-                    <h1 className="font-display text-2xl leading-tight" style={{ fontWeight: 800, color: "hsl(40 20% 95%)" }}>
-                      You're connected!
-                    </h1>
-                    <p className="text-lg font-display font-semibold" style={{ color: "hsl(210 60% 70%)" }}>
-                      {linkedInProfile.name}
-                    </p>
+                    <h1 className="font-brand text-l font-heavy text-foreground">You're connected!</h1>
+                    <p className="font-brand text-m font-medium text-neutral-8">{linkedInProfile.name}</p>
                   </motion.div>
                 </motion.div>
-                <motion.button
-                  onClick={() => goForward("submit")}
-                  className="w-full py-5 rounded-2xl font-display text-lg tracking-wide"
-                  style={{ fontWeight: 700, background: "#0A66C2", color: "#fff" }}
+                <motion.div
+                  className="w-full"
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.6, duration: 0.4 }}
-                  whileTap={{ scale: 0.96, transition: { duration: 0.07 } }}
+                  transition={{ ...transitionLarge, delay: 0.6 }}
                 >
-                  Continue
-                </motion.button>
+                  <Button size="lg" className="w-full" onClick={() => goForward("submit")}>
+                    Continue
+                  </Button>
+                </motion.div>
               </div>
             )}
             {stage === "submit" && (

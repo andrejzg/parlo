@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { ChevronLeft, Keyboard, Mic } from "lucide-react";
 import VoiceWave from "@/components/VoiceWave";
 import VoiceNotePill from "@/components/VoiceNotePill";
 import TextAnswerPill from "@/components/TextAnswerPill";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useSwipeNavigation } from "@/hooks/useSwipeNavigation";
 import { SurveyQuestion, VoiceAnswer, VoiceSegment } from "@/types/survey";
 import { mergeAudioBlobs } from "@/lib/audioMerge";
+import { stagger, fadeUp, questionFadeUp, transitionSmall, transitionLarge } from "@/lib/animations";
 
 interface QuestionScreenProps {
   question: SurveyQuestion;
@@ -25,28 +29,6 @@ function formatDuration(ms: number) {
   const sec = s % 60;
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
-
-const stagger = {
-  animate: { transition: { staggerChildren: 0.06, delayChildren: 0.08 } },
-};
-
-const item = {
-  initial: { opacity: 0, y: 16 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.38, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
-
-const questionItem = {
-  initial: { opacity: 0, y: 24 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as number[] },
-  },
-};
 
 export default function QuestionScreen({
   question,
@@ -303,40 +285,30 @@ export default function QuestionScreen({
   return (
     <div className="flex flex-col h-full" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
       {/* Progress bar */}
-      <div className="w-full h-0.5 bg-muted">
+      <div className="w-full h-xxs bg-muted">
         <motion.div
-          className="h-full bg-primary origin-left"
+          className="h-full bg-color-1 origin-left"
           initial={{ scaleX: (questionIndex / totalQuestions) }}
           animate={{ scaleX: progress / 100 }}
-          transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+          transition={transitionLarge}
           style={{ transformOrigin: "left" }}
         />
       </div>
 
       {/* Header */}
       <motion.div
-        className="flex items-center justify-between px-6 pt-4 pb-2"
+        className="flex items-center justify-between px-l pt-m pb-xs"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.3, delay: 0.05 }}
+        transition={transitionLarge}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-s">
           {onBack && (
-            <motion.button
-              type="button"
-              onClick={handleBack}
-              className="flex items-center justify-center w-11 h-11 -ml-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.25, delay: 0.1 }}
-              whileTap={{ scale: 0.9 }}
-            >
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </motion.button>
+            <Button type="button" variant="ghost" size="icon" onClick={handleBack} aria-label="Back" className="-ml-xs">
+              <ChevronLeft className="!size-6" aria-hidden />
+            </Button>
           )}
-          <span className="font-display text-xs text-muted-foreground tracking-widest uppercase">
+          <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
             {questionIndex + 1} / {totalQuestions}
           </span>
         </div>
@@ -344,14 +316,13 @@ export default function QuestionScreen({
         {/* Recording timer badge */}
         {mode === "voice" && (isRecording || hasStarted) && !showSegments && (
           <motion.div
-            className="flex items-center gap-2 rounded-lg px-3 py-1.5 shadow-md"
-            style={{ background: "hsla(225, 20%, 8%, 0.85)" }}
+            className="flex items-center gap-xs rounded-full bg-card px-s py-xxs"
             initial={{ opacity: 0, x: 8 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.25 }}
+            transition={transitionSmall}
           >
-            <div className="w-2 h-2 rounded-full bg-primary rec-blink" />
-            <span className="text-sm text-primary font-mono font-medium tabular-nums">
+            <span className="w-2 h-2 rounded-full bg-color-1 rec-blink" />
+            <span className="font-data text-s font-medium tabular-nums text-color-1">
               {formatDuration(elapsed)}
             </span>
           </motion.div>
@@ -360,20 +331,19 @@ export default function QuestionScreen({
 
       {/* Question — centre stage */}
       <motion.div
-        className="flex-1 min-h-0 flex flex-col items-center justify-center px-6 gap-4 overflow-y-auto"
+        className="flex-1 min-h-0 flex flex-col items-center justify-center px-l gap-m overflow-y-auto"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {question.hint && (
-          <motion.p variants={item} className="text-muted-foreground text-sm text-center">
+          <motion.p variants={fadeUp} className="text-s text-muted-foreground text-center">
             {question.hint}
           </motion.p>
         )}
         <motion.h2
-          variants={questionItem}
-          className="font-serif text-2xl sm:text-4xl leading-snug text-center text-foreground"
-          style={{ fontWeight: 600 }}
+          variants={questionFadeUp}
+          className="font-editorial text-l sm:text-xl font-medium text-center text-foreground"
         >
           {question.text}
         </motion.h2>
@@ -381,15 +351,15 @@ export default function QuestionScreen({
 
       {/* Bottom section */}
       <motion.div
-        className="flex flex-col items-center gap-4 px-6 pb-safe flex-shrink-0"
+        className="flex flex-col items-center gap-m px-l pb-safe flex-shrink-0"
         variants={stagger}
         initial="initial"
         animate="animate"
       >
         {micDeniedNotice && mode === "text" && (
           <motion.div
-            variants={item}
-            className="w-full text-center text-xs text-muted-foreground bg-muted/60 rounded-2xl px-4 py-2"
+            variants={fadeUp}
+            className="w-full text-center rounded-s bg-muted px-m py-xs text-xs text-muted-foreground"
           >
             Mic unavailable — type your answer instead
           </motion.div>
@@ -403,7 +373,8 @@ export default function QuestionScreen({
               className="w-full"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8, transition: { duration: 0.2 } }}
+              exit={{ opacity: 0, y: -8, transition: transitionSmall }}
+              transition={transitionSmall}
             >
               <TextAnswerPill
                 text={existingAnswer!.textContent!}
@@ -416,10 +387,11 @@ export default function QuestionScreen({
           ) : showSegments ? (
             <motion.div
               key="segments"
-              className="w-full space-y-2"
+              className="w-full space-y-xs"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8, transition: { duration: 0.2 } }}
+              exit={{ opacity: 0, y: -8, transition: transitionSmall }}
+              transition={transitionSmall}
             >
               {segments.map((seg, idx) => (
                 <VoiceNotePill
@@ -431,37 +403,21 @@ export default function QuestionScreen({
               ))}
 
               {/* Add more button */}
-              <motion.button
-                type="button"
-                onClick={handleAddMore}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-display transition-colors"
-                style={{
-                  fontWeight: 600,
-                  background: "hsl(225 15% 10%)",
-                  color: "hsl(22, 95%, 62%)",
-                  border: "1px solid hsl(225 15% 18%)",
-                }}
-                whileTap={{ scale: 0.97 }}
-                whileHover={{ borderColor: "hsl(22 95% 62% / 0.3)" }}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                  <line x1="12" x2="12" y1="19" y2="22"/>
-                </svg>
+              <Button type="button" variant="secondary" className="w-full" onClick={handleAddMore}>
+                <Mic aria-hidden />
                 Add more
-              </motion.button>
+              </Button>
             </motion.div>
 
           /* Currently recording (first-time or adding more) */
           ) : mode === "voice" ? (
             <motion.div
               key="waveform"
-              variants={item}
-              className="w-full space-y-3"
+              variants={fadeUp}
+              className="w-full space-y-s"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+              exit={{ opacity: 0, transition: transitionSmall }}
             >
               <div className="w-full h-16">
                 <VoiceWave analyser={analyser} isRecording={isRecording} />
@@ -475,17 +431,16 @@ export default function QuestionScreen({
               key="textarea"
               className="w-full"
               initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } }}
-              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+              animate={{ opacity: 1, y: 0, transition: transitionLarge }}
+              exit={{ opacity: 0, transition: transitionSmall }}
             >
-              <textarea
+              <Textarea
                 ref={textareaRef}
                 value={textValue}
                 onChange={(e) => setTextValue(e.target.value)}
                 placeholder="Type your answer..."
                 autoFocus
                 rows={4}
-                className="w-full resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed border border-border bg-muted text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
               />
             </motion.div>
           )}
@@ -493,7 +448,7 @@ export default function QuestionScreen({
 
         {/* Status text */}
         {mode === "voice" && !showSegments && !isAddingMore && (
-          <motion.p variants={item} className="text-xs text-muted-foreground">
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground">
             {!hasStarted
               ? "Starting microphone..."
               : isRecording
@@ -502,78 +457,62 @@ export default function QuestionScreen({
           </motion.p>
         )}
         {showSegments && (
-          <motion.p variants={item} className="text-xs text-muted-foreground">
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground">
             {segments.length} recording{segments.length !== 1 ? "s" : ""} — tap Next to continue, or add more
           </motion.p>
         )}
         {isAddingMore && (
-          <motion.p variants={item} className="text-xs text-muted-foreground">
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground">
             {isRecording ? "Recording — tap Done below when finished" : "Starting microphone..."}
           </motion.p>
         )}
 
-        {/* Escape hatch toggle */}
+        {/* Escape hatch toggle — appears a beat later so voice stays the primary path */}
         {!isAddingMore && (
-          <motion.button
-            type="button"
-            onClick={mode === "voice" ? switchToText : switchToVoice}
+          <motion.div
             initial={{ opacity: 0 }}
-            animate={{ opacity: 1, transition: { duration: 0.35, delay: 0.5 } }}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-full text-sm cursor-pointer transition-colors"
-            style={{
-              background: "hsl(225 15% 12%)",
-              color: "hsl(225 10% 50%)",
-              border: "1px solid hsl(225 15% 18%)",
-            }}
-            whileHover={{ borderColor: "hsl(225 15% 25%)", color: "hsl(225 10% 65%)" }}
-            whileTap={{ scale: 0.96 }}
+            animate={{ opacity: 1, transition: { ...transitionLarge, delay: 0.5 } }}
           >
-            {mode === "voice" ? (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path d="M2 8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2zm4 2v.01m4-.01v.01m4-.01v.01m4-.01v.01M6 14v.01M18 14v.01M10 14l4 .01"/></svg>
-                Type instead?
-              </>
-            ) : (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-                Switch to voice
-              </>
-            )}
-          </motion.button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={mode === "voice" ? switchToText : switchToVoice}
+            >
+              {mode === "voice" ? (
+                <>
+                  <Keyboard aria-hidden />
+                  Type instead?
+                </>
+              ) : (
+                <>
+                  <Mic aria-hidden />
+                  Switch to voice
+                </>
+              )}
+            </Button>
+          </motion.div>
         )}
 
-        {/* Main action button — morphs between Done (grey) and Next (orange) */}
+        {/* Main action button — Done (secondary) while adding a clip, otherwise Next (primary) */}
         {isAddingMore && hasStarted ? (
-          <motion.button
+          <motion.div
             key="done-btn"
-            variants={item}
-            onClick={handleDoneAdding}
-            className="w-full py-5 rounded-2xl font-display text-lg tracking-wide"
-            style={{
-              fontWeight: 700,
-              background: "hsl(225 15% 14%)",
-              color: "hsl(225 10% 60%)",
-              border: "1px solid hsl(225 15% 20%)",
-            }}
-            whileTap={{ scale: 0.96, transition: { duration: 0.07 } }}
+            className="w-full"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
+            transition={transitionLarge}
           >
-            Done — save this clip
-          </motion.button>
+            <Button size="lg" variant="secondary" className="w-full" onClick={handleDoneAdding}>
+              Done — save this clip
+            </Button>
+          </motion.div>
         ) : (
-          <motion.button
-            key="next-btn"
-            variants={item}
-            onClick={handleNext}
-            disabled={!canSubmit}
-            className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ fontWeight: 700 }}
-            whileTap={canSubmit ? { scale: 0.96, transition: { duration: 0.07 } } : {}}
-            whileHover={canSubmit ? { filter: "brightness(1.12)", transition: { duration: 0.12 } } : {}}
-          >
-            Next
-          </motion.button>
+          <motion.div key="next-btn" variants={fadeUp} className="w-full">
+            <Button size="lg" className="w-full" onClick={handleNext} disabled={!canSubmit}>
+              Next
+            </Button>
+          </motion.div>
         )}
       </motion.div>
     </div>
