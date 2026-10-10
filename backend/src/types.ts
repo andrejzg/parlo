@@ -11,6 +11,8 @@ export interface Env {
   POSTHOG_API_KEY?: string;
   CEREBRAS_API_KEY?: string;
   TYPESAFE_API_KEY?: string;
+  /** Shared secret for /api/admin/* (header X-Parlo-Admin-Key). */
+  ADMIN_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   AI: any;

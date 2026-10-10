@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { initAnalytics, captureServerException } from "./services/analytics";
 import { authMiddleware } from "./middleware/auth";
+import { adminAuth } from "./middleware/adminAuth";
 
 import surveys from "./routes/surveys";
 import responses from "./routes/responses";
@@ -37,6 +38,9 @@ app.use("*", async (c, next) => {
 
 // API key auth — attaches creatorId to context if valid key provided
 app.use("*", authMiddleware);
+
+// Admin API (prompts, creations) — shared secret, see middleware/adminAuth.ts
+app.use("/api/admin/*", adminAuth);
 
 // ── Health check ──
 app.get("/", (c) => c.json({ status: "ok", service: "parlo-backend" }));

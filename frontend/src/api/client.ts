@@ -2,13 +2,19 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
 import { testHeaders } from "@/lib/testMode";
+import { adminHeaders } from "@/lib/adminKey";
 
 export const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...testHeaders(), ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...testHeaders(),
+      ...(path.startsWith("/admin/") ? adminHeaders() : {}),
+      ...init?.headers,
+    },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

@@ -14,8 +14,32 @@ import {
 } from "@/api/client";
 import { captureException } from "@/lib/posthog";
 import CreationsPanel from "@/components/admin/CreationsPanel";
+import { getAdminKey, setAdminKey } from "@/lib/adminKey";
 
 type AdminTab = "creations" | "prompts";
+
+/** One-time paste of the shared admin API key (see lib/adminKey.ts). */
+function AdminKeyGate({ onSaved }: { onSaved: () => void }) {
+  const [value, setValue] = useState("");
+  return (
+    <div className="max-w-md mx-auto mt-16 p-6 rounded-lg border border-border space-y-4">
+      <h2 className="font-display text-lg font-bold">Admin API key</h2>
+      <p className="text-sm text-muted-foreground">
+        The admin API on api.parlo.me needs the shared <code>ADMIN_API_KEY</code> (it's in <code>backend/.dev.vars</code> and the Worker secrets). Pasted once, kept in this browser.
+      </p>
+      <Input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="adm_…" autoFocus />
+      <Button
+        onClick={() => {
+          setAdminKey(value);
+          onSaved();
+        }}
+        disabled={!value.trim()}
+      >
+        Save key
+      </Button>
+    </div>
+  );
+}
 
 function tabFromHash(): AdminTab {
   return typeof window !== "undefined" && window.location.hash === "#prompts" ? "prompts" : "creations";
@@ -55,6 +79,7 @@ function PromptPreview({ content }: { content: string }) {
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>(tabFromHash);
+  const [hasKey, setHasKey] = useState<boolean>(() => !!getAdminKey());
   const switchTab = (t: AdminTab) => {
     setTab(t);
     try {
@@ -194,6 +219,14 @@ export default function AdminPage() {
 
   // ── Render ──────────────────────────────────────────────────────────
 
+  if (!hasKey) {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <AdminKeyGate onSaved={() => setHasKey(true)} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
@@ -215,11 +248,24 @@ export default function AdminPage() {
             ))}
           </nav>
         </div>
-        {tab === "prompts" && (
-          <Button variant="outline" size="sm" onClick={handleSeed} disabled={loading}>
-            Seed Defaults
+        <div className="flex items-center gap-2">
+          {tab === "prompts" && (
+            <Button variant="outline" size="sm" onClick={handleSeed} disabled={loading}>
+              Seed Defaults
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAdminKey(null);
+              setHasKey(false);
+            }}
+            title="Forget the admin API key on this browser"
+          >
+            Change key
           </Button>
-        )}
+        </div>
       </header>
 
       {tab === "creations" && <CreationsPanel />}
