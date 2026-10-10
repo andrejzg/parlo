@@ -203,7 +203,8 @@ Returns:
 Browser-side creation log. Body: `{events: [{kind, idx?, payload?, at?}]}` (max 50 per call, 8 KB per payload, 600/hr per IP). Only kinds in `CLIENT_EVENT_KINDS` (`backend/src/services/creationLog.ts`) are accepted: `brief_submitted`, `clarify_answered`, `checkpoint`, `back`, `review_opened`, `review_edit`, `review_delete`, `review_add`, `review_reorder`, `review_confirm_tapped`, `regenerate`. Server-only kinds (`generated`, `clarify_generated`, `clarify_judged`, `review_confirmed`) are written by the routes themselves. Rows land in D1 `creation_events`; the frontend batches via `lib/creationLog.ts` (`logCreation(surveyId, kind, payload, idx?)`).
 Returns: `{ok: true, accepted: number}`
 
-### Admin API (protected by Cloudflare Access)
+### Admin API (header `X-Parlo-Admin-Key`)
+Cloudflare Access only fronts the parlo.me/admin **page**; api.parlo.me/api/admin/* is gated by the shared secret `ADMIN_API_KEY` (Worker secret, GitHub secret, `backend/.dev.vars`) via `middleware/adminAuth.ts`, failing closed (503) if unset and 401 without the header. The admin page asks for the key once (`lib/adminKey.ts`, localStorage) and `apiFetch` attaches it to `/admin/*` calls.
 - GET /api/admin/prompts — list prompts
 - GET /api/admin/prompts/:name — get prompt with version history
 - POST /api/admin/prompts/:name — save new version `{content, createdBy?}`
