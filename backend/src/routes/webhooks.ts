@@ -138,7 +138,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
 
             // Notify creator if they have a phone number
             const creator = await db
-              .prepare("SELECT phone, wa_name FROM creators WHERE id = ?")
+              .prepare("SELECT phone, wa_name FROM users WHERE id = ?")
               .bind(response.creator_id)
               .first<{ phone: string | null; wa_name: string | null }>();
 
@@ -187,7 +187,7 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
 
             if (survey) {
               await db
-                .prepare("UPDATE creators SET phone = ?, wa_name = ? WHERE id = ?")
+                .prepare("UPDATE users SET phone = COALESCE(phone, ?), wa_name = COALESCE(wa_name, ?) WHERE id = ?")
                 .bind(from, contactName, survey.creator_id)
                 .run();
 

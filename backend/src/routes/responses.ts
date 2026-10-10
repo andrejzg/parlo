@@ -1,17 +1,14 @@
 import { Hono } from "hono";
-import type {
-  Env,
-  Survey,
-  SurveyQuestion,
-  StartResponseResponse,
-  SubmitResponseRequest,
-} from "../types";
+import type { Env, Survey, SurveyQuestion, StartResponseResponse, SubmitResponseRequest, GroupVisibility } from "../types";
 import { generateId, generateCode } from "../services/codes";
 import { extractCode } from "../services/slug";
 import { generatePresignedUploadUrl, generateUploadToken } from "../services/r2";
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
 import { transcribeResponseAnswers } from "../services/transcription";
+import { ensureMember, getMemberByToken, upsertUserByPhone } from "../services/groups";
+import { latestSentRound, pendingAsksFor } from "../services/rounds";
+import { notifyManagers } from "../services/notify";
 
 const responses = new Hono<{ Bindings: Env }>();
 
@@ -27,12 +24,26 @@ function answerR2Key(responseId: string, q: SurveyQuestion): string {
   return `responses/${responseId}/${q.id}.${ext}`;
 }
 
+async function uploadUrlsFor(c: { env: Env; req: { url: string } }, responseId: string, questions: SurveyQuestion[]) {
+  const baseUrl = new URL(c.req.url).origin;
+  const uploadUrls: Record<string, string> = {};
+  for (const q of questions) {
+    const r2Key = answerR2Key(responseId, q);
+    const token = await generateUploadToken(c.env.KV, r2Key);
+    uploadUrls[q.id] = generatePresignedUploadUrl(baseUrl, r2Key, token);
+  }
+  return uploadUrls;
+}
+
 // ── POST /api/s/:code/responses ── Start a response session
+//
+// `?t=<member token>` (from a personal link or a previous visit) identifies
+// the member, so the session only gets upload URLs for the asks that are
+// still pending for them — including probes aimed at them.
 responses.post("/api/s/:code/responses", async (c) => {
   const code = extractCode(c.req.param("code"));
   const db = c.env.DB;
 
-  // Look up active survey by code
   const survey = await db
     .prepare("SELECT * FROM surveys WHERE code = ? AND status = 'active'")
     .bind(code)
@@ -48,39 +59,26 @@ responses.post("/api/s/:code/responses", async (c) => {
     return c.json({ error: "Response rate limit exceeded for this survey" }, 429);
   }
 
-  // Get questions so we can generate upload URLs per question
-  const questions = await db
-    .prepare(
-      "SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order"
-    )
-    .bind(survey.id)
-    .all<SurveyQuestion>();
+  const member = await getMemberByToken(db, survey.id, c.req.query("t"));
+  const questions = await pendingAsksFor(db, survey.id, member?.user_id ?? null);
+  const round = await latestSentRound(db, survey.id);
 
-  // Create the response row
   const responseId = generateId();
   const responseCode = generateCode(10);
 
   await db
-    .prepare(
-      "INSERT INTO responses (id, code, survey_id) VALUES (?, ?, ?)"
-    )
-    .bind(responseId, responseCode, survey.id)
+    .prepare("INSERT INTO responses (id, code, survey_id, user_id, round_id) VALUES (?, ?, ?, ?, ?)")
+    .bind(responseId, responseCode, survey.id, member?.user_id ?? null, round?.id ?? null)
     .run();
 
-  // Generate upload URLs with one-time tokens for each question answer
-  const baseUrl = new URL(c.req.url).origin;
-  const uploadUrls: Record<string, string> = {};
-
-  for (const q of questions.results) {
-    const r2Key = answerR2Key(responseId, q);
-    const token = await generateUploadToken(c.env.KV, r2Key);
-    uploadUrls[q.id] = generatePresignedUploadUrl(baseUrl, r2Key, token);
-  }
+  const uploadUrls = await uploadUrlsFor(c, responseId, questions);
 
   trackServerEvent(responseId, "response_started", {
     surveyId: survey.id,
     surveyCode: code,
     responseId,
+    round: round?.number ?? 1,
+    asMember: !!member,
   });
 
   const result: StartResponseResponse = {
@@ -93,53 +91,66 @@ responses.post("/api/s/:code/responses", async (c) => {
 });
 
 // ── POST /api/responses/:id/submit ── Submit response with contact info
+//
+// Answering is joining: a verified phone becomes (or finds) a user and a
+// member of the parlo. The group's visibility is stamped on the response so
+// loosening it later never exposes answers given under a private policy.
 responses.post("/api/responses/:id/submit", async (c) => {
   const responseId = c.req.param("id");
   const db = c.env.DB;
   const body = await c.req.json<SubmitResponseRequest>().catch(() => ({} as SubmitResponseRequest));
 
-  // Check that the response exists and is in_progress
   const existing = await db
-    .prepare("SELECT id, survey_id, status FROM responses WHERE id = ?")
+    .prepare("SELECT id, survey_id, status, user_id FROM responses WHERE id = ?")
     .bind(responseId)
-    .first<{ id: string; survey_id: string; status: string }>();
+    .first<{ id: string; survey_id: string; status: string; user_id: string | null }>();
 
   if (!existing) {
     return c.json({ error: "Response not found" }, 404);
   }
 
-  if (existing.status === "submitted") {
+  if (existing.status !== "in_progress") {
     return c.json({ error: "Response already submitted" }, 400);
   }
 
-  // Update with contact info and mark as submitted
+  const survey = await db.prepare("SELECT * FROM surveys WHERE id = ?").bind(existing.survey_id).first<Survey>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+  const visibility: GroupVisibility = survey.visibility === "open" ? "open" : "private";
+
+  // Identity: a verified phone → user → member.
+  let userId = existing.user_id;
+  if (body.phone) {
+    const user = await upsertUserByPhone(db, body.phone, { firstName: body.firstName ?? null, lastName: body.lastName ?? null });
+    userId = user.id;
+  }
+  let memberToken: string | null = null;
+  if (userId) {
+    const membership = await ensureMember(db, existing.survey_id, userId, "member");
+    memberToken = membership.removed_at ? null : membership.access_token;
+  }
+
   await db
     .prepare(
       `UPDATE responses
-       SET phone = ?, first_name = ?, last_name = ?,
+       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?,
            status = 'submitted', submitted_at = datetime('now')
        WHERE id = ?`
     )
-    .bind(
-      body.phone ?? null,
-      body.firstName ?? null,
-      body.lastName ?? null,
-      responseId
-    )
+    .bind(body.phone ?? null, body.firstName ?? null, body.lastName ?? null, userId, visibility, responseId)
     .run();
 
-  // Create response_answers rows for each uploaded audio file
+  // Create response_answers rows for each uploaded file
   const questions = await db
-    .prepare(
-      "SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order"
-    )
+    .prepare("SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order")
     .bind(existing.survey_id)
     .all<SurveyQuestion>();
 
   const insertStatements = [];
   for (const q of questions.results) {
+    // Probes aimed at someone else can't have been answered here.
+    if (q.target_user_id && q.target_user_id !== userId) continue;
+
     if (q.question_type === "photo") {
-      // Photo answer — check for the .jpg in R2
       const jpgKey = `responses/${responseId}/${q.id}.jpg`;
       const jpgObj = await c.env.AUDIO_BUCKET.head(jpgKey);
       if (jpgObj) {
@@ -148,8 +159,6 @@ responses.post("/api/responses/:id/submit", async (c) => {
             .prepare(
               // audio_r2_key is NOT NULL on the schema, so store an empty
               // string for photo answers; the real key lives in image_r2_key.
-              // transcription_status = 'completed' since there's nothing to
-              // transcribe for an image.
               "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, image_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, '', ?, 0, 'completed')"
             )
             .bind(generateId(), responseId, q.id, jpgKey)
@@ -159,18 +168,12 @@ responses.post("/api/responses/:id/submit", async (c) => {
     }
 
     if (q.question_type === "video") {
-      // Video answer — check for the .mp4 in R2 (even iOS .mov uploads land
-      // here because we always present a .mp4 presigned URL).
       const mp4Key = `responses/${responseId}/${q.id}.mp4`;
       const mp4Obj = await c.env.AUDIO_BUCKET.head(mp4Key);
       if (mp4Obj) {
         insertStatements.push(
           db
             .prepare(
-              // audio_r2_key empty (NOT NULL constraint), real key in
-              // video_r2_key. transcription_status = 'pending' so the
-              // background Whisper job picks it up — Whisper accepts the raw
-              // video bytes and just reads the audio track.
               "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, video_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, '', ?, 0, 'pending')"
             )
             .bind(generateId(), responseId, q.id, mp4Key)
@@ -214,7 +217,10 @@ responses.post("/api/responses/:id/submit", async (c) => {
 
   trackServerEvent(body.phone ?? responseId, "response_submitted", {
     responseId,
+    surveyId: existing.survey_id,
     hasPhone: !!body.phone,
+    joined: !!memberToken,
+    visibility,
   });
 
   if (body.phone) {
@@ -228,111 +234,42 @@ responses.post("/api/responses/:id/submit", async (c) => {
     });
   }
 
-  // ── Auto-populate participants + notify creator ──
-  if (body.phone) {
-    const participantId = generateId();
-    const notificationId = generateId();
+  // Tell the owner and admins (Inbox).
+  const firstName = body.firstName ?? "Someone";
+  const surveyTitle = survey.title ?? "Untitled";
+  await notifyManagers(c.env, existing.survey_id, {
+    type: "new_response",
+    title: `${firstName} responded to ${surveyTitle}`,
+    surveyId: existing.survey_id,
+    surveyTitle,
+  });
 
-    // Upsert participant
-    await db
-      .prepare(
-        `INSERT INTO participants (id, phone, first_name, last_name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-         ON CONFLICT (phone) DO UPDATE
-         SET first_name = COALESCE(excluded.first_name, participants.first_name),
-             last_name = COALESCE(excluded.last_name, participants.last_name),
-             updated_at = datetime('now')`
-      )
-      .bind(participantId, body.phone, body.firstName ?? null, body.lastName ?? null)
-      .run();
-
-    // Get the actual participant ID (may differ if phone already existed)
-    const participant = await db
-      .prepare("SELECT id FROM participants WHERE phone = ?")
-      .bind(body.phone)
-      .first<{ id: string }>();
-
-    if (participant) {
-      // Get creator info + survey title for the notification
-      const creatorInfo = await db
-        .prepare(
-          `SELECT c.phone, s.title FROM creators c
-           JOIN surveys s ON s.creator_id = c.id
-           WHERE s.id = ?`
-        )
-        .bind(existing.survey_id)
-        .first<{ phone: string | null; title: string | null }>();
-
-      const surveyTitle = creatorInfo?.title ?? "Untitled";
-      const firstName = body.firstName ?? "Someone";
-      const notifTitle = `${firstName} responded to ${surveyTitle}`;
-
-      const batchStatements = [
-        db
-          .prepare(
-            `INSERT OR IGNORE INTO survey_participants (survey_id, participant_id, response_id, responded_at)
-             VALUES (?, ?, ?, datetime('now'))`
-          )
-          .bind(existing.survey_id, participant.id, responseId),
-      ];
-
-      if (creatorInfo?.phone) {
-        batchStatements.push(
-          db
-            .prepare(
-              `INSERT INTO notifications (id, user_phone, type, title, body, survey_id, survey_title, created_at)
-               VALUES (?, ?, 'new_response', ?, NULL, ?, ?, datetime('now'))`
-            )
-            .bind(notificationId, creatorInfo.phone, notifTitle, existing.survey_id, surveyTitle)
-        );
-      }
-
-      await db.batch(batchStatements);
-    }
-  }
-
-  // Run transcription in the background after responding
+  // Transcribe in the background; the agent ingests once that lands.
   c.executionCtx.waitUntil(transcribeResponseAnswers(c.env, responseId));
 
-  return c.json({ success: true, id: responseId });
+  return c.json({ success: true, id: responseId, memberToken, visibility });
 });
 
-// ── POST /api/responses/:id/refresh-urls ── Generate fresh upload URLs for an existing response
+// ── POST /api/responses/:id/refresh-urls ── Fresh upload URLs for an in-progress session
 responses.post("/api/responses/:id/refresh-urls", async (c) => {
   const responseId = c.req.param("id");
   const db = c.env.DB;
 
-  // Check that the response exists and is still in_progress
   const existing = await db
-    .prepare("SELECT id, survey_id, status FROM responses WHERE id = ?")
+    .prepare("SELECT id, survey_id, status, user_id FROM responses WHERE id = ?")
     .bind(responseId)
-    .first<{ id: string; survey_id: string; status: string }>();
+    .first<{ id: string; survey_id: string; status: string; user_id: string | null }>();
 
   if (!existing) {
     return c.json({ error: "Response not found" }, 404);
   }
 
-  if (existing.status === "submitted") {
+  if (existing.status !== "in_progress") {
     return c.json({ error: "Response already submitted" }, 400);
   }
 
-  // Get questions for this survey
-  const questions = await db
-    .prepare(
-      "SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order"
-    )
-    .bind(existing.survey_id)
-    .all<SurveyQuestion>();
-
-  // Generate fresh upload URLs with new one-time tokens
-  const baseUrl = new URL(c.req.url).origin;
-  const uploadUrls: Record<string, string> = {};
-
-  for (const q of questions.results) {
-    const r2Key = answerR2Key(responseId, q);
-    const token = await generateUploadToken(c.env.KV, r2Key);
-    uploadUrls[q.id] = generatePresignedUploadUrl(baseUrl, r2Key, token);
-  }
+  const questions = await pendingAsksFor(db, existing.survey_id, existing.user_id);
+  const uploadUrls = await uploadUrlsFor(c, responseId, questions);
 
   return c.json({ uploadUrls });
 });

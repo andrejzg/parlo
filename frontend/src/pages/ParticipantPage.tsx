@@ -13,7 +13,8 @@ import OtpScreen from "@/components/participant/OtpScreen";
 import ReviewScreen from "@/components/participant/ReviewScreen";
 import SubmitScreen from "@/components/participant/SubmitScreen";
 import ThankYouScreen from "@/components/participant/ThankYouScreen";
-import { Survey, VoiceAnswer } from "@/types/survey";
+import GroupReportScreen from "@/components/participant/GroupReportScreen";
+import { Survey, SurveyQuestion, VoiceAnswer } from "@/types/survey";
 import { MOTION, pageVariants, transitionLarge } from "@/lib/animations";
 import {
   useGetSurvey,
@@ -45,6 +46,8 @@ import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { extractCode } from "@/lib/slug";
 import { getMediaMix } from "@/lib/mediaMix";
 import { uploadQueue } from "@/lib/uploadQueue";
+import { getMemberToken, readTokenFromUrl, saveMemberToken } from "@/lib/memberToken";
+import { visibilityCopy } from "@/lib/visibility";
 
 type Stage =
   | "welcome"
@@ -56,7 +59,8 @@ type Stage =
   | "linkedin-connect"
   | "linkedin-success"
   | "submit"
-  | "done";
+  | "done"
+  | "report";
 
 const PARTICIPANT_SESSION_KEY = "parlo-participant-linkedin";
 
@@ -83,7 +87,17 @@ export default function ParticipantPage() {
   const params = useParams<{ code: string }>();
   // Extract canonical code from URL param (which may be a slug like "lemonade-pirates-2rbee8p6")
   const code = params.code ? extractCode(params.code) : "";
-  const surveyQuery = useGetSurvey(code || "");
+  // Member token: from a personal link (?t=) or a previous visit on this device.
+  const [memberToken, setMemberToken] = useState<string | null>(() => {
+    if (!code) return null;
+    const fromUrl = readTokenFromUrl();
+    if (fromUrl) {
+      saveMemberToken(code, fromUrl);
+      return fromUrl;
+    }
+    return getMemberToken(code);
+  });
+  const surveyQuery = useGetSurvey(code || "", memberToken);
 
   const [stage, setStage] = useState<Stage>("welcome");
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -109,7 +123,17 @@ export default function ParticipantPage() {
 
   const survey: Survey = surveyQuery.data || DEMO_SURVEY;
   const isDemo = survey === DEMO_SURVEY;
-  const mediaMix = getMediaMix(survey.questions);
+
+  // The asks this visitor is answering in this session. Snapshotted when the
+  // flow starts: after submit the personalised survey refetches with those
+  // asks gone, but Review / Thank you still need them.
+  const flowQuestionsRef = useRef<SurveyQuestion[] | null>(null);
+  const flowQuestions = flowQuestionsRef.current ?? survey.questions;
+  const mediaMix = getMediaMix(flowQuestions);
+  const vis = visibilityCopy(survey.visibility);
+  const isMember = !!survey.member;
+  const pendingCount = survey.questions.length;
+  const [landedOnReport, setLandedOnReport] = useState(false);
 
   // ── Session restore on mount ────────────────────────────────────────
 
@@ -161,6 +185,11 @@ export default function ParticipantPage() {
 
         const session = await getSession(code);
         if (!session || session.surveyId !== surveyQuery.data.id) {
+          // A member with nothing left to answer lands on the group's report.
+          if (surveyQuery.data.member && surveyQuery.data.questions.length === 0 && !landedOnReport) {
+            setLandedOnReport(true);
+            setStage("report");
+          }
           clearTimeout(failsafe);
           setSessionRestored(true);
           return;
@@ -293,7 +322,7 @@ export default function ParticipantPage() {
 
     // Start a new response session
     try {
-      const session = await startResponse.mutateAsync(code);
+      const session = await startResponse.mutateAsync({ code, token: memberToken });
       responseIdRef.current = session.id;
       setResponseCode(session.code);
       uploadUrlsRef.current = session.uploadUrls;
@@ -302,7 +331,7 @@ export default function ParticipantPage() {
     } catch {
       return null; // Offline — will retry later
     }
-  }, [code, isDemo, startResponse]);
+  }, [code, isDemo, startResponse, memberToken]);
 
   // ── Background upload for an answer ─────────────────────────────────
 
@@ -345,10 +374,14 @@ export default function ParticipantPage() {
 
   // ── Stage handlers ──────────────────────────────────────────────────
 
-  const handleStart = () => goForward("consent");
+  const handleStart = () => {
+    flowQuestionsRef.current = survey.questions;
+    goForward("consent");
+  };
 
   const handleConsent = async () => {
-    trackEvent("consent_accepted", { role: "participant", surveyCode: code });
+    trackEvent("consent_accepted", { role: "participant", surveyCode: code, visibility: survey.visibility ?? "private", round: survey.round?.number ?? 1 });
+    if (!flowQuestionsRef.current) flowQuestionsRef.current = survey.questions;
 
     // Start response session early (non-blocking) to get presigned URLs
     if (code && !isDemo) {
@@ -387,10 +420,10 @@ export default function ParticipantPage() {
       trackEvent("participant_recording_started", { surveyCode: code });
     }
 
-    if (nextIndex >= survey.questions.length) {
+    if (nextIndex >= flowQuestions.length) {
       trackEvent("participant_recording_completed", {
         surveyCode: code,
-        questionCount: survey.questions.length,
+        questionCount: flowQuestions.length,
       });
       forceReleaseSharedStream();
       goForward("review");
@@ -524,10 +557,15 @@ export default function ParticipantPage() {
       throw new Error("No response session — please try again");
     }
 
-    await submitResponse.mutateAsync({
+    const result = await submitResponse.mutateAsync({
       responseId: responseIdRef.current,
       phone,
     });
+    if (result?.memberToken) {
+      saveMemberToken(code, result.memberToken);
+      setMemberToken(result.memberToken);
+      trackEvent("participant_joined_group", { surveyCode: code, visibility: result.visibility });
+    }
 
     // 5. Clean up IDB
     try {
@@ -568,7 +606,7 @@ export default function ParticipantPage() {
   const handleReviewRedo = (qIdx: number) => handleRedo(qIdx, "review");
 
   const handleDeleteAnswer = () => {
-    const qId = survey.questions[questionIndex]?.id;
+    const qId = flowQuestions[questionIndex]?.id;
     if (qId) {
       setAnswers((prev) => prev.filter((a) => a.questionId !== qId));
       if (code) deleteAnswerFromIDB(code, qId).catch(() => {});
@@ -579,8 +617,25 @@ export default function ParticipantPage() {
 
   const existingAnswer =
     stage === "question"
-      ? answers.find((a) => a.questionId === survey.questions[questionIndex]?.id)
+      ? answers.find((a) => a.questionId === flowQuestions[questionIndex]?.id)
       : undefined;
+
+  /** From the report: start answering whatever is pending now. */
+  const handleAnswerFromReport = () => {
+    flowQuestionsRef.current = survey.questions;
+    setAnswers([]);
+    setQuestionIndex(0);
+    setRedoMode(false);
+    responseIdRef.current = null;
+    uploadUrlsRef.current = null;
+    uploadUrlsCreatedAtRef.current = null;
+    goForward("consent");
+  };
+
+  const handleSeeReport = () => {
+    surveyQuery.refetch();
+    goForward("report");
+  };
 
   // ── Loading / restoring state ───────────────────────────────────────
 
@@ -641,34 +696,48 @@ export default function ParticipantPage() {
             exit="exit"
           >
             {stage === "welcome" && (
-              <WelcomeScreen survey={survey} onStart={handleStart} />
+              <WelcomeScreen
+                survey={survey}
+                onStart={handleStart}
+                onSeeReport={isMember ? handleSeeReport : undefined}
+              />
+            )}
+            {stage === "report" && (
+              <GroupReportScreen
+                survey={survey}
+                code={code}
+                token={memberToken}
+                pendingCount={pendingCount}
+                onAnswer={handleAnswerFromReport}
+                onRefresh={() => surveyQuery.refetch()}
+              />
             )}
             {stage === "consent" && (
               <ConsentScreen
-                description={mediaMix.consentDescription}
+                description={`${mediaMix.consentDescription} ${vis.consent}`}
                 buttonLabel={mediaMix.isVoiceOnly ? "I agree, start recording" : "I agree, let's start"}
                 onConsent={handleConsent}
               />
             )}
             {stage === "question" && (
-              survey.questions[questionIndex]?.type === "photo" ? (
+              flowQuestions[questionIndex]?.type === "photo" ? (
                 <PhotoQuestionScreen
-                  question={survey.questions[questionIndex]}
+                  question={flowQuestions[questionIndex]}
                   questionIndex={questionIndex}
-                  totalQuestions={survey.questions.length}
-                  isLast={questionIndex === survey.questions.length - 1}
+                  totalQuestions={flowQuestions.length}
+                  isLast={questionIndex === flowQuestions.length - 1}
                   existingAnswer={existingAnswer}
                   isRedo={redoMode}
                   onNext={handleAnswer}
                   onBack={questionIndex > 0 ? handleBack : undefined}
                   onDeleteAnswer={handleDeleteAnswer}
                 />
-              ) : survey.questions[questionIndex]?.type === "video" ? (
+              ) : flowQuestions[questionIndex]?.type === "video" ? (
                 <VideoQuestionScreen
-                  question={survey.questions[questionIndex]}
+                  question={flowQuestions[questionIndex]}
                   questionIndex={questionIndex}
-                  totalQuestions={survey.questions.length}
-                  isLast={questionIndex === survey.questions.length - 1}
+                  totalQuestions={flowQuestions.length}
+                  isLast={questionIndex === flowQuestions.length - 1}
                   existingAnswer={existingAnswer}
                   isRedo={redoMode}
                   onNext={handleAnswer}
@@ -677,10 +746,10 @@ export default function ParticipantPage() {
                 />
               ) : (
                 <QuestionScreen
-                  question={survey.questions[questionIndex]}
+                  question={flowQuestions[questionIndex]}
                   questionIndex={questionIndex}
-                  totalQuestions={survey.questions.length}
-                  isLast={questionIndex === survey.questions.length - 1}
+                  totalQuestions={flowQuestions.length}
+                  isLast={questionIndex === flowQuestions.length - 1}
                   existingAnswer={existingAnswer}
                   onNext={handleAnswer}
                   onBack={questionIndex > 0 ? handleBack : undefined}
@@ -691,7 +760,7 @@ export default function ParticipantPage() {
             {stage === "review" && (
               <ReviewScreen
                 answers={answers}
-                questions={survey.questions}
+                questions={flowQuestions}
                 onContinue={handleReviewContinue}
                 onRedo={handleReviewRedo}
               />
@@ -821,11 +890,12 @@ export default function ParticipantPage() {
             {stage === "done" && (
               <ThankYouScreen
                 answers={answers}
-                questions={survey.questions}
+                questions={flowQuestions}
                 surveyCode={code || "demo"}
                 surveyTitle={survey.title}
                 responseCode={responseCode || undefined}
                 onRedo={(qIdx) => handleRedo(qIdx, "done")}
+                onSeeReport={!isDemo && memberToken ? handleSeeReport : undefined}
               />
             )}
           </motion.div>

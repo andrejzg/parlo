@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, ChevronUp, LoaderCircle, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronUp, Crown, LoaderCircle, MoreHorizontal, Shield, Trash2 } from "lucide-react";
 import type {
   DashboardData,
   DashboardResponse,
@@ -8,8 +8,19 @@ import type {
   DashboardQuestion,
   DashboardSurvey,
 } from "@/types/survey";
-import { fetchDashboardPage, fetchDashboardSince, deleteSurvey, fetchSurveyMembers } from "@/api/client";
-import type { SurveyMember } from "@/api/client";
+import {
+  fetchDashboardPage,
+  fetchDashboardSince,
+  deleteSurvey,
+  fetchSurveyMembers,
+  removeMember,
+  setMemberRole,
+  transferOwnership,
+  type GroupRole,
+  type SurveyMember,
+} from "@/api/client";
+import AgentPanel from "@/components/creator/AgentPanel";
+import { toast } from "@/components/ui/sonner";
 import { buildShareUrl } from "@/lib/slug";
 import { useNavigate } from "react-router-dom";
 import { getDeviceAuth } from "@/lib/sessionStore";
@@ -233,45 +244,101 @@ function QuestionHeader({ text, index }: { text: string; index: number }) {
 
 // ── Tab type ────────────────────────────────────────────────────────────
 
-type DashboardTab = "responses" | "members";
+type DashboardTab = "responses" | "members" | "agent";
 
 // ── Member Row ──────────────────────────────────────────────────────────
 
-function MemberRow({ member }: { member: SurveyMember }) {
-  const displayName =
-    member.linkedinName ||
-    [member.firstName, member.lastName].filter(Boolean).join(" ") ||
-    member.phone;
-  const initial = (member.firstName || member.linkedinName || member.phone || "?")
-    .charAt(0)
-    .toUpperCase();
+function RoleBadge({ role }: { role: GroupRole }) {
+  if (role === "member") return null;
+  return (
+    <span className="inline-flex items-center gap-xxs rounded-full bg-muted px-xs py-xxs font-brand text-xxs font-medium tracking-xl uppercase text-neutral-8">
+      {role === "owner" ? <Crown size={10} aria-hidden /> : <Shield size={10} aria-hidden />}
+      {role}
+    </span>
+  );
+}
+
+interface MemberAction {
+  label: string;
+  destructive?: boolean;
+  run: () => Promise<void>;
+}
+
+function MemberRow({
+  member,
+  actions,
+  busy,
+}: {
+  member: SurveyMember;
+  actions: MemberAction[];
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const displayName = member.displayName || member.phone || "Member";
+  const initial = displayName.charAt(0).toUpperCase();
 
   return (
-    <div className="flex items-center gap-s rounded-m bg-card p-m">
-      {member.linkedinPhotoUrl ? (
-        <img
-          src={member.linkedinPhotoUrl}
-          alt={displayName}
-          className="w-10 h-10 rounded-full object-cover shrink-0"
-        />
-      ) : (
-        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-muted text-s font-medium text-neutral-8">
-          {initial}
-        </div>
-      )}
-      <div className="flex-1 min-w-0">
-        <p className="text-s font-medium text-foreground truncate">
-          {displayName}
-        </p>
-        {member.linkedinEmail && (
+    <div className="rounded-m bg-card" data-testid="member-row" data-role={member.role}>
+      <div className="flex items-center gap-s p-m">
+        {member.linkedinPhotoUrl ? (
+          <img src={member.linkedinPhotoUrl} alt={displayName} className="w-10 h-10 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-muted text-s font-medium text-neutral-8">
+            {initial}
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-xs">
+            <p className="text-s font-medium text-foreground truncate">{displayName}</p>
+            <RoleBadge role={member.role} />
+          </div>
           <p className="text-xs text-muted-foreground truncate">
-            {member.linkedinEmail}
+            {member.responseCount} {member.responseCount === 1 ? "answer" : "answers"} · joined {formatTimeAgo(member.joinedAt)}
           </p>
+        </div>
+        {actions.length > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={`Manage ${displayName}`}
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="shrink-0 -mr-xs"
+          >
+            <MoreHorizontal aria-hidden />
+          </Button>
         )}
       </div>
-      <span className="text-xs text-muted-foreground shrink-0">
-        {formatTimeAgo(member.respondedAt)}
-      </span>
+      <AnimatePresence initial={false}>
+        {open && actions.length > 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={transitionSmall}
+            className="overflow-hidden"
+          >
+            <div className="flex flex-wrap gap-xs px-m pb-m">
+              {actions.map((a) => (
+                <Button
+                  key={a.label}
+                  type="button"
+                  size="sm"
+                  variant={a.destructive ? "destructive" : "secondary"}
+                  disabled={busy}
+                  onClick={async () => {
+                    await a.run();
+                    setOpen(false);
+                  }}
+                >
+                  {a.label}
+                </Button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -300,26 +367,77 @@ export default function AgentDashboard({
   // ── Tab + Members state ──
   const [activeTab, setActiveTab] = useState<DashboardTab>("responses");
   const [members, setMembers] = useState<SurveyMember[]>([]);
+  const [you, setYou] = useState<{ userId: string; role: GroupRole } | null>(null);
   const [membersLoading, setMembersLoading] = useState(false);
   const [membersFetched, setMembersFetched] = useState(false);
+  const [memberBusy, setMemberBusy] = useState(false);
+  const [apiKey, setApiKey] = useState<string | null>(null);
 
-  const handleTabChange = useCallback(async (tab: DashboardTab) => {
-    setActiveTab(tab);
-    if (tab === "members" && !membersFetched) {
-      setMembersLoading(true);
-      try {
-        const auth = await getDeviceAuth();
-        if (!auth?.apiKey) throw new Error("Not authenticated");
-        const result = await fetchSurveyMembers(auth.apiKey, survey.id);
-        setMembers(result.members);
-        setMembersFetched(true);
-      } catch {
-        // Failed to load members — will show empty state
-      } finally {
-        setMembersLoading(false);
-      }
+  // The dashboard URL is a secret link; member and agent actions still need
+  // the signed-in owner's key.
+  useEffect(() => {
+    getDeviceAuth().then((auth) => setApiKey(auth?.apiKey ?? null)).catch(() => setApiKey(null));
+  }, []);
+
+  const loadMembers = useCallback(async () => {
+    setMembersLoading(true);
+    try {
+      const auth = await getDeviceAuth();
+      if (!auth?.apiKey) throw new Error("Not authenticated");
+      const result = await fetchSurveyMembers(auth.apiKey, survey.id);
+      setMembers(result.members);
+      setYou(result.you);
+      setMembersFetched(true);
+    } catch {
+      // Failed to load members — will show empty state
+    } finally {
+      setMembersLoading(false);
     }
-  }, [membersFetched, survey.id]);
+  }, [survey.id]);
+
+  const handleTabChange = useCallback(
+    async (tab: DashboardTab) => {
+      setActiveTab(tab);
+      if (tab === "members" && !membersFetched) await loadMembers();
+    },
+    [membersFetched, loadMembers],
+  );
+
+  /** What the signed-in user may do to a given member, per the role rules. */
+  const actionsFor = useCallback(
+    (m: SurveyMember): MemberAction[] => {
+      if (!you || !apiKey || m.userId === you.userId) return [];
+      const key = apiKey;
+      const wrap = (fn: () => Promise<unknown>, okMsg: string) => async () => {
+        setMemberBusy(true);
+        try {
+          await fn();
+          toast.success(okMsg);
+          await loadMembers();
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message.replace(/^API \d+: /, "") : "Something went wrong");
+        } finally {
+          setMemberBusy(false);
+        }
+      };
+      const name = m.displayName || "this member";
+      const actions: MemberAction[] = [];
+      if (m.role === "owner") return actions;
+      if (you.role === "owner") {
+        if (m.role === "member") actions.push({ label: "Make admin", run: wrap(() => setMemberRole(key, survey.id, m.userId, "admin"), `${name} is now an admin`) });
+        if (m.role === "admin") actions.push({ label: "Remove admin", run: wrap(() => setMemberRole(key, survey.id, m.userId, "member"), `${name} is now a member`) });
+        actions.push({ label: "Make owner", run: wrap(() => transferOwnership(key, survey.id, m.userId), `${name} now owns this parlo`) });
+        actions.push({ label: "Remove", destructive: true, run: wrap(() => removeMember(key, survey.id, m.userId), `${name} was removed`) });
+      } else if (you.role === "admin") {
+        if (m.role === "member") {
+          actions.push({ label: "Make admin", run: wrap(() => setMemberRole(key, survey.id, m.userId, "admin"), `${name} is now an admin`) });
+          actions.push({ label: "Remove", destructive: true, run: wrap(() => removeMember(key, survey.id, m.userId), `${name} was removed`) });
+        }
+      }
+      return actions;
+    },
+    [you, apiKey, survey.id, loadMembers],
+  );
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -539,15 +657,16 @@ export default function AgentDashboard({
 
         {/* Tab switcher */}
         <div className="flex gap-xs mb-xs">
-          {(["responses", "members"] as const).map((tab) => (
+          {(["responses", "members", "agent"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => handleTabChange(tab)}
               aria-pressed={activeTab === tab}
               className={`${chipClass} ${chipTone(activeTab === tab)}`}
+              data-testid={`dashboard-tab-${tab}`}
             >
-              {tab === "responses" ? "Responses" : "Members"}
+              {tab === "responses" ? "Responses" : tab === "members" ? "Members" : "Agent"}
             </button>
           ))}
         </div>
@@ -591,9 +710,19 @@ export default function AgentDashboard({
 
       {/* Feed / Members */}
       <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto px-m pb-l">
-        {activeTab === "members" ? (
+        {activeTab === "agent" ? (
+          /* ── Agent tab ── */
+          apiKey ? (
+            <AgentPanel apiKey={apiKey} surveyId={survey.id} />
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-xs py-xxl text-center">
+              <p className="text-m font-medium text-foreground">Sign in to see your agent</p>
+              <p className="text-s text-muted-foreground">Open this parlo from your home screen so the agent knows it's you.</p>
+            </div>
+          )
+        ) : activeTab === "members" ? (
           /* ── Members tab ── */
-          membersLoading ? (
+          membersLoading && !membersFetched ? (
             <div className="flex justify-center py-xxl">
               <Spinner />
             </div>
@@ -603,14 +732,17 @@ export default function AgentDashboard({
                 No members yet
               </p>
               <p className="text-s text-muted-foreground">
-                Members will appear here once people respond to your parlo.
+                Answering is joining: everyone who responds becomes a member. Owners and admins can promote or remove people here.
               </p>
             </div>
           ) : (
             <div className="space-y-xs">
               {members.map((member) => (
-                <MemberRow key={member.id} member={member} />
+                <MemberRow key={member.userId} member={member} actions={actionsFor(member)} busy={memberBusy} />
               ))}
+              <p className="text-xxs text-muted-foreground px-xxs pt-xs">
+                Owner can hand over the parlo and manage admins. Admins can add admins and remove members. Nobody can remove the owner.
+              </p>
             </div>
           )
         ) : !hasReplies ? (

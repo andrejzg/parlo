@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { initAnalytics, captureServerException } from "./services/analytics";
-import { authMiddleware } from "./middleware/auth";
+import { authMiddleware, type AuthVariables } from "./middleware/auth";
 
 import surveys from "./routes/surveys";
 import responses from "./routes/responses";
@@ -15,8 +15,12 @@ import og from "./routes/og";
 import linkedin from "./routes/linkedin";
 import feed from "./routes/feed";
 import audience from "./routes/audience";
+import groups from "./routes/groups";
 
-const app = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+// Durable Object class must be exported from the Worker entry point.
+export { GroupAgent } from "./agent/GroupAgent";
+
+const app = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // ── Middleware ──
 app.use("*", cors({
@@ -29,7 +33,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// API key auth — attaches creatorId to context if valid key provided
+// API key auth — attaches userId to context if valid key provided
 app.use("*", authMiddleware);
 
 // ── Health check ──
@@ -47,10 +51,11 @@ app.route("/", og);
 app.route("/", linkedin);
 app.route("/", feed);
 app.route("/", audience);
+app.route("/", groups);
 
 // ── Error handler — forward unhandled exceptions to PostHog ──
 app.onError((err, c) => {
-  const distinctId = c.get("creatorId") ?? "anonymous";
+  const distinctId = c.get("userId") ?? "anonymous";
   const promise = captureServerException(distinctId, err, {
     path: c.req.path,
     method: c.req.method,

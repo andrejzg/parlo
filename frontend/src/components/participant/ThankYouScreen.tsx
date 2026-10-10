@@ -16,6 +16,8 @@ interface ThankYouScreenProps {
   surveyTitle?: string | null;
   responseCode?: string;
   onRedo?: (questionIndex: number) => void;
+  /** Members: open the group's report ("answer to unlock"). */
+  onSeeReport?: () => void;
 }
 
 function formatDuration(ms: number) {
@@ -287,7 +289,7 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
   );
 }
 
-export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, onRedo }: ThankYouScreenProps) {
+export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, onRedo, onSeeReport }: ThankYouScreenProps) {
   const totalMs = answers.reduce((acc, a) => acc + a.durationMs, 0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -380,7 +382,12 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
 
         {/* CTAs */}
         <motion.div variants={fadeUp} className="w-full flex flex-col items-center gap-s">
-          <Button size="lg" className="w-full" asChild>
+          {onSeeReport && (
+            <Button size="lg" className="w-full" onClick={onSeeReport} data-testid="thankyou-see-report">
+              See what the group said
+            </Button>
+          )}
+          <Button size="lg" variant={onSeeReport ? "secondary" : "default"} className="w-full" asChild>
             <a
               href={whatsappShareUrl}
               target="_blank"

@@ -179,17 +179,28 @@ export function claimSurvey(surveyId: string, phone: string) {
   });
 }
 
+export type GroupRole = "owner" | "admin" | "member";
+export type GroupVisibility = "open" | "private";
+
 export interface MySurvey {
   id: string;
   code: string;
+  /** Empty for plain members — they never see raw answers. */
   dashboardCode: string;
   title: string | null;
   status: string;
+  visibility?: GroupVisibility;
   createdAt: string;
+  /** Your role in this parlo. */
+  role?: GroupRole;
+  /** Your personal-link token for /s/:code?t= */
+  memberToken?: string;
   questionCount: number;
+  memberCount?: number;
   responseCount: number;
   newCount?: number;
   latestResponseAt?: string | null;
+  reportUpdatedAt?: string | null;
 }
 
 export function fetchMySurveys(apiKey: string) {
@@ -199,20 +210,163 @@ export function fetchMySurveys(apiKey: string) {
 }
 
 export interface SurveyMember {
-  id: string;
-  phone: string;
+  userId: string;
+  role: GroupRole;
+  phone: string | null;
   firstName: string | null;
   lastName: string | null;
+  displayName: string | null;
   linkedinName: string | null;
   linkedinPhotoUrl: string | null;
   linkedinEmail: string | null;
-  respondedAt: string;
+  joinedAt: string;
+  responseCount: number;
 }
 
 export function fetchSurveyMembers(apiKey: string, surveyId: string) {
-  return apiFetch<{ members: SurveyMember[] }>(`/my/surveys/${surveyId}/members`, {
+  return apiFetch<{ members: SurveyMember[]; you: { userId: string; role: GroupRole } }>(`/my/surveys/${surveyId}/members`, {
     headers: { "X-Parlo-Api-Key": apiKey },
   });
+}
+
+// ── Groups: roles, settings ──────────────────────────────────────────
+
+function authed(apiKey: string, init: RequestInit = {}): RequestInit {
+  return { ...init, headers: { "X-Parlo-Api-Key": apiKey, ...(init.headers ?? {}) } };
+}
+
+export function setMemberRole(apiKey: string, surveyId: string, userId: string, role: "admin" | "member") {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/members/${userId}/role`, authed(apiKey, { method: "POST", body: JSON.stringify({ role }) }));
+}
+
+export function removeMember(apiKey: string, surveyId: string, userId: string) {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/members/${userId}`, authed(apiKey, { method: "DELETE" }));
+}
+
+export function transferOwnership(apiKey: string, surveyId: string, userId: string) {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/transfer`, authed(apiKey, { method: "POST", body: JSON.stringify({ userId }) }));
+}
+
+export function updateGroupSettings(apiKey: string, surveyId: string, settings: { visibility?: GroupVisibility; title?: string }) {
+  return apiFetch<{ ok: boolean; visibility: GroupVisibility; title: string | null }>(`/my/surveys/${surveyId}/settings`, authed(apiKey, { method: "PUT", body: JSON.stringify(settings) }));
+}
+
+// ── Groups: the agent & rounds ───────────────────────────────────────
+
+export type RoundKind = "poll" | "probe";
+export type RoundStatus = "proposed" | "sent" | "rejected" | "closed";
+
+export interface RoundAsk {
+  id: string;
+  text: string;
+  hint: string | null;
+  type: "voice" | "photo" | "video";
+  sortOrder: number;
+  targetUserId: string | null;
+  targetName: string | null;
+}
+
+export interface GroupRound {
+  id: string;
+  survey_id: string;
+  number: number;
+  kind: RoundKind;
+  status: RoundStatus;
+  rationale: string | null;
+  proposed_by: string;
+  created_at: string;
+  sent_at: string | null;
+  asks: RoundAsk[];
+}
+
+export interface AgentState {
+  surveyId: string | null;
+  title: string | null;
+  answersIngested: number;
+  ingestedSinceDigest: number;
+  lastIngestAt: string | null;
+  lastDigestAt: string | null;
+  lastProposalAt: string | null;
+  lastError: string | null;
+  provider: string | null;
+  model: string | null;
+}
+
+export interface AgentSnapshot {
+  state: AgentState;
+  files: { path: string; updatedAt: string; bytes: number }[];
+  report: string | null;
+  reportUpdatedAt: string | null;
+  memory: string | null;
+  rounds: GroupRound[];
+  visibility: GroupVisibility;
+}
+
+export function fetchAgent(apiKey: string, surveyId: string) {
+  return apiFetch<AgentSnapshot>(`/my/surveys/${surveyId}/agent`, authed(apiKey));
+}
+
+export function runAgentDigest(apiKey: string, surveyId: string) {
+  return apiFetch<{ ok: boolean; report: string | null; answersRead: number; provider: string; model: string; error?: string }>(
+    `/my/surveys/${surveyId}/agent/digest`,
+    authed(apiKey, { method: "POST" }),
+  );
+}
+
+export function fetchAgentFile(apiKey: string, surveyId: string, path: string) {
+  return apiFetch<{ path: string; content: string; updatedAt: string }>(`/my/surveys/${surveyId}/agent/file?path=${encodeURIComponent(path)}`, authed(apiKey));
+}
+
+export function proposeRound(apiKey: string, surveyId: string, input: { kind?: RoundKind; hint?: string } = {}) {
+  return apiFetch<{ round: GroupRound }>(`/my/surveys/${surveyId}/rounds/propose`, authed(apiKey, { method: "POST", body: JSON.stringify(input) }));
+}
+
+export function approveRound(apiKey: string, surveyId: string, roundId: string) {
+  return apiFetch<{ ok: boolean; round: GroupRound; notified: number }>(`/my/surveys/${surveyId}/rounds/${roundId}/approve`, authed(apiKey, { method: "POST" }));
+}
+
+export function rejectRound(apiKey: string, surveyId: string, roundId: string) {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/rounds/${roundId}/reject`, authed(apiKey, { method: "POST" }));
+}
+
+export function updateRoundAsks(apiKey: string, surveyId: string, roundId: string, asks: { id: string; text: string }[]) {
+  return apiFetch<{ round: GroupRound }>(`/my/surveys/${surveyId}/rounds/${roundId}`, authed(apiKey, { method: "PUT", body: JSON.stringify({ asks }) }));
+}
+
+// ── Groups: member-facing (personal link) ────────────────────────────
+
+export interface GroupReport {
+  available: boolean;
+  unlocked: boolean;
+  markdown: string | null;
+  updatedAt: string | null;
+  role?: GroupRole;
+}
+
+export function fetchGroupReport(code: string, token: string) {
+  return apiFetch<GroupReport>(`/s/${code}/report?t=${encodeURIComponent(token)}`);
+}
+
+export interface GroupFeedItem {
+  id: string;
+  responseId: string;
+  userId: string | null;
+  name: string;
+  submittedAt: string | null;
+  roundNumber: number;
+  questionId: string;
+  questionText: string;
+  questionType: string;
+  durationMs: number;
+  transcription: string | null;
+  transcriptionStatus: string;
+  audioUrl: string | null;
+  imageUrl: string | null;
+  videoUrl: string | null;
+}
+
+export function fetchGroupFeed(code: string, token: string) {
+  return apiFetch<{ items: GroupFeedItem[] }>(`/s/${code}/feed?t=${encodeURIComponent(token)}`);
 }
 
 export function deleteSurvey(apiKey: string, surveyId: string) {
@@ -230,8 +384,8 @@ export interface StartResponseResult {
 
 export function useStartResponse() {
   return useMutation({
-    mutationFn: (code: string) =>
-      apiFetch<StartResponseResult>(`/s/${code}/responses`, {
+    mutationFn: ({ code, token }: { code: string; token?: string | null }) =>
+      apiFetch<StartResponseResult>(`/s/${code}/responses${token ? `?t=${encodeURIComponent(token)}` : ""}`, {
         method: "POST",
       }),
   });
@@ -243,7 +397,11 @@ export interface SubmitResponsePayload {
 }
 
 export interface SubmitResponseResult {
-  ok: boolean;
+  success: boolean;
+  id: string;
+  /** Your personal-link token for this parlo — answering is joining. */
+  memberToken: string | null;
+  visibility: GroupVisibility;
 }
 
 export function useSubmitResponse() {
@@ -296,13 +454,18 @@ interface APISurveyResponse {
   }[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
   intro: { audioUrl: string; durationMs: number; transcript: string | null } | null;
+  visibility?: GroupVisibility;
+  round?: { number: number; kind: RoundKind } | null;
+  member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
+  report?: { available: boolean; unlocked: boolean; markdown: string | null; updatedAt: string | null };
+  memberCount?: number;
 }
 
-export function useGetSurvey(code: string) {
+export function useGetSurvey(code: string, token?: string | null) {
   return useQuery<Survey>({
-    queryKey: ["survey", code],
+    queryKey: ["survey", code, token ?? ""],
     queryFn: async () => {
-      const data = await apiFetch<APISurveyResponse>(`/s/${code}`);
+      const data = await apiFetch<APISurveyResponse>(`/s/${code}${token ? `?t=${encodeURIComponent(token)}` : ""}`);
       const questions = data.questions.map((q) => ({
         id: q.id,
         text: q.text,
@@ -326,6 +489,11 @@ export function useGetSurvey(code: string) {
               transcript: data.intro.transcript ?? undefined,
             }
           : undefined,
+        visibility: data.visibility ?? "private",
+        round: data.round ?? null,
+        member: data.member ?? null,
+        report: data.report ?? { available: false, unlocked: false, markdown: null, updatedAt: null },
+        memberCount: data.memberCount ?? 0,
       };
     },
     enabled: !!code,

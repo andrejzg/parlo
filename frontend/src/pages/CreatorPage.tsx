@@ -717,7 +717,10 @@ export default function CreatorPage() {
                   setScreenKey((k) => k + 1);
                 }}
                 onOpenSurvey={(survey) => {
-                  if (survey.questionCount > 0) {
+                  if (survey.role === "member") {
+                    // Members go to their personal link: pending asks + the report.
+                    navigate(`/s/${survey.code}${survey.memberToken ? `?t=${encodeURIComponent(survey.memberToken)}` : ""}`);
+                  } else if (survey.questionCount > 0) {
                     navigate(`/d/${survey.dashboardCode}`);
                   } else {
                     // Draft — resume creation flow from the brief
@@ -884,6 +887,8 @@ export default function CreatorPage() {
                 surveyCode={surveyCode}
                 surveyTitle={surveyTitle}
                 dashboardCode={dashboardCode}
+                surveyId={surveyId}
+                apiKey={apiKey}
                 onDashboard={handleDashboard}
               />
             )}

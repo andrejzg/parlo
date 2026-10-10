@@ -1,84 +1,34 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import type { AuthVariables } from "../middleware/auth";
 
-const audience = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+/**
+ * Inbox notifications for the authenticated user. (Group membership moved
+ * to routes/groups.ts.)
+ */
+const audience = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
-// ── GET /api/my/surveys/:surveyId/members ── List participants who responded
-audience.get("/api/my/surveys/:surveyId/members", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) return c.json({ error: "Authentication required" }, 401);
+async function phoneFor(db: D1Database, userId: string): Promise<string | null> {
+  const user = await db.prepare("SELECT phone FROM users WHERE id = ?").bind(userId).first<{ phone: string | null }>();
+  return user?.phone ?? null;
+}
 
-  const surveyId = c.req.param("surveyId");
-  const db = c.env.DB;
-
-  // Verify survey belongs to this creator
-  const survey = await db
-    .prepare("SELECT id FROM surveys WHERE id = ? AND creator_id = ?")
-    .bind(surveyId, creatorId)
-    .first();
-
-  if (!survey) {
-    return c.json({ error: "Survey not found" }, 404);
-  }
-
-  const result = await db
-    .prepare(
-      `SELECT p.id, p.phone, p.first_name, p.last_name,
-              p.linkedin_name, p.linkedin_photo_url, p.linkedin_email,
-              sp.responded_at
-       FROM participants p
-       JOIN survey_participants sp ON sp.participant_id = p.id
-       WHERE sp.survey_id = ?
-       ORDER BY sp.responded_at DESC`
-    )
-    .bind(surveyId)
-    .all<{
-      id: string;
-      phone: string | null;
-      first_name: string | null;
-      last_name: string | null;
-      linkedin_name: string | null;
-      linkedin_photo_url: string | null;
-      linkedin_email: string | null;
-      responded_at: string | null;
-    }>();
-
-  const members = result.results.map((row) => ({
-    id: row.id,
-    phone: row.phone,
-    firstName: row.first_name,
-    lastName: row.last_name,
-    linkedinName: row.linkedin_name,
-    linkedinPhotoUrl: row.linkedin_photo_url,
-    linkedinEmail: row.linkedin_email,
-    respondedAt: row.responded_at,
-  }));
-
-  return c.json({ members });
-});
-
-// ── GET /api/my/notifications ── List notifications for authenticated creator
+// ── GET /api/my/notifications ── List notifications for the authenticated user
 audience.get("/api/my/notifications", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) return c.json({ error: "Authentication required" }, 401);
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
 
   const db = c.env.DB;
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
   const before = c.req.query("before");
 
-  // Get creator's phone
-  const creator = await db
-    .prepare("SELECT phone FROM creators WHERE id = ?")
-    .bind(creatorId)
-    .first<{ phone: string | null }>();
-
-  if (!creator?.phone) {
+  const phone = await phoneFor(db, userId);
+  if (!phone) {
     return c.json({ notifications: [], unreadCount: 0, hasMore: false });
   }
 
-  // Build query with optional cursor
   let query = `SELECT * FROM notifications WHERE user_phone = ?`;
-  const bindings: (string | number)[] = [creator.phone];
+  const bindings: (string | number)[] = [phone];
 
   if (before) {
     query += ` AND created_at < ?`;
@@ -103,10 +53,9 @@ audience.get("/api/my/notifications", async (c) => {
       created_at: string;
     }>();
 
-  // Get unread count
   const unreadResult = await db
     .prepare("SELECT COUNT(*) as count FROM notifications WHERE user_phone = ? AND read_at IS NULL")
-    .bind(creator.phone)
+    .bind(phone)
     .first<{ count: number }>();
 
   const notifications = result.results.map((row) => ({
@@ -129,37 +78,27 @@ audience.get("/api/my/notifications", async (c) => {
 
 // ── POST /api/my/notifications/read ── Mark notifications as read
 audience.post("/api/my/notifications/read", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) return c.json({ error: "Authentication required" }, 401);
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
 
   const db = c.env.DB;
   const body = await c.req.json<{ notificationIds?: string[]; readAll?: boolean }>().catch(() => ({} as { notificationIds?: string[]; readAll?: boolean }));
 
-  // Get creator's phone
-  const creator = await db
-    .prepare("SELECT phone FROM creators WHERE id = ?")
-    .bind(creatorId)
-    .first<{ phone: string | null }>();
-
-  if (!creator?.phone) {
-    return c.json({ error: "Creator phone not found" }, 404);
+  const phone = await phoneFor(db, userId);
+  if (!phone) {
+    return c.json({ error: "No phone on this account" }, 404);
   }
 
   if (body.readAll) {
     await db
-      .prepare(
-        "UPDATE notifications SET read_at = datetime('now') WHERE user_phone = ? AND read_at IS NULL"
-      )
-      .bind(creator.phone)
+      .prepare("UPDATE notifications SET read_at = datetime('now') WHERE user_phone = ? AND read_at IS NULL")
+      .bind(phone)
       .run();
   } else if (body.notificationIds?.length) {
     const placeholders = body.notificationIds.map(() => "?").join(", ");
     await db
-      .prepare(
-        `UPDATE notifications SET read_at = datetime('now')
-         WHERE id IN (${placeholders}) AND user_phone = ? AND read_at IS NULL`
-      )
-      .bind(...body.notificationIds, creator.phone)
+      .prepare(`UPDATE notifications SET read_at = datetime('now') WHERE id IN (${placeholders}) AND user_phone = ? AND read_at IS NULL`)
+      .bind(...body.notificationIds, phone)
       .run();
   } else {
     return c.json({ error: "notificationIds or readAll required" }, 400);

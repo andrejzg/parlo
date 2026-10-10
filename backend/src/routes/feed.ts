@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { Env, ResponseAnswer, SurveyQuestion } from "../types";
+import type { AuthVariables } from "../middleware/auth";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
 
-const feed = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+const feed = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // ── Helper: enrich answers with presigned URLs ──
 async function enrichAnswer(
@@ -44,7 +45,7 @@ async function enrichAnswer(
 
 // ── GET /api/my/feed ── Cross-survey paginated feed for the listening player
 feed.get("/api/my/feed", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const db = c.env.DB;
@@ -193,7 +194,7 @@ feed.get("/api/my/feed", async (c) => {
 
 // ── POST /api/my/responses/:responseId/read ── Mark single response as read
 feed.post("/api/my/responses/:responseId/read", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const responseId = c.req.param("responseId");
@@ -228,7 +229,7 @@ feed.post("/api/my/responses/:responseId/read", async (c) => {
 
 // ── POST /api/my/responses/read ── Batch mark as read
 feed.post("/api/my/responses/read", async (c) => {
-  const creatorId = c.get("creatorId");
+  const creatorId = c.get("userId");
   if (!creatorId) return c.json({ error: "Authentication required" }, 401);
 
   const body = await c.req.json<{ responseIds: string[] }>().catch(() => null);

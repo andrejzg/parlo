@@ -34,6 +34,9 @@ import {
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { trackServerEvent } from "../services/analytics";
+import type { AuthVariables } from "../middleware/auth";
+import { claimOwnership, displayNameFor, ensureMember, getMemberByToken, normalizePhone } from "../services/groups";
+import { ensureRound1, latestSentRound, pendingAsksFor } from "../services/rounds";
 
 /** Longest creator audio we'll transcribe in one go (≈10 min of Opus). */
 const MAX_TRANSCRIBE_BYTES = 12 * 1024 * 1024;
@@ -57,7 +60,7 @@ function sanitizeClarifications(input: unknown): Clarification[] {
     .slice(0, MAX_CLARIFICATIONS);
 }
 
-const surveys = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+const surveys = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // ── POST /api/surveys ── Create a new survey
 surveys.post("/api/surveys", async (c) => {
@@ -71,50 +74,43 @@ surveys.post("/api/surveys", async (c) => {
   const body = await c.req.json<CreateSurveyRequest>().catch(() => ({} as CreateSurveyRequest));
   const db = c.env.DB;
 
-  // Upsert creator
-  const creatorId = generateId();
-  // Normalize phone: strip leading zeros after country code (+4407... → +447...)
-  const creatorPhone = body.creatorPhone?.replace(/^(\+\d{1,4})0+/, "$1");
+  // One identity table: find or create the owner (anonymous until they verify a phone).
+  let finalCreatorId: string;
+  const creatorPhone = body.creatorPhone ? normalizePhone(body.creatorPhone) : null;
   if (creatorPhone) {
-    const existing = await db
-      .prepare("SELECT id FROM creators WHERE phone = ?")
-      .bind(creatorPhone)
-      .first<{ id: string }>();
-
+    const existing = await db.prepare("SELECT id FROM users WHERE phone = ?").bind(creatorPhone).first<{ id: string }>();
     if (existing) {
-      // Use existing creator
-      var finalCreatorId = existing.id;
+      finalCreatorId = existing.id;
     } else {
+      finalCreatorId = generateId();
       await db
-        .prepare("INSERT INTO creators (id, phone, wa_name) VALUES (?, ?, ?)")
-        .bind(creatorId, creatorPhone, body.creatorName ?? null)
+        .prepare("INSERT INTO users (id, phone, wa_name) VALUES (?, ?, ?)")
+        .bind(finalCreatorId, creatorPhone, body.creatorName ?? null)
         .run();
-      var finalCreatorId = creatorId;
     }
   } else {
-    // Anonymous creator
-    await db
-      .prepare("INSERT INTO creators (id) VALUES (?)")
-      .bind(creatorId)
-      .run();
-    var finalCreatorId = creatorId;
+    finalCreatorId = generateId();
+    await db.prepare("INSERT INTO users (id) VALUES (?)").bind(finalCreatorId).run();
   }
 
-  // Create survey
+  // Create the parlo. Private by default: only the owner, admins and the
+  // agent hear raw answers; every member gets the agent's report.
   const surveyId = generateId();
   const code = generateCode(8);
   const dashboardCode = generateCode(12);
 
   await db
     .prepare(
-      "INSERT INTO surveys (id, code, dashboard_code, creator_id, title) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO surveys (id, code, dashboard_code, creator_id, title, visibility) VALUES (?, ?, ?, ?, ?, 'private')"
     )
     .bind(surveyId, code, dashboardCode, finalCreatorId, body.title ?? null)
     .run();
+  await ensureMember(db, surveyId, finalCreatorId, "owner");
+  await ensureRound1(db, surveyId);
 
-  // Generate or retrieve API key for the creator
+  // Generate or retrieve the owner's API key
   const existingCreator = await db
-    .prepare("SELECT api_key FROM creators WHERE id = ?")
+    .prepare("SELECT api_key FROM users WHERE id = ?")
     .bind(finalCreatorId)
     .first<{ api_key: string | null }>();
 
@@ -122,7 +118,7 @@ surveys.post("/api/surveys", async (c) => {
   if (!apiKey) {
     apiKey = `pk_${generateCode(32)}`;
     await db
-      .prepare("UPDATE creators SET api_key = ? WHERE id = ?")
+      .prepare("UPDATE users SET api_key = ? WHERE id = ?")
       .bind(apiKey, finalCreatorId)
       .run();
   }
@@ -407,14 +403,18 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
  * Deleting first means "Regenerate" doesn't pile duplicates into the table.
  */
 async function replaceQuestions(db: D1Database, surveyId: string, generated: GeneratedSurvey) {
-  const deleteStmt = db.prepare("DELETE FROM survey_questions WHERE survey_id = ?").bind(surveyId);
+  // Only round 1 (the original set) is replaced; later rounds are the agent's.
+  const round1 = await ensureRound1(db, surveyId);
+  const deleteStmt = db
+    .prepare("DELETE FROM survey_questions WHERE survey_id = ? AND (round_id = ? OR round_id IS NULL)")
+    .bind(surveyId, round1.id);
   const inserts = generated.questions.map((q, i) => {
     const qType = q.type === "photo" ? "photo" : q.type === "video" ? "video" : "voice";
     return db
       .prepare(
-        "INSERT INTO survey_questions (id, survey_id, sort_order, text, hint, question_type) VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO survey_questions (id, survey_id, sort_order, text, hint, question_type, round_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
       )
-      .bind(generateId(), surveyId, i + 1, q.text, q.hint ?? null, qType);
+      .bind(generateId(), surveyId, i + 1, q.text, q.hint ?? null, qType, round1.id);
   });
   await db.batch([deleteStmt, ...inserts]);
 }
@@ -441,27 +441,28 @@ surveys.put("/api/surveys/:id/questions", async (c) => {
     return c.json({ error: "Request body must include a non-empty questions array" }, 400);
   }
 
-  // Atomically delete existing questions and insert new ones
+  // Atomically replace round 1's questions (later rounds belong to the agent)
+  const round1 = await ensureRound1(db, surveyId);
   const deleteStmt = db
-    .prepare("DELETE FROM survey_questions WHERE survey_id = ?")
-    .bind(surveyId);
+    .prepare("DELETE FROM survey_questions WHERE survey_id = ? AND (round_id = ? OR round_id IS NULL)")
+    .bind(surveyId, round1.id);
   const insertStmts = body.questions.map((q, i) => {
     const qId = generateId();
     const qType = q.type === "photo" ? "photo" : q.type === "video" ? "video" : "voice";
     return db
       .prepare(
-        "INSERT INTO survey_questions (id, survey_id, sort_order, text, hint, question_type) VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO survey_questions (id, survey_id, sort_order, text, hint, question_type, round_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
       )
-      .bind(qId, surveyId, i + 1, q.text, q.hint ?? null, qType);
+      .bind(qId, surveyId, i + 1, q.text, q.hint ?? null, qType, round1.id);
   });
   await db.batch([deleteStmt, ...insertStmts]);
 
   // Fetch the inserted questions to return them
   const updated = await db
     .prepare(
-      "SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order"
+      "SELECT * FROM survey_questions WHERE survey_id = ? AND round_id = ? ORDER BY sort_order"
     )
-    .bind(surveyId)
+    .bind(surveyId, round1.id)
     .all<SurveyQuestion>();
 
   trackServerEvent(surveyId, "survey_questions_updated", {
@@ -473,6 +474,10 @@ surveys.put("/api/surveys/:id/questions", async (c) => {
 });
 
 // ── GET /api/s/:code ── Get survey for participant
+//
+// `?t=<member token>` personalises it: the questions become the asks still
+// pending for that member (including probes aimed at them) and, once they
+// have answered at least once, the agent's report is unlocked.
 surveys.get("/api/s/:code", async (c) => {
   const code = extractCode(c.req.param("code"));
   const db = c.env.DB;
@@ -486,17 +491,28 @@ surveys.get("/api/s/:code", async (c) => {
     return c.json({ error: "Survey not found or inactive" }, 404);
   }
 
-  const questions = await db
-    .prepare(
-      "SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order"
-    )
-    .bind(survey.id)
-    .all<SurveyQuestion>();
+  const member = await getMemberByToken(db, survey.id, c.req.query("t"));
+  const [questions, round, memberCountRow] = await Promise.all([
+    pendingAsksFor(db, survey.id, member?.user_id ?? null),
+    latestSentRound(db, survey.id),
+    db.prepare("SELECT COUNT(*) AS n FROM group_members WHERE survey_id = ? AND removed_at IS NULL").bind(survey.id).first<{ n: number }>(),
+  ]);
 
-  const audio = await db
-    .prepare("SELECT question_key, audio_r2_key FROM survey_audio WHERE survey_id = ?")
-    .bind(survey.id)
-    .all<{ question_key: string; audio_r2_key: string }>();
+  let memberView: SurveyPublicView["member"] = null;
+  let hasAnswered = false;
+  if (member) {
+    const user = await db
+      .prepare("SELECT first_name, last_name, wa_name, linkedin_name, phone FROM users WHERE id = ?")
+      .bind(member.user_id)
+      .first<{ first_name: string | null; last_name: string | null; wa_name: string | null; linkedin_name: string | null; phone: string | null }>();
+    const answered = await db
+      .prepare("SELECT 1 FROM responses WHERE survey_id = ? AND user_id = ? AND status != 'in_progress' LIMIT 1")
+      .bind(survey.id, member.user_id)
+      .first();
+    hasAnswered = !!answered;
+    memberView = { role: member.role, displayName: user ? displayNameFor(user) : null, hasAnswered };
+  }
+  const unlocked = !!member && (hasAnswered || member.role === "owner" || member.role === "admin");
 
   // Creator's voice hello — signed read URL, 1h TTL like dashboard audio.
   let intro: SurveyPublicView["intro"] = null;
@@ -513,12 +529,19 @@ surveys.get("/api/s/:code", async (c) => {
     id: survey.id,
     title: survey.title,
     status: survey.status,
-    questions: questions.results,
-    audioKeys: audio.results.map((a) => ({
-      questionKey: a.question_key,
-      audioR2Key: a.audio_r2_key,
-    })),
+    questions,
+    audioKeys: [],
     intro,
+    visibility: survey.visibility === "open" ? "open" : "private",
+    round: round ? { number: round.number, kind: round.kind } : null,
+    member: memberView,
+    report: {
+      available: !!survey.report_md,
+      unlocked,
+      markdown: unlocked ? survey.report_md ?? null : null,
+      updatedAt: survey.report_updated_at ?? null,
+    },
+    memberCount: memberCountRow?.n ?? 0,
   };
 
   return c.json(view);
@@ -629,11 +652,7 @@ surveys.post("/api/surveys/:id/claim", async (c) => {
     return c.json({ error: "Phone number is required" }, 400);
   }
 
-  // Normalize: strip leading zeros after country code prefix
-  // e.g. +4407976... → +447976...
-  const phone = body.phone.replace(/^(\+\d{1,4})0+/, "$1");
-
-  // Find the survey and its creator
+  // Find the survey and its owner
   const survey = await db
     .prepare("SELECT id, creator_id FROM surveys WHERE id = ?")
     .bind(surveyId)
@@ -643,35 +662,11 @@ surveys.post("/api/surveys/:id/claim", async (c) => {
     return c.json({ error: "Survey not found" }, 404);
   }
 
-  // Check if another creator already owns this phone
-  const existingCreator = await db
-    .prepare("SELECT id FROM creators WHERE phone = ? AND id != ?")
-    .bind(phone, survey.creator_id)
-    .first<{ id: string }>();
+  const phone = normalizePhone(body.phone);
+  const finalCreatorId = await claimOwnership(db, surveyId, survey.creator_id, phone, body.name ?? null);
 
-  if (existingCreator) {
-    // Merge: reassign this survey to the existing creator
-    await db
-      .prepare("UPDATE surveys SET creator_id = ? WHERE id = ?")
-      .bind(existingCreator.id, surveyId)
-      .run();
-    // Clean up the orphaned anonymous creator
-    await db
-      .prepare("DELETE FROM creators WHERE id = ? AND phone IS NULL")
-      .bind(survey.creator_id)
-      .run();
-  } else {
-    // Update the current creator record with the phone
-    await db
-      .prepare("UPDATE creators SET phone = ?, wa_name = COALESCE(wa_name, ?) WHERE id = ?")
-      .bind(phone, body.name ?? null, survey.creator_id)
-      .run();
-  }
-
-  // Fetch the API key for the (possibly merged) creator
-  const finalCreatorId = existingCreator?.id ?? survey.creator_id;
   const creator = await db
-    .prepare("SELECT api_key FROM creators WHERE id = ?")
+    .prepare("SELECT api_key FROM users WHERE id = ?")
     .bind(finalCreatorId)
     .first<{ api_key: string | null }>();
 
@@ -686,11 +681,11 @@ surveys.post("/api/auth/login", async (c) => {
   if (!body?.phone) {
     return c.json({ error: "Phone is required" }, 400);
   }
-  const phone = body.phone.replace(/^(\+\d{1,4})0+/, "$1");
+  const phone = normalizePhone(body.phone);
   const db = c.env.DB;
 
   const creator = await db
-    .prepare("SELECT id, api_key FROM creators WHERE phone = ?")
+    .prepare("SELECT id, api_key FROM users WHERE phone = ?")
     .bind(phone)
     .first<{ id: string; api_key: string | null }>();
 
@@ -703,17 +698,17 @@ surveys.post("/api/auth/login", async (c) => {
 
 // ── GET /api/auth/validate ── Validate API key and return creatorId
 surveys.get("/api/auth/validate", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) {
+  const userId = c.get("userId");
+  if (!userId) {
     return c.json({ valid: false }, 401);
   }
-  return c.json({ valid: true, creatorId });
+  return c.json({ valid: true, creatorId: userId, userId });
 });
 
-// ── GET /api/my/surveys ── List surveys for authenticated creator
+// ── GET /api/my/surveys ── Every parlo the authenticated user is in, with their role
 surveys.get("/api/my/surveys", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) {
+  const userId = c.get("userId");
+  if (!userId) {
     return c.json({ error: "Authentication required" }, 401);
   }
 
@@ -727,32 +722,42 @@ surveys.get("/api/my/surveys", async (c) => {
         s.dashboard_code,
         s.title,
         s.status,
+        s.visibility,
         s.created_at,
-        COUNT(DISTINCT sq.id) AS question_count,
-        COUNT(DISTINCT CASE WHEN r.status = 'submitted' THEN r.id END) AS response_count,
+        s.report_updated_at,
+        gm.role,
+        gm.access_token,
+        (SELECT COUNT(*) FROM survey_questions sq WHERE sq.survey_id = s.id) AS question_count,
+        (SELECT COUNT(*) FROM group_members m WHERE m.survey_id = s.id AND m.removed_at IS NULL) AS member_count,
+        COUNT(DISTINCT CASE WHEN r.status != 'in_progress' THEN r.id END) AS response_count,
         COUNT(DISTINCT CASE
-          WHEN r.status = 'submitted'
+          WHEN r.status != 'in_progress'
             AND r.submitted_at > COALESCE(csc.last_read_at, '1970-01-01T00:00:00Z')
           THEN r.id
         END) AS new_count,
-        MAX(CASE WHEN r.status = 'submitted' THEN r.submitted_at END) AS latest_response_at
-      FROM surveys s
-      LEFT JOIN survey_questions sq ON sq.survey_id = s.id
+        MAX(CASE WHEN r.status != 'in_progress' THEN r.submitted_at END) AS latest_response_at
+      FROM group_members gm
+      JOIN surveys s ON s.id = gm.survey_id
       LEFT JOIN responses r ON r.survey_id = s.id
       LEFT JOIN creator_survey_cursors csc ON csc.survey_id = s.id AND csc.creator_id = ?
-      WHERE s.creator_id = ? AND s.status != 'deleted'
+      WHERE gm.user_id = ? AND gm.removed_at IS NULL AND s.status != 'deleted'
       GROUP BY s.id
       ORDER BY s.created_at DESC`
     )
-    .bind(creatorId, creatorId)
+    .bind(userId, userId)
     .all<{
       id: string;
       code: string;
       dashboard_code: string;
       title: string | null;
       status: string;
+      visibility: string;
       created_at: string;
+      report_updated_at: string | null;
+      role: "owner" | "admin" | "member";
+      access_token: string;
       question_count: number;
+      member_count: number;
       response_count: number;
       new_count: number;
       latest_response_at: string | null;
@@ -761,14 +766,20 @@ surveys.get("/api/my/surveys", async (c) => {
   const surveys_list = rows.results.map((r) => ({
     id: r.id,
     code: r.code,
-    dashboardCode: r.dashboard_code,
+    // Members never see the dashboard code; it would let them read raw answers.
+    dashboardCode: r.role === "member" ? "" : r.dashboard_code,
     title: r.title,
     status: r.status,
+    visibility: r.visibility === "open" ? "open" : "private",
     createdAt: r.created_at,
+    role: r.role,
+    memberToken: r.access_token,
     questionCount: r.question_count,
+    memberCount: r.member_count,
     responseCount: r.response_count,
-    newCount: r.new_count,
+    newCount: r.role === "member" ? 0 : r.new_count,
     latestResponseAt: r.latest_response_at,
+    reportUpdatedAt: r.report_updated_at,
   }));
 
   return c.json({ surveys: surveys_list });
@@ -776,16 +787,16 @@ surveys.get("/api/my/surveys", async (c) => {
 
 // ── DELETE /api/my/surveys/:id ── Soft-delete a survey (sets status to 'deleted')
 surveys.delete("/api/my/surveys/:id", async (c) => {
-  const creatorId = c.get("creatorId");
-  if (!creatorId) return c.json({ error: "Authentication required" }, 401);
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
 
   const surveyId = c.req.param("id");
   const db = c.env.DB;
 
-  // Verify the survey belongs to this creator
+  // Only the owner can delete a parlo
   const survey = await db
     .prepare("SELECT id FROM surveys WHERE id = ? AND creator_id = ?")
-    .bind(surveyId, creatorId)
+    .bind(surveyId, userId)
     .first<{ id: string }>();
 
   if (!survey) return c.json({ error: "Survey not found" }, 404);

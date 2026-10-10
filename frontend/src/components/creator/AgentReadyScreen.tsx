@@ -8,17 +8,36 @@ import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 import { trackEvent } from "@/lib/posthog";
 import { buildShareUrl } from "@/lib/slug";
 import { buildBotChatUrl } from "@/lib/whatsapp";
+import { visibilityCopy } from "@/lib/visibility";
+import { updateGroupSettings } from "@/api/client";
+import { toast } from "@/components/ui/sonner";
 
 interface AgentReadyScreenProps {
   surveyCode: string;
   surveyTitle?: string | null;
   dashboardCode?: string;
+  /** Needed to persist the open-group switch. */
+  surveyId?: string | null;
+  apiKey?: string | null;
   onDashboard?: () => void;
 }
 
-export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCode, onDashboard }: AgentReadyScreenProps) {
+export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCode, surveyId, apiKey, onDashboard }: AgentReadyScreenProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [dashboardCopied, setDashboardCopied] = useState(false);
+  const vis = visibilityCopy(isOpen ? "open" : "private");
+
+  const handleOpenChange = async (open: boolean) => {
+    setIsOpen(open);
+    if (!surveyId || !apiKey) return;
+    try {
+      await updateGroupSettings(apiKey, surveyId, { visibility: open ? "open" : "private" });
+      trackEvent("group_visibility_toggled", { surveyCode, visibility: open ? "open" : "private", from: "ready" });
+    } catch {
+      setIsOpen(!open);
+      toast.error("Couldn't change the group's visibility. You can do it later from the dashboard.");
+    }
+  };
 
   const shareUrl = buildShareUrl(surveyTitle, surveyCode);
   const shareText = `Answer my parlo! ${shareUrl}`;
@@ -70,19 +89,17 @@ export default function AgentReadyScreen({ surveyCode, surveyTitle, dashboardCod
             Your agent is ready.
           </h1>
           <p className="text-m text-neutral-8">
-            Share the link to start collecting voice responses.
+            Share the link. Everyone who answers joins the group, and the agent reports back to all of them.
           </p>
         </motion.div>
 
         {/* Open / Private toggle */}
         <motion.div variants={fadeUp} className="flex items-center gap-s rounded-m bg-card p-m w-full">
           <div className="flex-1 flex flex-col gap-xxs">
-            <Label htmlFor="open-survey">Open parlo</Label>
-            <p className="text-xs text-muted-foreground">
-              {isOpen ? "Anyone with the link can see results" : "Only you can see results"}
-            </p>
+            <Label htmlFor="open-survey">Open group</Label>
+            <p className="text-xs text-muted-foreground">{vis.settingDescription}</p>
           </div>
-          <Switch id="open-survey" checked={isOpen} onCheckedChange={setIsOpen} />
+          <Switch id="open-survey" checked={isOpen} onCheckedChange={handleOpenChange} data-testid="ready-open-switch" />
         </motion.div>
 
         {/* Share link card */}

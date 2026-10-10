@@ -171,7 +171,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
   const db = c.env.DB;
   const result = await db
     .prepare(
-      `UPDATE creators
+      `UPDATE users
        SET linkedin_sub = ?,
            linkedin_name = ?,
            linkedin_email = ?,
@@ -193,7 +193,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
     .run();
 
   if (result.meta.changes === 0) {
-    console.error("[linkedin] No creator found for phone:", normalizedPhone);
+    console.error("[linkedin] No user found for phone:", normalizedPhone);
     return c.redirect("https://parlo.me/?linkedin=not_found");
   }
 
@@ -224,7 +224,7 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
 
   const creator = await db
     .prepare(
-      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM creators WHERE phone = ?"
+      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM users WHERE phone = ?"
     )
     .bind(normalizedPhone)
     .first<{
@@ -247,7 +247,7 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
     r2Key = await mirrorPhotoToR2(c.env, creator.linkedin_sub, creator.linkedin_photo_url);
     if (r2Key) {
       await db
-        .prepare("UPDATE creators SET linkedin_photo_r2_key = ? WHERE phone = ?")
+        .prepare("UPDATE users SET linkedin_photo_r2_key = ? WHERE phone = ?")
         .bind(r2Key, normalizedPhone)
         .run();
     }
@@ -273,7 +273,7 @@ linkedin.get("/api/auth/linkedin/photo", async (c) => {
 
   const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
   const creator = await c.env.DB
-    .prepare("SELECT linkedin_photo_r2_key FROM creators WHERE phone = ?")
+    .prepare("SELECT linkedin_photo_r2_key FROM users WHERE phone = ?")
     .bind(normalizedPhone)
     .first<{ linkedin_photo_r2_key: string | null }>();
 
@@ -305,7 +305,7 @@ linkedin.post("/api/auth/linkedin/disconnect", async (c) => {
   const phone = body.phone.replace(/^(\+\d{1,4})0+/, "$1");
   await c.env.DB
     .prepare(
-      `UPDATE creators
+      `UPDATE users
        SET linkedin_sub = NULL, linkedin_name = NULL, linkedin_email = NULL,
            linkedin_photo_url = NULL, linkedin_photo_r2_key = NULL,
            linkedin_connected_at = NULL

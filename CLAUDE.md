@@ -1,6 +1,6 @@
 # Parlo
 
-Voice interview app. Creators speak (or type) their agent config, share via WhatsApp, and participants respond by voice.
+Group chats, run by an agent. A creator describes what they want to learn (by voice or by typing), shares a link on WhatsApp, and everyone who answers by voice joins the group. A persistent agent (one Durable Object per parlo) gathers the answers, writes the report members get back, and proposes follow-up rounds for the owner to approve. See "Groups, rounds and the agent" below.
 
 ## Rules for Agents
 
@@ -25,6 +25,7 @@ parlo/
 - **Backend:** Cloudflare Workers, Hono router, TypeScript
 - **Database:** Cloudflare D1 (SQLite)
 - **Audio Storage:** Cloudflare R2 (presigned upload URLs with one-time tokens)
+- **Group agent:** Cloudflare Agents SDK (`agents` package) — `GroupAgent` Durable Object in `backend/src/agent/GroupAgent.ts`, binding `GROUP_AGENT`, instance name = survey id. Its private SQLite holds the agent's file system (a `files` table). The planning loop runs on the Vercel AI SDK (`ai` v7, `generateText` + tools): Claude Opus 5.5 via `@ai-sdk/anthropic` when `ANTHROPIC_API_KEY` is set (optional secret, not yet provisioned), else Cerebras `gpt-oss-120b` via `@ai-sdk/cerebras`, else Workers AI Llama 3.3 via `workers-ai-provider` (`backend/src/agent/model.ts`). Needs `nodejs_compat`, a SQLite DO migration tag and wrangler 4 (all in `backend/wrangler.toml` / `package.json`).
 - **AI:** Cerebras `gpt-oss-120b` for question generation (secret `CEREBRAS_API_KEY`; falls back to Workers AI Llama 3.3 70B if the key is missing or the call fails) + Cloudflare Workers AI Whisper (STT — Cerebras has no speech-to-text)
 - **TypeSafe (typed AI judgments):** secret `TYPESAFE_API_KEY` — set as a GitHub Actions secret (synced to the Worker on deploy), already on the `parlo-backend` Worker, and in the gitignored `backend/.dev.vars` for local work and agents (`wrangler dev` reads it automatically). Read it from `c.env.TYPESAFE_API_KEY` server-side only; never ship it to the frontend or commit it. Current key is a pre-launch dev key — rotate before going live. Use the `typesafe-ai` skill when building with it; docs at https://docs.typesafe.ai/llms.txt
 - **WhatsApp:** Kapso.ai (@kapso/whatsapp-cloud-api)
@@ -45,7 +46,7 @@ parlo/
 IMPORTANT: When building frontend features that call the backend, always verify the actual response shape by reading the backend route handler. Do NOT guess field names.
 
 ### POST /api/surveys
-Creates a survey. Accepts empty body or `{creatorPhone?, creatorName?, title?}`.
+Creates a parlo: a `users` row for the owner (anonymous until a phone is claimed), the survey with `visibility = 'private'`, an `owner` row in `group_members`, and round 1 in `rounds`. Accepts empty body or `{creatorPhone?, creatorName?, title?}`.
 Returns:
 ```json
 {
@@ -117,22 +118,27 @@ Returns: `{success: true, durationMs: number}`
 ### DELETE /api/surveys/:id/intro
 Removes the R2 object and nulls the three `intro_*` columns. Returns `{success: true}`.
 
-### GET /api/s/:code
-Get survey for participant. Returns:
+### GET /api/s/:code?t=<memberToken>
+Get a parlo for a participant. `t` (optional) is a member token from a personal link or a previous visit; it personalises the view. Returns:
 ```json
 {
   "id": "string",
   "title": "string | null",
   "status": "string",
-  "questions": [{"id": "string", "survey_id": "string", "sort_order": number, "text": "string", "hint": "string | null"}],
-  "audioKeys": [{"questionKey": "string", "audioR2Key": "string"}],
-  "intro": {"audioUrl": "string (signed, 1h)", "durationMs": number, "transcript": "string | null"} | null
+  "questions": [{"id", "survey_id", "sort_order", "text", "hint", "question_type", "round_id", "target_user_id"}],
+  "audioKeys": [],
+  "intro": {"audioUrl": "string (signed, 1h)", "durationMs": number, "transcript": "string | null"} | null,
+  "visibility": "private | open",
+  "round": {"number": number, "kind": "poll | probe"} | null,
+  "member": {"role": "owner | admin | member", "displayName": "string | null", "hasAnswered": boolean} | null,
+  "report": {"available": boolean, "unlocked": boolean, "markdown": "string | null", "updatedAt": "string | null"},
+  "memberCount": number
 }
 ```
-Note: Frontend must map this to its own Survey type (see api/client.ts useGetSurvey). `audioKeys` comes from the `survey_audio` table, which nothing writes to — it's always empty.
+`questions` are the asks still **pending for this visitor**: every ask in a sent round aimed at everyone (or at this member), minus what they already answered in a submitted response. Anonymous visitors get every "everyone" ask from every sent round. `report.markdown` is filled only when `unlocked` (a member who has answered at least once, or an owner/admin). Frontend maps this in `useGetSurvey(code, token)`.
 
-### POST /api/s/:code/responses
-Start a response session. Returns:
+### POST /api/s/:code/responses?t=<memberToken>
+Start a response session. With a valid token the row gets `user_id` and only the member's pending asks get upload URLs (so probes aimed at them are included). Returns:
 ```json
 {
   "id": "string",
@@ -143,9 +149,8 @@ Start a response session. Returns:
 
 ### POST /api/responses/:id/submit
 Submit response. Body: `{phone?: string, firstName?: string, lastName?: string}`.
-Creates `response_answers` rows by checking R2 for uploaded audio (.webm then .wav) per question.
-Triggers background Whisper transcription via `waitUntil()`.
-Returns: `{success: true, id: "string"}`
+**Answering is joining**: a phone finds or creates a `users` row and an active `group_members` row (role `member`; a removed member stays removed). Stamps `visibility_at_submit` with the parlo's current visibility. Creates `response_answers` rows by checking R2 for uploaded audio (.webm then .wav) per question (probes aimed at someone else are skipped). Notifies owner + admins (Inbox), then transcribes in the background; when transcription finishes, `services/transcription.ts` hands the transcripts to the group agent (`ingestResponse`).
+Returns: `{success: true, id: "string", memberToken: "string | null", visibility: "private | open"}` — the frontend stores `memberToken` per code (`lib/memberToken.ts`).
 
 ### POST /api/responses/:id/refresh-urls
 Generate fresh presigned upload URLs for an existing response session (e.g. after tokens expire).
@@ -195,7 +200,7 @@ Kapso webhook receiver. Handles:
 Requests must carry a valid `X-Webhook-Signature` (hex HMAC-SHA256 of the raw body with `KAPSO_WEBHOOK_SECRET`); otherwise 401. If the secret isn't set the endpoint returns 500 rather than accepting unsigned calls.
 
 ### GET /api/my/surveys
-List all surveys for the authenticated creator. Requires `X-Parlo-Api-Key` header or `Authorization: Bearer pk_...`.
+Every parlo the authenticated user is an active member of, with their role. Requires `X-Parlo-Api-Key` header or `Authorization: Bearer pk_...`.
 Returns 401 if no valid API key provided.
 Returns:
 ```json
@@ -203,15 +208,44 @@ Returns:
   "surveys": [{
     "id": "string",
     "code": "string",
-    "dashboardCode": "string",
+    "dashboardCode": "string (empty for role 'member')",
     "title": "string | null",
     "status": "string",
+    "visibility": "private | open",
     "createdAt": "string (ISO datetime)",
+    "role": "owner | admin | member",
+    "memberToken": "string (your personal-link token)",
     "questionCount": "number",
-    "responseCount": "number (submitted only)"
+    "memberCount": "number",
+    "responseCount": "number (submitted only)",
+    "newCount": "number",
+    "latestResponseAt": "string | null",
+    "reportUpdatedAt": "string | null"
   }]
 }
 ```
+
+### Groups: members, roles, settings (`backend/src/routes/groups.ts`, API key required)
+- `GET /api/my/surveys/:id/members` → `{members: [{userId, role, phone (managers only), firstName, lastName, displayName, linkedinName, linkedinPhotoUrl, linkedinEmail, joinedAt, responseCount}], you: {userId, role}}`
+- `POST /api/my/surveys/:id/members/:userId/role` body `{role: "admin" | "member"}` — owner: any; admin: promote only
+- `DELETE /api/my/surveys/:id/members/:userId` — owner: anyone but self; admin: members only. The owner can never be removed.
+- `POST /api/my/surveys/:id/transfer` body `{userId}` — owner only; old owner becomes admin, `surveys.creator_id` follows the owner
+- `PUT /api/my/surveys/:id/settings` body `{visibility?: "open" | "private", title?}` — owner/admin
+- Permission rules live in `services/groups.ts` (`setMemberRole`, `removeMember`, `transferOwnership`, `claimOwnership`); they throw `GroupPermissionError` with the right status.
+
+### The agent and rounds (API key, owner/admin)
+- `GET /api/my/surveys/:id/agent` → `{state, files: [{path, updatedAt, bytes}], report, reportUpdatedAt, memory, rounds: [{...round, asks: [{id, text, hint, type, sortOrder, targetUserId, targetName}]}], visibility}`
+- `POST /api/my/surveys/:id/agent/digest` → runs `runDigest()` now; `{ok, report, answersRead, provider, model, error?}` (502 when the model fails)
+- `GET /api/my/surveys/:id/agent/file?path=/report.md` → one file from the agent's file system
+- `GET /api/my/surveys/:id/rounds` → all rounds with asks
+- `POST /api/my/surveys/:id/rounds/propose` body `{kind?: "poll" | "probe", hint?}` → the agent plans the next round (status `proposed`, replaces any earlier proposal)
+- `PUT /api/my/surveys/:id/rounds/:roundId` body `{asks: [{id, text, hint?}]}` — edit a proposed round's ask texts
+- `POST /api/my/surveys/:id/rounds/:roundId/approve` → status `sent`; Inbox notification + WhatsApp template `parlo_new_round` (personal link) to every member for a poll, only the targeted members for a probe. `{ok, round, notified}`
+- `POST /api/my/surveys/:id/rounds/:roundId/reject`
+
+### Member-facing (personal link, no API key)
+- `GET /api/s/:code/report?t=` → `{available, unlocked, markdown, updatedAt, role}`; unlocked = answered at least once (or owner/admin)
+- `GET /api/s/:code/feed?t=` → open groups only: `{items: [{id, responseId, userId, name, submittedAt, roundNumber, questionId, questionText, questionType, durationMs, transcription, transcriptionStatus, audioUrl, imageUrl, videoUrl}]}` — only responses with `visibility_at_submit = 'open'`
 
 ### Admin API (protected by Cloudflare Access)
 - GET /api/admin/prompts — list prompts
@@ -243,6 +277,26 @@ welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → 
 ## Creator voice intro (participant side)
 
 `useGetSurvey` maps `intro` from `GET /api/s/:code` to `survey.intro?: {audioUrl, durationMs, transcript?}`. `WelcomeScreen` renders a read-only `VoiceNotePill` ("A hello from the person asking") between the description and the meta row when it's set. `VoiceNotePill`'s `onDelete` is optional — omit it for read-only playback. Columns: `surveys.intro_r2_key`, `intro_duration_ms`, `intro_transcript` (migration `0011_survey_intro.sql`).
+
+## Groups, rounds and the agent
+
+Decided 2026-10-10 (see memory `project_agent_group_pivot`). Migration `0012_groups.sql`.
+
+**Identity.** One table, `users` (renamed from `creators`; `participants` + `survey_participants` are legacy, backfilled and no longer written). `users.api_key` authenticates owners/admins/members alike; the Hono context variable is `userId` (`middleware/auth.ts`, type `AuthVariables`). `surveys.creator_id` always equals the current owner.
+
+**Membership and roles.** `group_members (survey_id, user_id, role, access_token, joined_at, invited_by, removed_at)`. Exactly one `owner`; `admin`s and `member`s. Owner transfers ownership, promotes/demotes admins, removes anyone but themself. Admins promote members and remove members, never the owner or other admins. Answering is joining: the submit route adds a `member` row. Removal is soft (`removed_at`) and sticky.
+
+**Member tokens.** `group_members.access_token` is the secret in personal links (`parlo.me/s/{code}?t=…`). The participant page reads `?t=` (then strips it from the URL) or `localStorage parlo-member:{code}`, sends it on `GET /api/s/:code` and `POST /api/s/:code/responses`, and stores the one `submit` returns. Never trust a phone header for identity; only the token.
+
+**Visibility (two states, not a matrix).** `surveys.visibility`: `private` (default — only owner, admins and the agent hear raw answers; every member gets the agent's report) or `open` (everyone hears everyone, with names). Copy for both lives in `frontend/src/lib/visibility.ts`; the consent screen always shows it. Each response stamps `visibility_at_submit`, and the open-group feed only ever shows responses stamped `open`, so loosening later never exposes earlier answers. There is deliberately no anonymous-but-visible mode: voices are recognisable, the agent's paraphrase is the only real anonymisation.
+
+**Rounds.** `rounds (id, survey_id, number, kind poll|probe, status proposed|sent|rejected|closed, rationale, proposed_by, sent_at)`. Every ask is a `survey_questions` row with `round_id` and `target_user_id` (NULL = everyone). Round 1 is the creator's original set (`ensureRound1`); `/generate` and `PUT /questions` only replace round 1. `pendingAsksFor(db, surveyId, userId)` in `services/rounds.ts` computes what a visitor still has to answer. Owner approves at round level; `proposeRound` replaces any still-proposed round.
+
+**The agent (`GroupAgent`).** Files: `/brief.md`, `/questions.md`, `/members.md` (names and roles, never phones), `/answers/round-N/<userId|anon-responseId>/<questionId>.md`, `/report.md`, `/memory.md`, `/rounds/N-proposal.json`. `syncFromD1()` rebuilds the first three and imports transcribed answers idempotently, so the DO can always be rebuilt from D1. `ingestResponse()` files answers and schedules a debounced `runDigest()` (3 min, idempotent); a cron at 03:00 UTC runs `runNightly()`. `runDigest()` gives the model `list_files` / `read_file` / `read_files` / `search_files` / `write_file` (writes restricted to `/report.md`, `/memory.md`, `/notes/*`), then mirrors `/report.md` into `surveys.report_md` + `report_updated_at` so members read it from D1. `proposeRound()` asks for JSON (`{kind, rationale, asks: [{text, hint, target}]}`), validates probe targets against members who answered, and writes the `rounds` row. Both notify owner/admins via the Inbox (`services/notify.ts`). Every model call is tracked as a PostHog `$ai_generation` with `$ai_provider`.
+
+**Frontend.** Participant: `GroupReportScreen` (stage `report`) shows the report (locked until they answer), the open-group feed, and the way into the next round; `WelcomeScreen` shows round number, "welcome back", probe copy and the visibility line; `ThankYouScreen` gets "See what the group said". `ParticipantPage` snapshots the asks being answered in `flowQuestionsRef` because the personalised survey refetches with those asks gone after submit. Creator: `AgentDashboard` has Responses / Members (role actions per the rules above) / Agent tabs; `AgentPanel` polls `GET …/agent` every 6 s and holds the report, proposed-round approval, the open-group switch and the agent's notes. `AgentReadyScreen`'s switch persists via `PUT …/settings`. `CreatorHome` lists "Parlos you're in" (role `member`) and opens them on the personal link.
+
+**North-star metric.** Measure the loop, not the survey: report delivered → answered the next round → started their own parlo. Events: `group_report_viewed`, `participant_joined_group`, `agent_digest_completed`, `agent_round_proposed`, `round_approved`, `consent_accepted {round, visibility}`.
 
 ## Question types
 
@@ -313,6 +367,7 @@ OG images are generated dynamically by the backend Worker at `GET /api/og/:code.
   - `parlo_thanks` — `{{name}}`
   - `parlo_thanks_open` — `{{name}}`; button → `parlo.me/r/{surveyCode}`
   - `parlo_new_response` — `{{respondent}}`, `{{survey_title}}`, `{{response_count}}`; button → `parlo.me/d/{dashboardCode}`
+  - `parlo_new_round` — **not created on the WABA yet** (sends log a 404 until it is): `{{survey_title}}`, `{{round_number}}`; URL button suffix `{code}?t={memberToken}` → `parlo.me/s/{code}?t=…`. Sent on round approval by `routes/groups.ts`.
 - Templates live on the WABA: switching numbers/WABAs means recreating them.
 - Free-form `sendText` only reaches users who messaged us in the last 24h. The WhatsApp OTP fallback still uses `sendText`, so it fails for first-time users. Meta refuses AUTHENTICATION templates until the business is verified; once it is, create a `COPY_CODE` auth template and switch `routes/otp.ts` to it.
 
@@ -330,15 +385,19 @@ These keys are used in: R2 paths (`surveys/{id}/audience.webm`), upload URL keys
 # Frontend
 cd frontend && npx vite build && wrangler pages deploy dist --project-name parlo
 
-# Backend (must use global wrangler with --name flag)
+# Backend (must use global wrangler with --name flag). Apply D1 migrations first;
+# the Worker that ships with a migration expects its schema.
+/Users/andrejzg/.npm-global/bin/wrangler d1 migrations apply parlo --remote --config /Users/andrejzg/work/repos/parlo/backend/wrangler.toml
 /Users/andrejzg/.npm-global/bin/wrangler deploy --name parlo-backend --config /Users/andrejzg/work/repos/parlo/backend/wrangler.toml
 ```
+
+CI (`deploy.yml`) does the same: sync secrets → apply migrations → deploy → verify bindings (now including `GROUP_AGENT`).
 
 WARNING: Running `wrangler deploy` from the backend directory without `--name parlo-backend` may deploy to the wrong worker name. Always use the full command above.
 
 ## Design Conventions
 
-- **The thing a creator makes is a "parlo"** in all user-facing copy — "Create a parlo", "Your parlos", "Untitled parlo", "Share this parlo", the WhatsApp bot's replies. Never "survey" on screen. Code identifiers, routes, tables, analytics event names and the API stay `survey`. The two outward-facing explainers keep the category word on purpose: the landing headline ("Voice surveys, made easy.") and the Open Graph meta/image fallbacks in `frontend/functions/s/[code].ts` + `backend/src/routes/og.ts`.
+- **The thing a creator makes is a "parlo"** in all user-facing copy — "Create a parlo", "Your parlos", "Untitled parlo", "Share this parlo", the WhatsApp bot's replies. Never "survey" on screen. Code identifiers, routes, tables, analytics event names and the API stay `survey`. The landing headline is "Group chats, run by an agent." with the subline "Your agent gathers everyone's answers, follows up, and reports back." (changed 2026-10-10 for the agent-moderated group pivot). The Open Graph meta/image fallbacks still keep the category word on purpose in `frontend/functions/s/[code].ts` + `backend/src/routes/og.ts`.
 - Mobile-first, dark theme default
 - Stage-based state machine pattern (Index/Page.tsx orchestrates flows)
 - TypeForm-inspired animations with Framer Motion
@@ -430,6 +489,7 @@ Test fixtures in `e2e/fixtures/`:
 Current specs:
 - `e2e/participant/happy-path.spec.ts` — functional flow tests (voice recording, mic-denial text mode, session restore). **Note**: this file's `fillPIIAndSubmit` helper references first/last-name screens that no longer exist in the current flow — consider stale until refactored.
 - `e2e/device-audit.spec.ts` — visual audit across **iPhone SE / Pixel 7 / iPhone 15 Pro Max**. Two passes per device: (1) voice-only happy path captures welcome → consent → voice Q → review → phone, (2) two mini mixed-type surveys capture the welcome/consent/capture screens for photo and video. 33 screenshots total dropped in `/tmp/parlo-<device>/`. ~60s runtime. **Known failure (as of 2026-10-10):** pass 3 times out waiting for "All done!" because the participant flow now has a LinkedIn-connect stage after review that the spec predates — `08-stuck.png` shows it. Passes 1–2 still produce every welcome/consent/capture screenshot, so the run is still useful; just don't trust the exit code. Use this whenever you touch participant-facing UI — grep for layout regressions across small / medium / large viewports in one shot.
+- Both specs were re-run on 2026-10-10 after the groups pivot: brief-flow passes on all three devices; device-audit still fails only at the known "All done!" step above. The mock `GET /api/s/:code` fixture predates `visibility` / `round` / `member` / `report`, which the frontend defaults when missing.
 - `e2e/creator/brief-flow.spec.ts` — the creator flow on the same three devices, in "Type instead" mode with `/surveys`, `/brief/evaluate`, `/transcribe`, `/clarify`, `/generate` stubbed: brief (voice list → type-mode stack: partial → stack advances, complete → done card, CTA gating; then a text → voice → text round trip asserting the transcript, ticks and textarea all survive) → 2 follow-ups → checkpoint → 3 more → checkpoint → building → review with voice/photo/video badges. 9 screenshots per device in `$PARLO_SHOTS_DIR/parlo-creator-<device>/` (`/tmp` by default). Playwright's Chromium has no speech engine, so the voice path can't be covered here — test it on a real phone. The "+" → Build with sheet needs a logged-in home screen (localStorage `parlo-device-auth` with an `apiKey` + `/api/my/surveys` stubbed) and isn't in this spec.
 
 **Important**: Playwright specs need a running preview server, NOT the Vite dev server — `npm run dev` doesn't load `.env.production`, so Firebase init throws `auth/invalid-api-key` and the React app never mounts (blank white page in screenshots). Start a preview server first:
@@ -465,3 +525,8 @@ For the Claude desktop app's browser pane, a local (gitignored) `.claude/launch.
 17. **Brief checklist ids live in two places**: `frontend/src/lib/briefChecklist.ts` (labels/hints) and `backend/src/services/brief.ts` (TypeSafe rubric). Keep ids and order identical.
 18. **`wrangler pages deploy` ships the current git branch**: Pages production (`parlo.me`) is the `main` branch deployment. Running the documented frontend deploy command from a feature branch creates a *preview* deployment at `https://<branch>.parlo-d04.pages.dev` and leaves production untouched. To ship a feature branch to production deliberately, add `--branch main`. The backend command has no branch concept — it always deploys `api.parlo.me`.
 19. **Pages answers unknown paths with 200 HTML (SPA fallback)**: anything that fetches a static asset from `parlo.me` (e.g. the OG route loading `fonts/open-runde/OpenRunde-Bold.woff`) must validate the bytes, not just `res.ok` — on 2026-10-10 the Worker cached that HTML as "font data" and the OG endpoint streamed empty 200 PNGs until fixed. `routes/og.ts` now checks the WOFF magic, renders the PNG into memory before responding, and returns `no-store` on failure.
+20. **`wrangler dev` reports the custom domain as the request origin**: with `routes = [{pattern = "api.parlo.me", custom_domain = true}]`, `new URL(c.req.url).origin` inside local dev is `http://api.parlo.me`, so presigned upload/read URLs minted locally point at production. Rewrite the host to `http://127.0.0.1:8787` in local scripts (see the smoke test pattern) — it is correct in production.
+21. **Workers AI Llama narrates tool calls**: through `workers-ai-provider` the Llama fallback sometimes returns `{"name":"write_file","parameters":{…}}` as plain text instead of calling the tool. `GroupAgent.runDigest()` salvages those (`salvageWriteCalls`) and otherwise treats non-JSON final text as the report. Cerebras and Claude call tools properly.
+22. **`POST /api/auth/login` is unauthenticated** (pre-existing): it returns a user's API key for any phone number with no proof of OTP. The frontend calls it after a client-side Firebase OTP. Member tokens were added rather than built on this; verifying the Firebase ID token server-side is still open.
+23. **Legacy identity tables**: `participants` and `survey_participants` still exist but nothing writes to them since 0012. `survey_audio` was never written. Drop them in a later migration once the pivot has settled.
+24. **Two visibility states only**: don't add per-audience policies, tags or an anonymous-visible mode without re-reading the decision in memory. Consent copy must come from `lib/visibility.ts`.

@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Shield, Users } from "lucide-react";
 import type { MySurvey, LinkedInProfile } from "@/api/client";
 import { fadeUp, press, transitionLarge } from "@/lib/animations";
 import BottomTabBar from "./BottomTabBar";
@@ -73,17 +73,34 @@ function SurveyCard({
             <p className="text-m font-medium text-foreground truncate">
               {survey.title || "Untitled parlo"}
             </p>
+            {survey.role === "admin" && (
+              <span className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-xs py-xxs font-brand text-xxs font-medium tracking-xl uppercase text-neutral-8">
+                <Shield size={10} aria-hidden />
+                admin
+              </span>
+            )}
             {/* Response count badge */}
-            {hasResponses && (
+            {hasResponses && survey.role !== "member" && (
               <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 rounded-full px-xxs bg-badge text-badge-foreground font-data text-xxs font-medium">
                 {survey.responseCount}
               </span>
             )}
           </div>
           <p className="text-xs text-muted-foreground mt-xxs">
-            {survey.questionCount} question{survey.questionCount !== 1 ? "s" : ""}
-            {" · "}
-            {survey.responseCount} response{survey.responseCount !== 1 ? "s" : ""}
+            {survey.role === "member" ? (
+              <>
+                <Users size={11} className="inline -mt-px mr-xxs" aria-hidden />
+                {survey.memberCount ?? 0} in the group
+                {survey.reportUpdatedAt ? " · report ready" : ""}
+              </>
+            ) : (
+              <>
+                {survey.questionCount} question{survey.questionCount !== 1 ? "s" : ""}
+                {" · "}
+                {survey.responseCount} response{survey.responseCount !== 1 ? "s" : ""}
+                {typeof survey.memberCount === "number" ? ` · ${survey.memberCount} member${survey.memberCount !== 1 ? "s" : ""}` : ""}
+              </>
+            )}
             {" · "}
             {formatDate(survey.createdAt)}
           </p>
@@ -105,9 +122,11 @@ export default function CreatorHome({
   onOpenSettings,
   onInbox,
 }: CreatorHomeProps) {
-  const completed = surveys.filter((s) => s.questionCount > 0);
-  const drafts = surveys.filter((s) => s.questionCount === 0);
-  const totalResponses = surveys.reduce((sum, s) => sum + s.responseCount, 0);
+  const mine = surveys.filter((s) => s.role !== "member");
+  const joined = surveys.filter((s) => s.role === "member");
+  const completed = mine.filter((s) => s.questionCount > 0);
+  const drafts = mine.filter((s) => s.questionCount === 0);
+  const totalResponses = mine.reduce((sum, s) => sum + s.responseCount, 0);
 
   const profile = linkedInProfile;
   const displayName = profile?.connected && profile.name
@@ -173,6 +192,22 @@ export default function CreatorHome({
           </motion.p>
         )}
 
+        {joined.length > 0 && (
+          <>
+            <motion.p
+              className="font-brand text-s font-medium tracking-xl uppercase text-muted-foreground mt-l mb-xs px-xxs"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ ...transitionLarge, delay: 0.2 }}
+            >
+              Parlos you're in
+            </motion.p>
+            {joined.map((survey, i) => (
+              <SurveyCard key={survey.id} survey={survey} index={completed.length + i} onTap={() => onOpenSurvey(survey)} />
+            ))}
+          </>
+        )}
+
         {drafts.length > 0 && (
           <>
             <motion.p
@@ -188,7 +223,7 @@ export default function CreatorHome({
                 key={survey.id}
                 type="button"
                 onClick={() => onOpenSurvey(survey)}
-                custom={completed.length + i}
+                custom={completed.length + joined.length + i}
                 variants={cardVariants}
                 initial="initial"
                 animate="animate"
