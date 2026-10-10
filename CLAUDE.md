@@ -37,6 +37,7 @@ parlo/
 - **Offline persistence:** IndexedDB (sessionStore.ts) — stores session state + audio blobs
 - **Background uploads:** uploadQueue.ts — uploads blobs as recorded, retries on failure/offline
 - **Audio merge:** audioMerge.ts — merges multi-segment recordings into single WAV for upload
+- **Silence trimming:** audioTrim.ts — every recording is trimmed on the phone before it's stored/played/uploaded (see "Silence trimming" below)
 - **E2E Testing:** Playwright (frontend/e2e/) — mock audio + API fixtures. Happy-path specs + cross-device visual audit (`device-audit.spec.ts`) covering iPhone SE, Pixel 7, iPhone 15 Pro Max.
 
 ## API Contracts
@@ -379,6 +380,16 @@ Audio responses are automatically transcribed using Workers AI Whisper when a pa
 - Processes answers sequentially to avoid Workers AI rate limits.
 - `transcription_status` values: `pending` → `completed` or `failed`
 - Migration: `0003_transcriptions.sql` adds `transcription` and `transcription_status` columns to `response_answers`.
+
+## Silence trimming
+
+`frontend/src/lib/audioTrim.ts` — `finalizeRecording(rec, context)` runs on every voice recording the moment the mic stops: participant answers (single take and the multi-segment merge, in `QuestionScreen`), the creator's intro (`IntroScreen`, before they hear it back) and the archived brief (`CreatorPage.handleBriefContinue`). Cheap and fully client-side:
+
+- Decode via `OfflineAudioContext` (gives a mono 16 kHz mix for free), 20 ms frames, RMS in dBFS. Gate = `max(loud − 30 dB, quiet + 6 dB)` where loud/quiet are the 90th/10th percentile frames, clamped to [−55, −30] dBFS; a frame is voice only with a voiced neighbour (a 20 ms click can't end the leading silence).
+- Leading silence cut leaving a 120 ms pad, trailing leaving 250 ms. Internal pauses ≥ 1 s shortened to 350 ms (room tone from both sides is what's kept). 5 ms fades at every cut.
+- Output is 16-bit mono 16 kHz WAV (`audio/wav`). Only when it saves ≥ 200 ms — otherwise the original compressed blob is kept, since a WAV is ~15× an Opus blob (≈32 KB/s). Anything that can't be decoded (Playwright's fake recorder) falls back to the untouched recording; nothing in the flow blocks on this.
+- WAV bytes under the `.webm` upload key is already how multi-segment answers work; the backend takes the content-type from the request and Whisper/the players read the bytes. `durationMs` on the answer/intro is the trimmed length. PostHog event `audio_trimmed` {context, changed, inputMs, outputMs, removedMs, inputBytes, outputBytes}.
+- `planTrim(pcm, sampleRate)` and `encodeWav` are pure exports — the scratch harness that validated them drives the TS module through the Vite dev server in headless Chromium (synthetic PCM with known pauses + a real MediaRecorder Opus take).
 
 ## Participant Flow
 

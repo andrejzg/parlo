@@ -37,6 +37,7 @@ import {
   type ClarifyingQuestion,
 } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
+import { finalizeRecording } from "@/lib/audioTrim";
 import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
@@ -288,7 +289,10 @@ export default function CreatorPage() {
     // Keep the raw recording for the future "proper agent" work (voice persona
     // etc). Fire and forget; the transcript is what the pipeline needs today.
     if (result.blob && uploadUrls?.brief) {
-      const uploadPromise = uploadAudioBlob(uploadUrls.brief, result.blob).catch((err) => {
+      const briefUploadUrl = uploadUrls.brief;
+      const uploadPromise = finalizeRecording({ blob: result.blob, durationMs: result.durationMs }, "brief")
+        .then((final) => uploadAudioBlob(briefUploadUrl, final.blob))
+        .catch((err) => {
         captureException(err, { location: "CreatorPage.uploadBrief" });
         return false as boolean;
       });
