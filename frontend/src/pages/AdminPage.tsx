@@ -13,6 +13,13 @@ import {
   type PromptVersion,
 } from "@/api/client";
 import { captureException } from "@/lib/posthog";
+import CreationsPanel from "@/components/admin/CreationsPanel";
+
+type AdminTab = "creations" | "prompts";
+
+function tabFromHash(): AdminTab {
+  return typeof window !== "undefined" && window.location.hash === "#prompts" ? "prompts" : "creations";
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -47,6 +54,14 @@ function PromptPreview({ content }: { content: string }) {
 // ── Main Page ─────────────────────────────────────────────────────────
 
 export default function AdminPage() {
+  const [tab, setTab] = useState<AdminTab>(tabFromHash);
+  const switchTab = (t: AdminTab) => {
+    setTab(t);
+    try {
+      window.history.replaceState(null, "", `#${t}`);
+    } catch {}
+  };
+
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [selected, setSelected] = useState<PromptDetail | null>(null);
   const [draft, setDraft] = useState("");
@@ -182,17 +197,35 @@ export default function AdminPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
-      <header className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <h1 className="font-display text-xl font-bold tracking-tight">
-          Parlo <span className="text-primary">Admin</span>
-        </h1>
-        <Button variant="outline" size="sm" onClick={handleSeed} disabled={loading}>
-          Seed Defaults
-        </Button>
+      <header className="border-b border-border px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-6">
+          <h1 className="font-display text-xl font-bold tracking-tight">
+            Parlo <span className="text-primary">Admin</span>
+          </h1>
+          <nav className="inline-flex rounded-md border border-border overflow-hidden">
+            {(["creations", "prompts"] as AdminTab[]).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => switchTab(t)}
+                className={`px-3 py-1.5 text-sm capitalize ${tab === t ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {t}
+              </button>
+            ))}
+          </nav>
+        </div>
+        {tab === "prompts" && (
+          <Button variant="outline" size="sm" onClick={handleSeed} disabled={loading}>
+            Seed Defaults
+          </Button>
+        )}
       </header>
 
+      {tab === "creations" && <CreationsPanel />}
+
       {/* Feedback bar */}
-      {(error || successMsg) && (
+      {tab === "prompts" && (error || successMsg) && (
         <div
           className={`px-6 py-2 text-sm ${
             error
@@ -204,6 +237,7 @@ export default function AdminPage() {
         </div>
       )}
 
+      {tab === "prompts" && (
       <div className="flex flex-col lg:flex-row">
         {/* ── Sidebar: Prompt List ───────────────────────────────────── */}
         <aside className="lg:w-64 border-b lg:border-b-0 lg:border-r border-border p-4 shrink-0">
@@ -404,6 +438,7 @@ export default function AdminPage() {
           </div>
         </main>
       </div>
+      )}
     </div>
   );
 }

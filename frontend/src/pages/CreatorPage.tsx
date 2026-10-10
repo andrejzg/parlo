@@ -37,6 +37,7 @@ import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
 import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
+import { logCreation } from "@/lib/creationLog";
 
 /**
  * Creation flow:
@@ -260,6 +261,19 @@ export default function CreatorPage() {
       source: result.source,
       chars: text.length,
       durationMs: result.durationMs,
+      skipped: result.skipped,
+      ticks: result.ticks.length,
+      elapsedMs: result.elapsedMs,
+    });
+    logCreation(surveyId, "brief_submitted", {
+      mode: result.mode,
+      source: result.source,
+      chars: text.length,
+      durationMs: result.durationMs,
+      elapsedMs: result.elapsedMs,
+      skipped: result.skipped,
+      ticks: result.ticks,
+      probabilities: result.probabilities,
     });
 
     // Keep the raw recording for the future "proper agent" work (voice persona
@@ -291,7 +305,14 @@ export default function CreatorPage() {
     const history = [...clarifications, { question: currentQuestion.question, answer: text }];
     setClarifications(history);
     const n = history.length;
-    trackEvent("clarify_question_answered", { index: n, mode: answer.textContent ? "text" : "voice", chars: text.length });
+    const mode = answer.textContent ? "text" : "voice";
+    trackEvent("clarify_question_answered", { index: n, mode, chars: text.length });
+    logCreation(
+      surveyId,
+      "clarify_answered",
+      { mode, chars: text.length, durationMs: answer.durationMs, question: currentQuestion.question, answer: text },
+      n,
+    );
 
     if (n >= MAX_CLARIFICATIONS) {
       forceReleaseSharedStream();
@@ -308,6 +329,7 @@ export default function CreatorPage() {
   /** Back from a follow-up: re-open the previous one (or the brief) with its answer editable. */
   const handleClarifyBack = () => {
     setDirection(-1);
+    logCreation(surveyId, "back", { from: "clarify", index: currentQuestion?.index ?? null });
     if (clarifications.length === 0) {
       setBriefMode("text");
       setStage("brief");
@@ -324,14 +346,35 @@ export default function CreatorPage() {
 
   const handleCheckpointCreate = () => {
     trackEvent("clarify_checkpoint", { choice: "create", answered: clarifications.length });
+    logCreation(surveyId, "checkpoint", { choice: "create", answered: clarifications.length }, clarifications.length);
     forceReleaseSharedStream();
     goForward("building");
   };
 
   const handleCheckpointContinue = async () => {
     trackEvent("clarify_checkpoint", { choice: "continue", answered: clarifications.length });
+    logCreation(surveyId, "checkpoint", { choice: "continue", answered: clarifications.length }, clarifications.length);
     await fetchNextQuestion(brief, clarifications);
   };
+
+  // The review screen is where generation gets judged: log when it opens,
+  // every edit / delete / add / reorder, and the confirm tap. The server
+  // computes the authoritative diff when the questions are saved.
+  useEffect(() => {
+    if (stage === "review" && surveyId) {
+      logCreation(surveyId, "review_opened", { questionCount: generatedQuestions.length });
+      trackEvent("review_opened", { questionCount: generatedQuestions.length });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage]);
+
+  const handleReviewEvent = useCallback(
+    (kind: "review_edit" | "review_delete" | "review_add" | "review_reorder" | "review_confirm_tapped", payload: Record<string, unknown>) => {
+      trackEvent(kind, payload);
+      logCreation(surveyId, kind, payload);
+    },
+    [surveyId],
+  );
 
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
     if (!surveyId) {
@@ -472,6 +515,8 @@ export default function CreatorPage() {
   }, []);
 
   const handleRegenerate = async () => {
+    trackEvent("review_regenerated");
+    logCreation(surveyId, "regenerate", {});
     goForward("building");
   };
 
@@ -828,6 +873,7 @@ export default function CreatorPage() {
                 questions={generatedQuestions}
                 onConfirm={handleReviewConfirm}
                 onRegenerate={handleRegenerate}
+                onEvent={handleReviewEvent}
               />
             )}
             {stage === "ready" && (

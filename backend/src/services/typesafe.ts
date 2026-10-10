@@ -17,6 +17,8 @@ import { nanoid } from "nanoid/non-secure";
 
 const TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone";
 export const TYPESAFE_MODEL = "jev-latest";
+/** USD per input token (typesafe.ai pricing: $42 per billion; output is free). */
+const TYPESAFE_INPUT_USD_PER_TOKEN = 0.042 / 1_000_000;
 
 export interface NoulQuestion {
   type: "noul";
@@ -105,6 +107,11 @@ export async function systemOne<K extends string>(
       $ai_output_choices: result ? [{ message: { content: JSON.stringify(result.answers) } }] : [],
       $ai_input_tokens: result?.usage.input_tokens,
       $ai_output_tokens: result?.usage.output_tokens,
+      ...(result && {
+        $ai_input_cost_usd: result.usage.input_tokens * TYPESAFE_INPUT_USD_PER_TOKEN,
+        $ai_output_cost_usd: 0,
+        $ai_total_cost_usd: result.usage.input_tokens * TYPESAFE_INPUT_USD_PER_TOKEN,
+      }),
       $ai_latency: latency,
       $ai_is_error: isError,
       ...(errorMsg && { $ai_error: errorMsg }),

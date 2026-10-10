@@ -1,4 +1,5 @@
 import posthogLib from "posthog-js";
+import { isTestMode } from "@/lib/testMode";
 
 const posthogKey = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const posthogHost =
@@ -15,6 +16,12 @@ export const posthog =
         capture_exceptions: true,
       })
     : null;
+
+// Team / Playwright traffic (see lib/testMode.ts) is stamped on every event so
+// dashboards can filter it out with `is_test is not true`.
+if (posthog && isTestMode()) {
+  posthog.register({ is_test: true });
+}
 
 /**
  * Lightweight wrapper that silently no-ops when PostHog isn't initialised.

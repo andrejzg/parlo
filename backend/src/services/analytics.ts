@@ -11,14 +11,22 @@ let _apiKey: string | undefined;
 
 let _waitUntil: ((p: Promise<unknown>) => void) | undefined;
 
+/** Properties stamped on every event of the current request (e.g. is_test). */
+let _baseProps: Record<string, unknown> = {};
+
 /**
  * `waitUntil` keeps the Worker alive until in-flight analytics fetches finish.
  * Without it, Workers cancels outstanding subrequests once the response is
  * sent, and fire-and-forget events never reach PostHog.
  */
-export function initAnalytics(apiKey: string | undefined, waitUntil?: (p: Promise<unknown>) => void): void {
+export function initAnalytics(
+  apiKey: string | undefined,
+  waitUntil?: (p: Promise<unknown>) => void,
+  baseProps: Record<string, unknown> = {},
+): void {
   _apiKey = apiKey;
   _waitUntil = waitUntil;
+  _baseProps = baseProps;
 }
 
 /**
@@ -37,6 +45,7 @@ export function trackServerEvent(
     event,
     distinct_id: distinctId,
     properties: {
+      ..._baseProps,
       ...properties,
       $lib: "parlo-backend",
     },

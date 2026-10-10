@@ -1,3 +1,5 @@
+import { testHeaders } from "@/lib/testMode";
+
 /**
  * Upload a Blob (audio, image, or video) to a presigned R2 URL.
  * Returns true on success, throws on failure.
@@ -19,6 +21,7 @@ export async function uploadAudioBlob(
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", presignedUrl);
     xhr.setRequestHeader("Content-Type", blob.type || "audio/webm");
+    for (const [k, v] of Object.entries(testHeaders())) xhr.setRequestHeader(k, v);
 
     if (onProgress) {
       xhr.upload.onprogress = (e) => {

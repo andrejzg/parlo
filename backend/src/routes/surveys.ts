@@ -32,6 +32,16 @@ import {
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { trackServerEvent } from "../services/analytics";
+import {
+  logCreationEvent,
+  logCreationEvents,
+  CLIENT_EVENT_KINDS,
+  MAX_EVENTS_PER_POST,
+  MAX_PAYLOAD_CHARS,
+  type CreationEventInput,
+} from "../services/creationLog";
+import { diffQuestions, summarizeDiff, type QuestionLike } from "../services/reviewDiff";
+import { judgeClarifyingQuestion } from "../services/clarifyJudge";
 
 /** Longest creator audio we'll transcribe in one go (≈10 min of Opus). */
 const MAX_TRANSCRIBE_BYTES = 12 * 1024 * 1024;
@@ -55,7 +65,7 @@ function sanitizeClarifications(input: unknown): Clarification[] {
     .slice(0, MAX_CLARIFICATIONS);
 }
 
-const surveys = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+const surveys = new Hono<{ Bindings: Env; Variables: { creatorId: string | null; isTest: boolean } }>();
 
 // ── POST /api/surveys ── Create a new survey
 surveys.post("/api/surveys", async (c) => {
@@ -105,9 +115,9 @@ surveys.post("/api/surveys", async (c) => {
 
   await db
     .prepare(
-      "INSERT INTO surveys (id, code, dashboard_code, creator_id, title) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO surveys (id, code, dashboard_code, creator_id, title, is_test) VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .bind(surveyId, code, dashboardCode, finalCreatorId, body.title ?? null)
+    .bind(surveyId, code, dashboardCode, finalCreatorId, body.title ?? null, c.get("isTest") ? 1 : 0)
     .run();
 
   // Generate or retrieve API key for the creator
@@ -216,8 +226,63 @@ surveys.post("/api/surveys/:id/brief/evaluate", async (c) => {
   }
 
   const evaluation = await evaluateBrief(c.env, body.transcript, `survey-${surveyId}`);
+
+  // Keep the latest verdict on the survey so the admin Creations tab can show
+  // the five probabilities next to the brief (last write wins; cheap).
+  c.executionCtx.waitUntil(
+    c.env.DB.prepare("UPDATE surveys SET brief_eval = ? WHERE id = ?")
+      .bind(
+        JSON.stringify({ ...evaluation, chars: body.transcript.trim().length, at: new Date().toISOString() }),
+        surveyId
+      )
+      .run()
+      .catch((err) => console.error("[brief] failed to store brief_eval:", err))
+  );
+
   const response: BriefEvaluateResponse = evaluation;
   return c.json(response);
+});
+
+// ── POST /api/surveys/:id/creation-events ── Browser-side creation log
+// The frontend posts what only it can see (brief submitted with the tick
+// timeline, follow-up answers, checkpoint choices, review edits). Stored in
+// D1 `creation_events` for the admin Creations tab; PostHog gets the same
+// facts straight from the browser, so nothing is re-sent from here.
+surveys.post("/api/surveys/:id/creation-events", async (c) => {
+  const surveyId = c.req.param("id");
+  const survey = await c.env.DB.prepare("SELECT id FROM surveys WHERE id = ?")
+    .bind(surveyId)
+    .first<{ id: string }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "creation-events", ip, 600);
+  if (!allowed) return c.json({ error: "Rate limit exceeded" }, 429);
+
+  const body = await c.req.json<{ events?: unknown }>().catch(() => null);
+  if (!body || !Array.isArray(body.events)) {
+    return c.json({ error: "events array is required" }, 400);
+  }
+
+  const events: CreationEventInput[] = [];
+  for (const raw of body.events.slice(0, MAX_EVENTS_PER_POST)) {
+    if (!raw || typeof raw !== "object") continue;
+    const e = raw as Record<string, unknown>;
+    if (typeof e.kind !== "string" || !CLIENT_EVENT_KINDS.has(e.kind)) continue;
+    const payloadJson = e.payload === undefined ? undefined : JSON.stringify(e.payload);
+    if (payloadJson && payloadJson.length > MAX_PAYLOAD_CHARS) continue;
+    events.push({
+      kind: e.kind,
+      idx: typeof e.idx === "number" && Number.isFinite(e.idx) ? Math.trunc(e.idx) : null,
+      payload: e.payload,
+      at: typeof e.at === "string" ? e.at : undefined,
+    });
+  }
+
+  if (events.length > 0) {
+    await logCreationEvents(c.env.DB, surveyId, events, "client");
+  }
+  return c.json({ ok: true, accepted: events.length });
 });
 
 // ── POST /api/surveys/:id/clarify ── Next clarifying question (Cerebras)
@@ -239,20 +304,52 @@ surveys.post("/api/surveys/:id/clarify", async (c) => {
   if (!brief) return c.json({ error: "brief is required" }, 400);
   const history = sanitizeClarifications(body?.history);
 
-  const next = await generateClarifyingQuestion(
-    c.env.AI,
-    c.env.KV,
-    { brief, history },
-    c.env.CEREBRAS_API_KEY,
-    `survey-${surveyId}`
-  );
+  const index = history.length + 1;
+  const traceId = `survey-${surveyId}`;
+  const next = await generateClarifyingQuestion(c.env.AI, c.env.KV, { brief, history }, c.env.CEREBRAS_API_KEY, traceId);
 
   trackServerEvent(surveyId, "clarify_question_generated", {
     surveyId,
-    index: history.length + 1,
+    index,
+    provider: next.provider,
+    model: next.model,
+    latencyMs: next.latencyMs,
   });
 
-  const response: ClarifyResponse = { ...next, index: history.length + 1 };
+  // Off the request path: record the question, then let Jev judge it
+  // (redundant / misaddressed / vague) so Cerebras' follow-ups get scored
+  // without a human reading each one.
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        await logCreationEvent(
+          c.env.DB,
+          surveyId,
+          "clarify_generated",
+          { question: next.question, hint: next.hint, provider: next.provider, model: next.model, latencyMs: next.latencyMs },
+          index
+        );
+        const judgement = await judgeClarifyingQuestion(c.env, { brief, history, question: next.question, index }, traceId);
+        if (judgement) {
+          await logCreationEvent(c.env.DB, surveyId, "clarify_judged", judgement, index);
+          trackServerEvent(surveyId, "clarify_question_judged", {
+            surveyId,
+            index,
+            redundant: judgement.redundant,
+            misaddressed: judgement.misaddressed,
+            vague: judgement.vague,
+            flagged: judgement.flagged,
+            flags: judgement.flags,
+            model: judgement.model,
+          });
+        }
+      } catch (err) {
+        console.error("[clarify] post-processing failed:", err);
+      }
+    })()
+  );
+
+  const response: ClarifyResponse = { question: next.question, hint: next.hint, index };
   return c.json(response);
 });
 
@@ -289,13 +386,16 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       c.env.AI,
       c.env.KV,
       { brief, clarifications },
-      c.env.CEREBRAS_API_KEY
+      c.env.CEREBRAS_API_KEY,
+      `survey-${surveyId}`
     );
     console.log("[generate] Generated from brief:", JSON.stringify(generated));
 
     await db
-      .prepare("UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ? WHERE id = ?")
-      .bind(generated.title, brief, JSON.stringify(clarifications), surveyId)
+      .prepare(
+        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, generated_questions = ?, review_diff = NULL WHERE id = ?"
+      )
+      .bind(generated.title, brief, JSON.stringify(clarifications), JSON.stringify(generated.questions), surveyId)
       .run();
     await replaceQuestions(db, surveyId, generated);
 
@@ -305,7 +405,21 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       questionCount: generated.questions.length,
       source: "brief",
       clarificationCount: clarifications.length,
+      provider: generated.provider,
+      model: generated.model,
+      latencyMs: generated.latencyMs,
     });
+    c.executionCtx.waitUntil(
+      logCreationEvent(db, surveyId, "generated", {
+        title: generated.title,
+        questions: generated.questions,
+        source: "brief",
+        clarificationCount: clarifications.length,
+        provider: generated.provider,
+        model: generated.model,
+        latencyMs: generated.latencyMs,
+      }).catch((err) => console.error("[generate] failed to log creation event:", err))
+    );
 
     const response: GenerateSurveyResponse = {
       title: generated.title,
@@ -372,15 +486,16 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
     c.env.AI,
     c.env.KV,
     { audience: audienceText, gather: gatherText },
-    c.env.CEREBRAS_API_KEY
+    c.env.CEREBRAS_API_KEY,
+    `survey-${surveyId}`
   );
 
   console.log("[generate] Generated result:", JSON.stringify(generated));
 
   // 4. Store title in surveys table and questions in survey_questions
   await db
-    .prepare("UPDATE surveys SET title = ? WHERE id = ?")
-    .bind(generated.title, surveyId)
+    .prepare("UPDATE surveys SET title = ?, generated_questions = ?, review_diff = NULL WHERE id = ?")
+    .bind(generated.title, JSON.stringify(generated.questions), surveyId)
     .run();
   await replaceQuestions(db, surveyId, generated);
 
@@ -389,7 +504,20 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
     title: generated.title,
     questionCount: generated.questions.length,
     source: "legacy",
+    provider: generated.provider,
+    model: generated.model,
+    latencyMs: generated.latencyMs,
   });
+  c.executionCtx.waitUntil(
+    logCreationEvent(db, surveyId, "generated", {
+      title: generated.title,
+      questions: generated.questions,
+      source: "legacy",
+      provider: generated.provider,
+      model: generated.model,
+      latencyMs: generated.latencyMs,
+    }).catch((err) => console.error("[generate] failed to log creation event:", err))
+  );
 
   // 5. Return the generated data
   const response: GenerateSurveyResponse = {
@@ -418,14 +546,18 @@ async function replaceQuestions(db: D1Database, surveyId: string, generated: Gen
 }
 
 // ── PUT /api/surveys/:id/questions ── Update survey questions
+// Also the moment we learn what the creator changed: the final set is diffed
+// against `generated_questions` (what the model wrote) and the result is
+// stored as `review_diff`, logged as a creation event and sent to PostHog as
+// `review_confirmed`. That edit rate is the calibration metric for generation.
 surveys.put("/api/surveys/:id/questions", async (c) => {
   const surveyId = c.req.param("id");
   const db = c.env.DB;
 
   const survey = await db
-    .prepare("SELECT id FROM surveys WHERE id = ?")
+    .prepare("SELECT id, generated_questions, brief_clarifications, brief FROM surveys WHERE id = ?")
     .bind(surveyId)
-    .first<{ id: string }>();
+    .first<{ id: string; generated_questions: string | null; brief_clarifications: string | null; brief: string | null }>();
 
   if (!survey) {
     return c.json({ error: "Survey not found" }, 404);
@@ -466,6 +598,35 @@ surveys.put("/api/surveys/:id/questions", async (c) => {
     surveyId,
     questionCount: body.questions.length,
   });
+
+  // Diff against the model's output, if we have it.
+  let generatedQuestions: QuestionLike[] | null = null;
+  try {
+    generatedQuestions = survey.generated_questions ? (JSON.parse(survey.generated_questions) as QuestionLike[]) : null;
+  } catch {
+    generatedQuestions = null;
+  }
+  if (generatedQuestions && Array.isArray(generatedQuestions)) {
+    const diff = diffQuestions(generatedQuestions, body.questions);
+    let clarificationCount = 0;
+    try {
+      clarificationCount = survey.brief_clarifications ? (JSON.parse(survey.brief_clarifications) as unknown[]).length : 0;
+    } catch {}
+    const summary = summarizeDiff(diff);
+    c.executionCtx.waitUntil(
+      Promise.all([
+        db.prepare("UPDATE surveys SET review_diff = ? WHERE id = ?").bind(JSON.stringify(diff), surveyId).run(),
+        logCreationEvent(db, surveyId, "review_confirmed", diff),
+      ]).catch((err) => console.error("[questions] failed to store review diff:", err))
+    );
+    trackServerEvent(surveyId, "review_confirmed", {
+      surveyId,
+      ...summary,
+      changed: summary.kept !== summary.generated || summary.final !== summary.generated || summary.moved > 0,
+      source: survey.brief ? "brief" : "legacy",
+      clarificationCount,
+    });
+  }
 
   return c.json({ questions: updated.results });
 });

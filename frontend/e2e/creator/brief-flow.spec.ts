@@ -106,6 +106,12 @@ async function mockCreatorApi(page: Page) {
     if (route.request().method() !== "PUT") return route.fallback();
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ questions: [] }) });
   });
+
+  // Browser-side creation log (fire-and-forget batches).
+  await page.route("**/api/surveys/*/creation-events", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, accepted: 0 }) });
+  });
 }
 
 const BRIEF_SHORT = "I want to talk to customers who cancelled last quarter to learn why they left.";

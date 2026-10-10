@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
 import { stagger, fadeUp } from "@/lib/animations";
+import { textSimilarity } from "@/lib/textSimilarity";
 
 export type ReviewQuestion = {
   text: string;
@@ -8,10 +9,14 @@ export type ReviewQuestion = {
   type?: "voice" | "photo" | "video";
 };
 
+/** What the creator did to the generated questions (see CreatorPage → creation log). */
+export type ReviewEventKind = "review_edit" | "review_delete" | "review_add" | "review_reorder" | "review_confirm_tapped";
+
 interface ReviewQuestionsScreenProps {
   questions: ReviewQuestion[];
   onConfirm: (questions: ReviewQuestion[]) => void;
   onRegenerate: () => void;
+  onEvent?: (kind: ReviewEventKind, payload: Record<string, unknown>) => void;
 }
 
 interface QuestionItem {
@@ -221,7 +226,8 @@ function QuestionCard({
 export default function ReviewQuestionsScreen({
   questions,
   onConfirm,
-  onRegenerate,
+  onRegenerate: _onRegenerate,
+  onEvent,
 }: ReviewQuestionsScreenProps) {
   const [items, setItems] = useState<QuestionItem[]>(() =>
     questions.map((q) => ({
@@ -233,11 +239,63 @@ export default function ReviewQuestionsScreen({
   );
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
+  // ── Instrumentation: what did the creator change? ──
+  // The model's output is remembered per item id so every edit / delete /
+  // reorder can be described relative to it. Reported through onEvent; the
+  // server computes the authoritative diff at confirm time.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const originRef = useRef<Map<string, { index: number; text: string }>>(
+    new Map(items.map((it, i) => [it.id, { index: i, text: it.text }])),
+  );
+  const committedRef = useRef<Map<string, string>>(new Map(items.map((it) => [it.id, it.text])));
+  const lastOrderRef = useRef<number[]>(items.map((_, i) => i));
+  const countsRef = useRef({ edits: 0, deletes: 0, adds: 0, reorders: 0 });
+  const mountedAtRef = useRef(Date.now());
+  const reorderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const emit = (kind: ReviewEventKind, payload: Record<string, unknown>) => onEvent?.(kind, payload);
+
+  /** Editing of item `prevIndex` just ended: record an edit if the text changed. */
+  const commitEdit = (prevIndex: number | null) => {
+    if (prevIndex === null) return;
+    const it = itemsRef.current[prevIndex];
+    if (!it) return;
+    const before = committedRef.current.get(it.id) ?? "";
+    const after = it.text;
+    if (before.trim() === after.trim()) return;
+    committedRef.current.set(it.id, after);
+    countsRef.current.edits++;
+    const origin = originRef.current.get(it.id);
+    emit("review_edit", {
+      index: prevIndex,
+      generatedIndex: origin?.index ?? null,
+      before,
+      after,
+      similarity: origin ? textSimilarity(origin.text, after) : null,
+      chars: after.length,
+    });
+  };
+
+  const changeEditing = (next: number | null) => {
+    if (editingIndex !== null && editingIndex !== next) commitEdit(editingIndex);
+    setEditingIndex(next);
+  };
+
   const updateQuestion = (id: string, value: string) => {
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: value } : item)));
   };
 
   const deleteQuestion = (id: string) => {
+    const index = itemsRef.current.findIndex((it) => it.id === id);
+    const origin = originRef.current.get(id);
+    countsRef.current.deletes++;
+    emit("review_delete", {
+      index,
+      generatedIndex: origin?.index ?? null,
+      text: itemsRef.current[index]?.text ?? "",
+      wasGenerated: !!origin,
+    });
     setItems((prev) => prev.filter((item) => item.id !== id));
     setEditingIndex(null);
   };
@@ -246,8 +304,36 @@ export default function ReviewQuestionsScreen({
     // Manually-added questions default to voice — user can't pick the type
     // here yet. (Future: add a long-press or context menu to switch.)
     const newItem: QuestionItem = { id: makeId(), text: "", type: "voice" };
+    committedRef.current.set(newItem.id, "");
+    countsRef.current.adds++;
+    emit("review_add", { index: items.length });
     setItems((prev) => [...prev, newItem]);
     setTimeout(() => setEditingIndex(items.length), 50);
+  };
+
+  // Reorder fires continuously during a drag; report the settled order once.
+  const handleReorder = (next: QuestionItem[]) => {
+    setItems(next);
+    if (reorderTimerRef.current) clearTimeout(reorderTimerRef.current);
+    reorderTimerRef.current = setTimeout(() => {
+      const order = itemsRef.current.map((it) => originRef.current.get(it.id)?.index ?? -1);
+      if (order.join(",") === lastOrderRef.current.join(",")) return;
+      lastOrderRef.current = order;
+      countsRef.current.reorders++;
+      emit("review_reorder", { order });
+    }, 600);
+  };
+
+  const handleConfirm = () => {
+    commitEdit(editingIndex);
+    const finalItems = items.filter((q) => q.text.trim());
+    emit("review_confirm_tapped", {
+      timeOnScreenMs: Date.now() - mountedAtRef.current,
+      ...countsRef.current,
+      generated: questions.length,
+      final: finalItems.length,
+    });
+    onConfirm(finalItems.map((q) => ({ text: q.text, hint: q.hint, type: q.type })));
   };
 
   const canConfirm = items.length > 0 && items.every((q) => q.text.trim().length > 0);
@@ -322,7 +408,7 @@ export default function ReviewQuestionsScreen({
         <Reorder.Group
           axis="y"
           values={items}
-          onReorder={setItems}
+          onReorder={handleReorder}
           className="space-y-2.5"
           style={{ listStyle: "none", padding: 0, margin: 0 }}
         >
@@ -333,7 +419,7 @@ export default function ReviewQuestionsScreen({
                 item={item}
                 index={i}
                 isEditing={editingIndex === i}
-                onTap={() => setEditingIndex(editingIndex === i ? null : i)}
+                onTap={() => changeEditing(editingIndex === i ? null : i)}
                 onChange={(value) => updateQuestion(item.id, value)}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
@@ -383,13 +469,7 @@ export default function ReviewQuestionsScreen({
         />
         <motion.button
           variants={fadeUp}
-          onClick={() =>
-            onConfirm(
-              items
-                .filter((q) => q.text.trim())
-                .map((q) => ({ text: q.text, hint: q.hint, type: q.type })),
-            )
-          }
+          onClick={handleConfirm}
           disabled={!canConfirm}
           className="w-full py-5 rounded-2xl font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"
           style={{

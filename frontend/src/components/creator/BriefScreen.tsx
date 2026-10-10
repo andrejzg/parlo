@@ -18,6 +18,14 @@ export interface BriefResult {
   durationMs: number;
   mode: "voice" | "text";
   source: TranscriptSource | "text";
+  /** True when the creator used "Continue without the rest". */
+  skipped: boolean;
+  /** When each item ticked, measured from screen mount. */
+  ticks: { id: string; elapsedMs: number }[];
+  /** The checklist as it stood when Continue was pressed. */
+  probabilities: { id: string; probability: number; satisfied: boolean }[];
+  /** Time from screen mount to Continue. */
+  elapsedMs: number;
 }
 
 interface BriefScreenProps {
@@ -200,12 +208,15 @@ export default function BriefScreen({
 
   // Analytics: ticks and completion.
   const tickedRef = useRef<Set<string>>(new Set());
+  const ticksRef = useRef<{ id: string; elapsedMs: number }[]>([]);
   const completedRef = useRef(false);
   useEffect(() => {
     for (const entry of checklist.items) {
       if (entry.satisfied && !tickedRef.current.has(entry.id)) {
         tickedRef.current.add(entry.id);
-        trackEvent("brief_item_ticked", { item: entry.id, elapsedMs: Date.now() - mountedAtRef.current, mode });
+        const elapsedMs = Date.now() - mountedAtRef.current;
+        ticksRef.current.push({ id: entry.id, elapsedMs });
+        trackEvent("brief_item_ticked", { item: entry.id, elapsedMs, mode });
       }
     }
     if (checklist.complete && !completedRef.current) {
@@ -238,12 +249,19 @@ export default function BriefScreen({
     await beginVoice();
   };
 
-  const handleContinue = async () => {
+  const handleContinue = async (skipped = false) => {
     if (isTransitioning || busy) return;
     setIsTransitioning(true);
 
+    const extras = {
+      skipped,
+      ticks: ticksRef.current.slice(),
+      probabilities: checklist.items.map((i) => ({ id: i.id, probability: i.probability, satisfied: i.satisfied })),
+      elapsedMs: Date.now() - mountedAtRef.current,
+    };
+
     if (mode === "text") {
-      onContinue({ transcript: textValue.trim(), durationMs: 0, mode: "text", source: "text" });
+      onContinue({ transcript: textValue.trim(), durationMs: 0, mode: "text", source: "text", ...extras });
       return;
     }
 
@@ -256,6 +274,7 @@ export default function BriefScreen({
       durationMs: rec.durationMs,
       mode: "voice",
       source: transcript.source ?? "speech",
+      ...extras,
     });
   };
 
@@ -447,7 +466,7 @@ export default function BriefScreen({
         {canSkip && (
           <motion.button
             type="button"
-            onClick={handleContinue}
+            onClick={() => handleContinue(true)}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="text-xs underline underline-offset-2 py-1"
@@ -459,7 +478,7 @@ export default function BriefScreen({
 
         <motion.button
           variants={item}
-          onClick={handleContinue}
+          onClick={() => handleContinue(false)}
           disabled={!canContinue}
           data-testid="brief-continue"
           className="w-full py-5 rounded-2xl font-display text-lg tracking-wide glow-primary disabled:opacity-40 disabled:cursor-not-allowed"

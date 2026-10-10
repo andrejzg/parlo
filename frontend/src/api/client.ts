@@ -1,13 +1,14 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
+import { testHeaders } from "@/lib/testMode";
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
+export const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
+    headers: { "Content-Type": "application/json", ...testHeaders(), ...init?.headers },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -72,7 +73,7 @@ export function fetchClarifyingQuestion(surveyId: string, brief: string, history
 export async function transcribeAudio(surveyId: string, blob: Blob): Promise<string> {
   const res = await fetch(`${API_BASE}/surveys/${surveyId}/transcribe`, {
     method: "POST",
-    headers: { "Content-Type": blob.type || "audio/webm" },
+    headers: { "Content-Type": blob.type || "audio/webm", ...testHeaders() },
     body: blob,
   });
   if (!res.ok) {
@@ -81,6 +82,189 @@ export async function transcribeAudio(surveyId: string, blob: Blob): Promise<str
   }
   const data = (await res.json()) as { text: string };
   return data.text ?? "";
+}
+
+// ── Creation log (browser → D1, see lib/creationLog.ts) ──────────────
+
+export interface CreationEventInput {
+  kind: string;
+  idx?: number;
+  payload?: unknown;
+  at?: string;
+}
+
+export function postCreationEvents(surveyId: string, events: CreationEventInput[]) {
+  return fetch(`${API_BASE}/surveys/${surveyId}/creation-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...testHeaders() },
+    body: JSON.stringify({ events }),
+    keepalive: true,
+  });
+}
+
+// ── Admin: Creations (calibration) ────────────────────────────────────
+
+export interface CreationSummary {
+  id: string;
+  code: string;
+  title: string | null;
+  status: string;
+  createdAt: string;
+  isTest: boolean;
+  briefChars: number;
+  briefSkipped: boolean | null;
+  briefSatisfied: number | null;
+  briefProvider: string | null;
+  clarificationCount: number;
+  checkpointChoices: string[];
+  flaggedFollowUps: number;
+  generatedCount: number;
+  review: {
+    generated: number;
+    final: number;
+    kept: number;
+    reworded: number;
+    added: number;
+    deleted: number;
+    moved: number;
+    keptRatio: number;
+  } | null;
+  labelCount: number;
+}
+
+export interface CreationLabel {
+  id: string;
+  targetKind: "brief_item" | "clarify" | "question";
+  targetKey: string;
+  verdict: "good" | "bad";
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface CreationEventRecord {
+  id: string;
+  kind: string;
+  idx: number | null;
+  payload: any;
+  source: "server" | "client";
+  createdAt: string;
+}
+
+export interface ReviewDiffItem {
+  status: "kept" | "reworded" | "added" | "deleted";
+  generatedIndex: number | null;
+  finalIndex: number | null;
+  similarity: number;
+  generatedText?: string;
+  finalText?: string;
+  typeChanged: boolean;
+}
+
+export interface ReviewDiff {
+  generated: number;
+  final: number;
+  kept: number;
+  reworded: number;
+  added: number;
+  deleted: number;
+  moved: number;
+  keptRatio: number;
+  survivedRatio: number;
+  untouchedRatio: number;
+  meanSimilarity: number;
+  items: ReviewDiffItem[];
+}
+
+export interface CreationDetail {
+  id: string;
+  code: string;
+  dashboardCode: string;
+  title: string | null;
+  status: string;
+  createdAt: string;
+  isTest: boolean;
+  brief: string | null;
+  briefEval: {
+    items: { id: string; satisfied: boolean; probability: number }[];
+    complete: boolean;
+    provider: string;
+    model: string | null;
+    chars?: number;
+    at?: string;
+  } | null;
+  clarifications: { question: string; answer: string }[];
+  generatedQuestions: { text: string; hint?: string; type?: string }[];
+  finalQuestions: { id: string; text: string; hint: string | null; type: string; sortOrder: number }[];
+  reviewDiff: ReviewDiff | null;
+  events: CreationEventRecord[];
+  labels: CreationLabel[];
+}
+
+export interface CreationStats {
+  days: number;
+  includeTest: boolean;
+  creations: number;
+  confirmed: number;
+  brief: {
+    submitted: number;
+    skipRate: number | null;
+    voiceRate: number | null;
+    medianDurationMs: number | null;
+    meanTickMs: Record<string, number | null>;
+    meanFinalProbability: Record<string, number | null>;
+  };
+  followUps: {
+    meanPerCreation: number | null;
+    checkpoints: number;
+    continueRate: number | null;
+    judged: number;
+    flaggedRate: number | null;
+    flagRates: { redundant: number | null; misaddressed: number | null; vague: number | null };
+    meanScores: { redundant: number | null; misaddressed: number | null; vague: number | null };
+    meanAnswerChars: number | null;
+    backPresses: number;
+  };
+  review: {
+    confirmed: number;
+    changedRate: number | null;
+    meanKeptRatio: number | null;
+    meanSurvivedRatio: number | null;
+    meanUntouchedRatio: number | null;
+    meanDeleted: number | null;
+    meanAdded: number | null;
+    meanReworded: number | null;
+    meanMoved: number | null;
+    regenerates: number;
+  };
+  labels: { total: number; byKind: Record<string, Record<string, { good: number; bad: number }>> };
+}
+
+export function fetchCreations(params: { limit?: number; offset?: number; includeTest?: boolean } = {}) {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  if (params.includeTest) qs.set("includeTest", "1");
+  const q = qs.toString();
+  return apiFetch<{ creations: CreationSummary[]; limit: number; offset: number }>(`/admin/creations${q ? `?${q}` : ""}`);
+}
+
+export function fetchCreationStats(days: number, includeTest: boolean) {
+  return apiFetch<CreationStats>(`/admin/creations/stats?days=${days}${includeTest ? "&includeTest=1" : ""}`);
+}
+
+export function fetchCreation(id: string) {
+  return apiFetch<CreationDetail>(`/admin/creations/${id}`);
+}
+
+export function labelCreation(
+  id: string,
+  body: { targetKind: CreationLabel["targetKind"]; targetKey: string; verdict: "good" | "bad" | "clear"; note?: string },
+) {
+  return apiFetch<{ ok: boolean; labels: CreationLabel[] }>(`/admin/creations/${id}/labels`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export interface GeneratedQuestion {

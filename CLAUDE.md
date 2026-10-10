@@ -199,12 +199,22 @@ Returns:
 }
 ```
 
+### POST /api/surveys/:id/creation-events
+Browser-side creation log. Body: `{events: [{kind, idx?, payload?, at?}]}` (max 50 per call, 8 KB per payload, 600/hr per IP). Only kinds in `CLIENT_EVENT_KINDS` (`backend/src/services/creationLog.ts`) are accepted: `brief_submitted`, `clarify_answered`, `checkpoint`, `back`, `review_opened`, `review_edit`, `review_delete`, `review_add`, `review_reorder`, `review_confirm_tapped`, `regenerate`. Server-only kinds (`generated`, `clarify_generated`, `clarify_judged`, `review_confirmed`) are written by the routes themselves. Rows land in D1 `creation_events`; the frontend batches via `lib/creationLog.ts` (`logCreation(surveyId, kind, payload, idx?)`).
+Returns: `{ok: true, accepted: number}`
+
 ### Admin API (protected by Cloudflare Access)
 - GET /api/admin/prompts — list prompts
 - GET /api/admin/prompts/:name — get prompt with version history
 - POST /api/admin/prompts/:name — save new version `{content, createdBy?}`
 - POST /api/admin/prompts/:name/revert — revert `{version: number}`
 - GET /api/admin/prompts/seed — initialize defaults
+- GET /api/admin/creations?limit&offset&includeTest=1 — one row per agent creation (brief ticks, follow-ups, checkpoint choices, Jev flags, review diff summary, label count)
+- GET /api/admin/creations/stats?days=30&includeTest=1 — calibration aggregates: brief skip/voice rate, mean time-to-tick per item, mean final probability per item, follow-ups per creation, "Ask me more" rate, Jev-flagged follow-up rates (redundant/misaddressed/vague), review kept/survived/untouched ratios, label precision
+- GET /api/admin/creations/:id — the full story: brief + `briefEval`, clarifications, `generatedQuestions` vs `finalQuestions`, `reviewDiff`, ordered `events`, `labels`
+- POST /api/admin/creations/:id/labels — `{targetKind: "brief_item"|"clarify"|"question", targetKey, verdict: "good"|"bad"|"clear", note?}`; one verdict per target (upsert); author from `cf-access-authenticated-user-email`
+
+Routes live in `backend/src/routes/adminCreations.ts`; UI is the Creations tab at parlo.me/admin (`components/admin/CreationsPanel.tsx`).
 
 ## Creator flow (agent brief)
 
@@ -218,6 +228,18 @@ welcome → brief → clarify ×N (checkpoint after answer 2, 5, 10, 15…) → 
 - **Building/Review/Ready**: unchanged. `handleGenerate` posts `{brief, clarifications}`.
 - Checklist ids/order are duplicated in `frontend/src/lib/briefChecklist.ts` and `backend/src/services/brief.ts` — change both together.
 - The legacy two-question flow (`CREATION_QUESTIONS`, audience/gather) is no longer reachable from the UI; the MCP server still uses the legacy generate mode.
+
+## Creation analytics (model calibration)
+
+Everything needed to judge whether Jev (brief checklist) and Cerebras (follow-ups, generation) are calibrated:
+
+- **One PostHog trace per creation**, id `survey-<surveyId>`: every `/brief/evaluate`, `/clarify`, judge and `/generate` call is an `$ai_generation` on it, with tokens and `$ai_total_cost_usd` (TypeSafe $0.042/M in; Cerebras $0.35/M in, $0.75/M out). Custom props: `purpose` (`brief-checklist`, `clarify`, `clarify-judge`, `generate-brief`, `generate-legacy`), `$ai_prompt_version_*`.
+- **Jev judges Cerebras** (`backend/src/services/clarifyJudge.ts`): after each follow-up is generated, three Noul questions score it off the request path (`redundant`, `misaddressed`, `vague`, flag at ≥ 0.7). Stored as creation event `clarify_judged` and PostHog event `clarify_question_judged`.
+- **Review diff** (`backend/src/services/reviewDiff.ts`): `PUT /questions` diffs the confirmed set against `surveys.generated_questions` (what the model wrote, saved at generate time) by normalised Levenshtein similarity → kept / reworded (< 0.97) / added / deleted (< 0.5 match) / moved (LIS). Stored as `surveys.review_diff`, creation event `review_confirmed`, PostHog event `review_confirmed` (`keptRatio`, `survivedRatio`, `untouchedRatio`, `changed`, `clarificationCount`). `generated_questions` and `review_diff` are reset on every regenerate. **Edit rate is the calibration metric for generation.**
+- **Creation log** (D1 `creation_events`, `lib/creationLog.ts` + `/creation-events`): the browser posts `brief_submitted` (mode, source, duration, `skipped`, tick timeline, final probabilities), `clarify_answered`, `checkpoint` (`choice: create|continue`), `back`, `review_opened`, `review_edit` (before/after/similarity), `review_delete`, `review_add`, `review_reorder` (final order of generated indices), `review_confirm_tapped`, `regenerate`. Same facts go to PostHog via `trackEvent` under the same names.
+- **Human labels** (D1 `creation_labels`): 👍/👎 per brief item, follow-up and question from the admin Creations tab; precision shows in the stats header. Use them to re-tune `BRIEF_SATISFIED_THRESHOLD` and the judge threshold.
+- **Test traffic**: `lib/testMode.ts` turns on for localhost, `*.pages.dev`, or after visiting `parlo.me/?test=1` (persisted; `?test=0` clears). It adds `X-Parlo-Test: 1` to every API call (backend stamps `surveys.is_test` and `is_test: true` on server events via `initAnalytics` base props) and registers `is_test: true` on browser PostHog events. Filter dashboards with `is_test is not set`; the admin tab hides test rows unless "include test traffic" is ticked.
+- Migration `0012_creation_analytics.sql` (applied to prod 2026-10-10).
 
 ## Question types
 

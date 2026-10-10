@@ -15,17 +15,23 @@ import og from "./routes/og";
 import linkedin from "./routes/linkedin";
 import feed from "./routes/feed";
 import audience from "./routes/audience";
+import adminCreations from "./routes/adminCreations";
 
-const app = new Hono<{ Bindings: Env; Variables: { creatorId: string | null } }>();
+const app = new Hono<{ Bindings: Env; Variables: { creatorId: string | null; isTest: boolean } }>();
 
 // ── Middleware ──
 app.use("*", cors({
   origin: ["https://parlo.me", "http://localhost:5173", "http://localhost:4173"],
+  allowHeaders: ["Content-Type", "Authorization", "X-Parlo-Api-Key", "X-Parlo-Test"],
 }));
 
-// Initialise PostHog analytics on every request (idempotent, pulls key from env)
+// Initialise PostHog analytics on every request (idempotent, pulls key from env).
+// `X-Parlo-Test: 1` marks team / Playwright traffic: every server event gets
+// `is_test: true` and surveys are created with is_test = 1 so stats can skip them.
 app.use("*", async (c, next) => {
-  initAnalytics(c.env.POSTHOG_API_KEY, (p) => c.executionCtx.waitUntil(p));
+  const isTest = c.req.header("x-parlo-test") === "1";
+  c.set("isTest", isTest);
+  initAnalytics(c.env.POSTHOG_API_KEY, (p) => c.executionCtx.waitUntil(p), isTest ? { is_test: true } : {});
   await next();
 });
 
@@ -47,6 +53,7 @@ app.route("/", og);
 app.route("/", linkedin);
 app.route("/", feed);
 app.route("/", audience);
+app.route("/", adminCreations);
 
 // ── Error handler — forward unhandled exceptions to PostHog ──
 app.onError((err, c) => {

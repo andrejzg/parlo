@@ -181,14 +181,23 @@ export function formatClarifications(
 
 export const CEREBRAS_MODEL = "gpt-oss-120b";
 export const WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+/** Cerebras gpt-oss-120b list price: $0.35 in / $0.75 out per million tokens. */
+const CEREBRAS_INPUT_USD_PER_TOKEN = 0.35 / 1_000_000;
+const CEREBRAS_OUTPUT_USD_PER_TOKEN = 0.75 / 1_000_000;
 
 type ChatMessage = { role: string; content: string };
+
+export interface CompletionOutput {
+  text: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
 
 export async function runCerebras(
   apiKey: string,
   messages: ChatMessage[],
   opts: { maxTokens?: number } = {}
-): Promise<string> {
+): Promise<CompletionOutput> {
   const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -203,24 +212,39 @@ export async function runCerebras(
   if (!res.ok) {
     throw new Error(`Cerebras ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content ?? "";
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  return {
+    text: data.choices?.[0]?.message?.content ?? "",
+    inputTokens: data.usage?.prompt_tokens,
+    outputTokens: data.usage?.completion_tokens,
+  };
+}
+
+export interface CompletionDetails<T> {
+  value: T;
+  provider: string;
+  model: string;
+  latencyMs: number;
 }
 
 /**
  * Run a JSON-producing chat completion: Cerebras first (fast), Workers AI
  * Llama as a fallback if the key is missing or the call/parse fails, so
- * nothing hard-fails on one provider. Every attempt is tracked in PostHog.
+ * nothing hard-fails on one provider. Every attempt is tracked in PostHog
+ * with tokens and cost so the survey trace shows what each step cost.
  */
-export async function runJsonCompletion<T>(
+export async function runJsonCompletionDetailed<T>(
   ai: any,
   cerebrasApiKey: string | undefined,
   messages: ChatMessage[],
   parse: (text: string) => T,
   meta: { traceId?: string; properties?: Record<string, unknown>; maxTokens?: number } = {}
-): Promise<T> {
+): Promise<CompletionDetails<T>> {
   const traceId = meta.traceId ?? nanoid();
-  const providers: { provider: string; model: string; run: () => Promise<string> }[] = [];
+  const providers: { provider: string; model: string; run: () => Promise<CompletionOutput> }[] = [];
   if (cerebrasApiKey) {
     providers.push({
       provider: "cerebras",
@@ -233,7 +257,7 @@ export async function runJsonCompletion<T>(
     model: WORKERS_AI_MODEL,
     run: async () => {
       const result = await ai.run(WORKERS_AI_MODEL, { messages });
-      return result.response ?? result.text ?? "";
+      return { text: result.response ?? result.text ?? "" };
     },
   });
 
@@ -242,12 +266,14 @@ export async function runJsonCompletion<T>(
     const start = Date.now();
     let isError = false;
     let errorMsg: string | undefined;
-    let outputText = "";
+    let output: CompletionOutput | undefined;
 
     try {
-      outputText = (await run()).trim();
-      console.log(`[ai] Raw ${provider} response:`, outputText.slice(0, 2000));
-      return parse(outputText);
+      output = await run();
+      const text = output.text.trim();
+      console.log(`[ai] Raw ${provider} response:`, text.slice(0, 2000));
+      const value = parse(text);
+      return { value, provider, model, latencyMs: Date.now() - start };
     } catch (err: any) {
       isError = true;
       errorMsg = err?.message ?? String(err);
@@ -255,12 +281,19 @@ export async function runJsonCompletion<T>(
       console.error(`[ai] ${provider} generation failed:`, errorMsg);
     } finally {
       const latency = (Date.now() - start) / 1000;
+      const inputCost = provider === "cerebras" && output?.inputTokens ? output.inputTokens * CEREBRAS_INPUT_USD_PER_TOKEN : undefined;
+      const outputCost = provider === "cerebras" && output?.outputTokens ? output.outputTokens * CEREBRAS_OUTPUT_USD_PER_TOKEN : undefined;
       trackServerEvent("parlo-ai", "$ai_generation", {
         $ai_trace_id: traceId,
         $ai_model: model,
         $ai_provider: provider,
         $ai_input: messages,
-        $ai_output_choices: outputText ? [{ message: { content: outputText } }] : [],
+        $ai_output_choices: output?.text ? [{ message: { content: output.text } }] : [],
+        $ai_input_tokens: output?.inputTokens,
+        $ai_output_tokens: output?.outputTokens,
+        ...(inputCost !== undefined && { $ai_input_cost_usd: inputCost }),
+        ...(outputCost !== undefined && { $ai_output_cost_usd: outputCost }),
+        ...(inputCost !== undefined && { $ai_total_cost_usd: inputCost + (outputCost ?? 0) }),
         $ai_latency: latency,
         $ai_is_error: isError,
         ...(errorMsg && { $ai_error: errorMsg }),
@@ -269,6 +302,16 @@ export async function runJsonCompletion<T>(
     }
   }
   throw lastError;
+}
+
+export async function runJsonCompletion<T>(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  messages: ChatMessage[],
+  parse: (text: string) => T,
+  meta: { traceId?: string; properties?: Record<string, unknown>; maxTokens?: number } = {}
+): Promise<T> {
+  return (await runJsonCompletionDetailed(ai, cerebrasApiKey, messages, parse, meta)).value;
 }
 
 // ── Question generation ──────────────────────────────────────────────
@@ -291,6 +334,9 @@ function parseGeneratedSurvey(text: string): GeneratedSurvey {
   return parsed;
 }
 
+/** A generated survey plus which provider/model produced it and how fast. */
+export type GeneratedSurveyResult = GeneratedSurvey & { provider: string; model: string; latencyMs: number };
+
 /**
  * Legacy flow: two transcriptions (audience + gather) → title + questions.
  */
@@ -298,8 +344,9 @@ export async function generateQuestions(
   ai: any,
   kv: KVNamespace,
   transcriptions: { audience: string; gather: string },
-  cerebrasApiKey?: string
-): Promise<GeneratedSurvey> {
+  cerebrasApiKey?: string,
+  traceId?: string
+): Promise<GeneratedSurveyResult> {
   const [system, user] = await Promise.all([
     loadPrompt(kv, "system", DEFAULT_SYSTEM_PROMPT),
     loadPrompt(kv, "user", DEFAULT_USER_PROMPT),
@@ -310,14 +357,17 @@ export async function generateQuestions(
     { role: "system", content: system.content },
     { role: "user", content: fill(user.content, transcriptions) },
   ];
-  return runJsonCompletion(ai, cerebrasApiKey, messages, parseGeneratedSurvey, {
+  const { value, ...details } = await runJsonCompletionDetailed(ai, cerebrasApiKey, messages, parseGeneratedSurvey, {
+    traceId,
     properties: {
+      purpose: "generate-legacy",
       audience: transcriptions.audience,
       gather: transcriptions.gather,
       $ai_prompt_version_system: system.version,
       $ai_prompt_version_user: user.version,
     },
   });
+  return { ...value, ...details };
 }
 
 /**
@@ -327,8 +377,9 @@ export async function generateQuestionsFromBrief(
   ai: any,
   kv: KVNamespace,
   input: { brief: string; clarifications: { question: string; answer: string }[] },
-  cerebrasApiKey?: string
-): Promise<GeneratedSurvey> {
+  cerebrasApiKey?: string,
+  traceId?: string
+): Promise<GeneratedSurveyResult> {
   const [system, briefPrompt] = await Promise.all([
     loadPrompt(kv, "system", DEFAULT_SYSTEM_PROMPT),
     loadPrompt(kv, "brief", DEFAULT_BRIEF_PROMPT),
@@ -344,19 +395,23 @@ export async function generateQuestionsFromBrief(
       }),
     },
   ];
-  return runJsonCompletion(ai, cerebrasApiKey, messages, parseGeneratedSurvey, {
+  const { value, ...details } = await runJsonCompletionDetailed(ai, cerebrasApiKey, messages, parseGeneratedSurvey, {
+    traceId,
     properties: {
+      purpose: "generate-brief",
       brief: input.brief,
       clarificationCount: input.clarifications.length,
       $ai_prompt_version_system: system.version,
       $ai_prompt_version_brief: briefPrompt.version,
     },
   });
+  return { ...value, ...details };
 }
 
 // ── Clarifying questions ─────────────────────────────────────────────
 
 export type ClarifyingQuestion = { question: string; hint: string | null };
+export type ClarifyingQuestionResult = ClarifyingQuestion & { provider: string; model: string; latencyMs: number };
 
 function parseClarifyingQuestion(text: string): ClarifyingQuestion {
   const parsed = JSON.parse(extractJson(text)) as { question?: unknown; hint?: unknown };
@@ -376,7 +431,7 @@ export async function generateClarifyingQuestion(
   input: { brief: string; history: { question: string; answer: string }[] },
   cerebrasApiKey?: string,
   traceId?: string
-): Promise<ClarifyingQuestion> {
+): Promise<ClarifyingQuestionResult> {
   const prompt = await loadPrompt(kv, "clarify", DEFAULT_CLARIFY_PROMPT);
   const messages = [
     { role: "system", content: CLARIFY_SYSTEM_PROMPT },
@@ -389,12 +444,14 @@ export async function generateClarifyingQuestion(
       }),
     },
   ];
-  return runJsonCompletion(ai, cerebrasApiKey, messages, parseClarifyingQuestion, {
+  const { value, ...details } = await runJsonCompletionDetailed(ai, cerebrasApiKey, messages, parseClarifyingQuestion, {
     traceId,
     maxTokens: 400,
     properties: {
+      purpose: "clarify",
       clarificationCount: input.history.length,
       $ai_prompt_version_clarify: prompt.version,
     },
   });
+  return { ...value, ...details };
 }
