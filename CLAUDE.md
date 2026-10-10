@@ -367,7 +367,7 @@ OG images are generated dynamically by the backend Worker at `GET /api/og/:code.
   - `parlo_thanks` — `{{name}}`
   - `parlo_thanks_open` — `{{name}}`; button → `parlo.me/r/{surveyCode}`
   - `parlo_new_response` — `{{respondent}}`, `{{survey_title}}`, `{{response_count}}`; button → `parlo.me/d/{dashboardCode}`
-  - `parlo_new_round` — **not created on the WABA yet** (sends log a 404 until it is): `{{survey_title}}`, `{{round_number}}`; URL button suffix `{code}?t={memberToken}` → `parlo.me/s/{code}?t=…`. Sent on round approval by `routes/groups.ts`.
+  - `parlo_new_round` — created in Kapso 2026-10-10, **submitted for Meta review** (sends fail until it is approved; check the Templates page in Kapso). Body: "Round {{round_number}} of {{survey_title}} is open. The agent has a question for you. Tap below to answer by voice. It takes about a minute." Button "Answer now" → `https://parlo.me/s/{{1}}` with suffix `{code}?t={memberToken}`. Sent on round approval by `routes/groups.ts`.
 - Templates live on the WABA: switching numbers/WABAs means recreating them.
 - Free-form `sendText` only reaches users who messaged us in the last 24h. The WhatsApp OTP fallback still uses `sendText`, so it fails for first-time users. Meta refuses AUTHENTICATION templates until the business is verified; once it is, create a `COPY_CODE` auth template and switch `routes/otp.ts` to it.
 
