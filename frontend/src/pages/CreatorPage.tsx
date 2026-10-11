@@ -24,7 +24,7 @@ import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -102,43 +102,32 @@ export default function CreatorPage() {
     (async () => {
       try {
         const deviceAuth = await getDeviceAuth();
-        if (deviceAuth) {
+        // A device verified before API keys were handed out can't prove who
+        // it is any more (the backend no longer takes a bare phone); it goes
+        // through the OTP once more.
+        if (deviceAuth && !deviceAuth.apiKey) await clearDeviceAuth();
+        const key = deviceAuth?.apiKey ?? null;
+        if (deviceAuth && key) {
           setDevicePhone(deviceAuth.phone);
           setPhoneVerified(true);
-
-          let key = deviceAuth.apiKey;
-
-          // If no apiKey stored, try to fetch it by phone
-          if (!key) {
-            try {
-              const loginRes = await loginByPhone(deviceAuth.phone);
-              if (loginRes.apiKey) {
-                key = loginRes.apiKey;
-                saveDeviceAuth(deviceAuth.phone, key);
-              }
-            } catch {}
-          }
-
-          if (key) {
-            setApiKey(key);
-            try {
-              const result = await fetchMySurveys(key);
-              if (result.surveys.length > 0) {
-                setMySurveys(result.surveys);
-                // Pre-fetch LinkedIn profile before showing home
-                try {
-                  const profile = await fetchLinkedInProfile(deviceAuth.phone);
-                  if (profile.connected) setLinkedInProfile(profile);
-                } catch {}
-                setStage("home");
-              }
-            } catch {}
-          }
+          setApiKey(key);
+          try {
+            const result = await fetchMySurveys(key);
+            if (result.surveys.length > 0) {
+              setMySurveys(result.surveys);
+              // Pre-fetch LinkedIn profile before showing home
+              try {
+                const profile = await fetchLinkedInProfile(key);
+                if (profile.connected) setLinkedInProfile(profile);
+              } catch {}
+              setStage("home");
+            }
+          } catch {}
         }
 
         // Check if returning from LinkedIn OAuth
         const params = new URLSearchParams(window.location.search);
-        if (params.get("linkedin") === "connected" && deviceAuth?.phone) {
+        if (params.get("linkedin") === "connected" && deviceAuth?.apiKey) {
           window.history.replaceState({}, "", window.location.pathname);
           // Restore survey state that was saved before the redirect
           try {
@@ -153,7 +142,7 @@ export default function CreatorPage() {
             }
           } catch {}
           try {
-            const profile = await fetchLinkedInProfile(deviceAuth.phone);
+            const profile = await fetchLinkedInProfile(deviceAuth.apiKey);
             if (profile.connected) {
               setLinkedInProfile(profile);
               setStage("linkedin-success");
@@ -458,29 +447,27 @@ export default function CreatorPage() {
       setPhone(devicePhone);
       setPhoneVerified(true);
       identifyUser(devicePhone, { role: "creator" });
-      if (surveyId) {
-        claimSurvey(surveyId, devicePhone).then((res) => {
-          if (res.apiKey) {
-            setApiKey(res.apiKey);
-            saveDeviceAuth(devicePhone, res.apiKey);
-          }
-        }).catch(() => {});
+      if (surveyId && apiKey) {
+        // A logged-in device claims its draft with its API key.
+        claimSurvey(surveyId, { apiKey }).catch(() => {});
       }
-      proceedAfterAuth(devicePhone);
+      proceedAfterAuth(apiKey);
     } else {
       goForward("phone");
     }
   };
 
   /** Check LinkedIn status and go to ready or linkedin-connect. */
-  const proceedAfterAuth = useCallback(async (phoneToCheck: string) => {
-    try {
-      const profile = await fetchLinkedInProfile(phoneToCheck);
-      if (profile.connected) {
-        goForward("ready");
-        return;
-      }
-    } catch {}
+  const proceedAfterAuth = useCallback(async (key: string | null) => {
+    if (key) {
+      try {
+        const profile = await fetchLinkedInProfile(key);
+        if (profile.connected) {
+          goForward("ready");
+          return;
+        }
+      } catch {}
+    }
     goForward("linkedin-connect");
   }, []);
 
@@ -541,48 +528,53 @@ export default function CreatorPage() {
     }
   };
 
-  const handleOtpVerified = async (verifiedPhone: string) => {
-    setPhone(verifiedPhone);
-    setPhoneVerified(true);
-    setDevicePhone(verifiedPhone);
-    identifyUser(verifiedPhone, { role: "creator" });
+  const handleOtpVerified = async (verifiedPhone: string, proof: PhoneProof) => {
     trackEvent("creator_phone_verified", { surveyId });
 
-    // Attach phone to the survey's creator record and get API key
-    if (surveyId) {
-      try {
-        const res = await claimSurvey(surveyId, verifiedPhone);
-        if (res.apiKey) {
-          setApiKey(res.apiKey);
-          saveDeviceAuth(verifiedPhone, res.apiKey);
-        } else {
-          saveDeviceAuth(verifiedPhone);
-        }
-      } catch {
-        saveDeviceAuth(verifiedPhone);
+    // Trade the proof for an API key: claim the draft parlo if there is one,
+    // otherwise just log in. The server never reads a bare phone number.
+    let key: string;
+    let canonicalPhone = verifiedPhone;
+    try {
+      if (surveyId) {
+        const res = await claimSurvey(surveyId, proof);
+        key = res.apiKey;
+        canonicalPhone = res.phone ?? verifiedPhone;
+      } else {
+        const res = await loginByPhone(proof);
+        key = res.apiKey;
+        canonicalPhone = res.phone;
       }
-      await proceedAfterAuth(verifiedPhone);
-    } else {
-      // Standalone login — look up apiKey by phone and load surveys
-      try {
-        const loginRes = await loginByPhone(verifiedPhone);
-        if (loginRes.apiKey) {
-          setApiKey(loginRes.apiKey);
-          saveDeviceAuth(verifiedPhone, loginRes.apiKey);
-          const surveysRes = await fetchMySurveys(loginRes.apiKey);
-          if (surveysRes.surveys.length > 0) {
-            setMySurveys(surveysRes.surveys);
-            goForward("home");
-            return;
-          }
-        } else {
-          saveDeviceAuth(verifiedPhone);
-        }
-      } catch {
-        saveDeviceAuth(verifiedPhone);
-      }
-      goForward("welcome");
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.handleOtpVerified" });
+      toast.error("Couldn't verify your number. Please try again.");
+      setDirection(-1);
+      setStage("phone");
+      setScreenKey((k) => k + 1);
+      return;
     }
+
+    setPhone(canonicalPhone);
+    setPhoneVerified(true);
+    setDevicePhone(canonicalPhone);
+    setApiKey(key);
+    saveDeviceAuth(canonicalPhone, key);
+    identifyUser(canonicalPhone, { role: "creator" });
+
+    if (surveyId) {
+      await proceedAfterAuth(key);
+      return;
+    }
+    // Standalone login — load the home list
+    try {
+      const surveysRes = await fetchMySurveys(key);
+      if (surveysRes.surveys.length > 0) {
+        setMySurveys(surveysRes.surveys);
+        goForward("home");
+        return;
+      }
+    } catch {}
+    goForward("welcome");
   };
 
   const pageKey =
@@ -647,6 +639,7 @@ export default function CreatorPage() {
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         phone={phoneVerified ? (devicePhone || phone) : devicePhone}
+        apiKey={apiKey}
         onLogout={() => {
           clearDeviceAuth();
           setDevicePhone(null);
@@ -713,6 +706,7 @@ export default function CreatorPage() {
             {stage === "profile" && (
               <ProfilePage
                 phone={devicePhone || phone}
+                apiKey={apiKey}
                 linkedInProfile={linkedInProfile}
                 onLogout={() => {
                   clearDeviceAuth();
@@ -908,11 +902,19 @@ export default function CreatorPage() {
                   <Button
                     size="lg"
                     className="w-full bg-linkedin text-neutral-1 dark:text-neutral-10"
-                    onClick={() => {
+                    onClick={async () => {
+                      if (!apiKey) {
+                        toast.error("Please verify your number first.");
+                        return;
+                      }
                       saveCreatorSession();
-                      const apiBase = import.meta.env.VITE_API_URL || "/api";
-                      const p = devicePhone || phone;
-                      window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}`;
+                      try {
+                        const { url } = await startLinkedIn(apiKey);
+                        window.location.href = url;
+                      } catch (err) {
+                        captureException(err, { location: "CreatorPage.startLinkedIn" });
+                        toast.error("Couldn't reach LinkedIn. Please try again.");
+                      }
                     }}
                   >
                     Continue with LinkedIn

@@ -27,6 +27,7 @@ import { extractCode } from "../services/slug";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
 import { trackServerEvent } from "../services/analytics";
 import { displayNameFor } from "../services/groups";
+import { buildAnswersCsv } from "../services/exportCsv";
 
 const groups = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
@@ -319,6 +320,117 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
 });
 
 // ── Member-facing (personal link) ────────────────────────────────────
+
+// ── Exports: MCP destinations, export runs, CSV ──────────────────────
+//
+// The owner connects MCP servers (Zapier, Pipedream, Composio, a Sheets
+// server…) as destinations; the agent exports the report and the answers
+// table to them with their own tools. Registrations and OAuth tokens live in
+// the agent's SQLite (Agents SDK). Owner/admin only.
+
+function acceptableMcpUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:") return true;
+    return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
+  } catch {
+    return false;
+  }
+}
+
+groups.get("/api/my/surveys/:surveyId/connections", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  return c.json({ connections: await agent.listConnections(surveyId) });
+});
+
+groups.post("/api/my/surveys/:surveyId/connections", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const body = await c.req.json<{ name?: string; url?: string }>().catch(() => ({} as { name?: string; url?: string }));
+  const name = (body.name ?? "").trim().slice(0, 40);
+  const url = (body.url ?? "").trim();
+  if (!name) return c.json({ error: "Give the destination a name" }, 400);
+  if (!acceptableMcpUrl(url)) return c.json({ error: "The server URL must start with https://" }, 400);
+  // wrangler dev reports the custom domain as the origin (pitfall 20), so prefer the configured one.
+  const callbackHost = c.env.API_ORIGIN ?? new URL(c.req.url).origin;
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  try {
+    const result = await agent.addConnection(surveyId, { name, url, callbackHost });
+    trackServerEvent(gate.membership.user_id, "export_destination_added", { surveyId, state: result.state });
+    return c.json(result);
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error("[groups] addConnection failed", raw);
+    const message = raw.includes("already in use")
+      ? "A destination with that name already exists. Remove it first or pick another name."
+      : raw.startsWith("Failed to connect")
+      ? "Couldn't reach that server. Check the URL is an MCP endpoint."
+      : raw;
+    return c.json({ error: message.slice(0, 300) }, 400);
+  }
+});
+
+groups.delete("/api/my/surveys/:surveyId/connections/:connectionId", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  await agent.removeConnection(surveyId, c.req.param("connectionId"));
+  return c.json({ ok: true });
+});
+
+groups.post("/api/my/surveys/:surveyId/agent/export", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const body = await c.req.json<{ instruction?: string }>().catch(() => ({} as { instruction?: string }));
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  const result = await agent.runExport(surveyId, { instruction: typeof body.instruction === "string" ? body.instruction : undefined });
+  trackServerEvent(gate.membership.user_id, "export_run", { surveyId, ok: result.ok, toolCalls: result.toolCalls });
+  return c.json(result, result.ok ? 200 : 502);
+});
+
+groups.put("/api/my/surveys/:surveyId/agent/settings", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const body = await c.req.json<{ autoExport?: boolean }>().catch(() => ({} as { autoExport?: boolean }));
+  if (typeof body.autoExport !== "boolean") return c.json({ error: "autoExport must be a boolean" }, 400);
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  const result = await agent.setAutoExport(surveyId, body.autoExport);
+  trackServerEvent(gate.membership.user_id, "export_auto_toggled", { surveyId, autoExport: body.autoExport });
+  return c.json(result);
+});
+
+groups.get("/api/my/surveys/:surveyId/export.csv", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const gate = await requireMember(c, surveyId, true);
+  if (gate instanceof Response) return gate;
+  const csv = await buildAnswersCsv(c.env.DB, surveyId);
+  trackServerEvent(gate.membership.user_id, "export_csv_downloaded", { surveyId });
+  return new Response(csv, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="parlo-${gate.survey.code}-answers.csv"`,
+      "cache-control": "no-store",
+    },
+  });
+});
+
+// OAuth providers redirect here after the owner authorises an MCP server. No
+// API key: inside the agent the SDK matches the request to the pending
+// authorisation by its `state` parameter and rejects anything else.
+groups.get("/api/mcp/callback/:surveyId", async (c) => {
+  const surveyId = c.req.param("surveyId");
+  const survey = await loadSurvey(c, surveyId);
+  if (!survey) return c.text("Unknown parlo", 404);
+  const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
+  return agent.fetch(c.req.raw);
+});
 
 /** The agent's report, for members who have answered at least once. */
 groups.get("/api/s/:code/report", async (c) => {

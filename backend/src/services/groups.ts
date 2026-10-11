@@ -243,13 +243,22 @@ export async function claimOwnership(db: D1Database, surveyId: string, anonymous
       .run();
     return anonymousOwnerId;
   }
+  return claimOwnershipForUser(db, surveyId, anonymousOwnerId, existing.id);
+}
 
+/**
+ * Move the owner seat of a parlo from the anonymous user it was created under
+ * to a known user (a logged-in device claiming its draft). The anonymous row
+ * is dropped if nothing else references it.
+ */
+export async function claimOwnershipForUser(db: D1Database, surveyId: string, anonymousOwnerId: string, userId: string): Promise<string> {
+  if (userId === anonymousOwnerId) return userId;
   const ownerRow = await db
     .prepare("SELECT * FROM group_members WHERE survey_id = ? AND user_id = ?")
     .bind(surveyId, anonymousOwnerId)
     .first<GroupMember>();
   const statements: D1PreparedStatement[] = [
-    db.prepare("UPDATE surveys SET creator_id = ? WHERE id = ?").bind(existing.id, surveyId),
+    db.prepare("UPDATE surveys SET creator_id = ? WHERE id = ?").bind(userId, surveyId),
     db.prepare("DELETE FROM group_members WHERE survey_id = ? AND user_id = ?").bind(surveyId, anonymousOwnerId),
     db
       .prepare(
@@ -257,7 +266,7 @@ export async function claimOwnership(db: D1Database, surveyId: string, anonymous
          VALUES (?, ?, 'owner', ?, datetime('now'))
          ON CONFLICT (survey_id, user_id) DO UPDATE SET role = 'owner', removed_at = NULL`
       )
-      .bind(surveyId, existing.id, ownerRow?.access_token ?? newAccessToken()),
+      .bind(surveyId, userId, ownerRow?.access_token ?? newAccessToken()),
     // Only drop the anonymous row if it has no other parlos.
     db
       .prepare(
@@ -266,5 +275,24 @@ export async function claimOwnership(db: D1Database, surveyId: string, anonymous
       .bind(anonymousOwnerId, anonymousOwnerId),
   ];
   await db.batch(statements);
-  return existing.id;
+  return userId;
+}
+
+/** Every verified user can log in: mint an API key for one that has none. */
+export async function ensureApiKey(db: D1Database, userId: string): Promise<string> {
+  const row = await db.prepare("SELECT api_key FROM users WHERE id = ?").bind(userId).first<{ api_key: string | null }>();
+  if (row?.api_key) return row.api_key;
+  const apiKey = `pk_${generateCode(32)}`;
+  await db.prepare("UPDATE users SET api_key = ? WHERE id = ? AND api_key IS NULL").bind(apiKey, userId).run();
+  const again = await db.prepare("SELECT api_key FROM users WHERE id = ?").bind(userId).first<{ api_key: string | null }>();
+  return again?.api_key ?? apiKey;
+}
+
+/** Fill in names a member gave us, never overwriting ones we already have. */
+export async function updateUserNames(db: D1Database, userId: string, firstName: string | null, lastName: string | null): Promise<void> {
+  if (!firstName && !lastName) return;
+  await db
+    .prepare("UPDATE users SET first_name = COALESCE(first_name, ?), last_name = COALESCE(last_name, ?) WHERE id = ?")
+    .bind(firstName, lastName, userId)
+    .run();
 }

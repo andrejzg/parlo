@@ -3,6 +3,7 @@ import type { Env } from "../types";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
+import { mintPhoneProof } from "../services/phoneProof";
 
 const otp = new Hono<{ Bindings: Env }>();
 
@@ -42,6 +43,10 @@ otp.post("/api/otp/send-whatsapp", async (c) => {
 });
 
 // ── POST /api/otp/verify-whatsapp ── Verify WhatsApp OTP
+//
+// On success the response carries a `proof` token (10 min, KV). The client
+// presents it to POST /api/auth/login, /api/surveys/:id/claim or a response
+// submit instead of a bare phone number, which proves nothing.
 otp.post("/api/otp/verify-whatsapp", async (c) => {
   const body = await c.req.json<{ phone?: string; code?: string }>().catch((): { phone?: string; code?: string } => ({}));
   const { phone, code } = body;
@@ -62,7 +67,8 @@ otp.post("/api/otp/verify-whatsapp", async (c) => {
 
   trackServerEvent(phone, "otp_verified", { channel: "whatsapp" });
 
-  return c.json({ verified: true });
+  const proof = await mintPhoneProof(c.env.KV, phone);
+  return c.json({ verified: true, proof });
 });
 
 export default otp;

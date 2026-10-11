@@ -31,6 +31,7 @@ import { initAnalytics, trackServerEvent } from "../services/analytics";
 import { createProposedRound, type ProposedAsk } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
 import { displayNameFor } from "../services/groups";
+import { buildAnswersCsv } from "../services/exportCsv";
 
 export interface GroupState {
   surveyId: string | null;
@@ -43,6 +44,42 @@ export interface GroupState {
   lastError: string | null;
   provider: string | null;
   model: string | null;
+  /** The owner's dashboard code, so an OAuth callback can send them back to the Agent tab. */
+  dashboardCode: string | null;
+  /** Export to the connected destinations after every report. */
+  autoExport: boolean;
+  lastExportAt: string | null;
+  lastExportSummary: string | null;
+  lastExportError: string | null;
+}
+
+/** An MCP server the owner connected as an export destination. */
+export interface AgentConnection {
+  id: string;
+  name: string;
+  url: string;
+  state: "authenticating" | "connecting" | "connected" | "discovering" | "ready" | "failed";
+  tools: string[];
+  error: string | null;
+  /** Set while the owner still has to authorise the server. */
+  authUrl: string | null;
+}
+
+export interface AddConnectionResult {
+  id: string;
+  state: AgentConnection["state"];
+  authUrl: string | null;
+  connection: AgentConnection | null;
+}
+
+export interface ExportResult {
+  ok: boolean;
+  summary: string | null;
+  toolCalls: number;
+  destinations: string[];
+  provider: string;
+  model: string;
+  error?: string;
 }
 
 export interface IngestAnswer {
@@ -74,6 +111,7 @@ export interface AgentSnapshot {
   report: string | null;
   reportUpdatedAt: string | null;
   memory: string | null;
+  connections: AgentConnection[];
 }
 
 export interface DigestResult {
@@ -173,6 +211,11 @@ export class GroupAgent extends Agent<Env, GroupState> {
     lastError: null,
     provider: null,
     model: null,
+    dashboardCode: null,
+    autoExport: false,
+    lastExportAt: null,
+    lastExportSummary: null,
+    lastExportError: null,
   };
 
   async onStart() {
@@ -184,6 +227,20 @@ export class GroupAgent extends Agent<Env, GroupState> {
     initAnalytics(this.env.POSTHOG_API_KEY, (p) => this.ctx.waitUntil(p));
     // Cron schedules are idempotent, so this is safe on every wake.
     await this.schedule("0 3 * * *", "runNightly");
+    // After an MCP OAuth dance the provider lands on /api/mcp/callback/<id>,
+    // the Worker forwards it here, and we send the owner back to the Agent tab.
+    this.mcp.configureOAuthCallback({
+      customHandler: (result) => {
+        const target = new URL(
+          this.state.dashboardCode ? `/d/${this.state.dashboardCode}` : "/",
+          this.env.FRONTEND_ORIGIN ?? "https://parlo.me",
+        );
+        target.searchParams.set("tab", "agent");
+        target.searchParams.set("connection", result.authSuccess ? "connected" : "failed");
+        if (!result.authSuccess) target.searchParams.set("reason", result.authError.slice(0, 160));
+        return Response.redirect(target.toString(), 302);
+      },
+    });
   }
 
   // ── File system ────────────────────────────────────────────────────
@@ -241,9 +298,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
   private async syncFromD1(surveyId: string): Promise<{ answerFiles: number; newAnswers: number }> {
     const db = this.env.DB;
     const survey = await db
-      .prepare("SELECT id, title, brief, brief_clarifications, visibility, intro_transcript FROM surveys WHERE id = ?")
+      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript FROM surveys WHERE id = ?")
       .bind(surveyId)
-      .first<{ id: string; title: string | null; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null }>();
+      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null }>();
     if (!survey) throw new Error("Parlo not found");
 
     // /brief.md
@@ -361,7 +418,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
       newAnswers++;
     }
 
-    if (survey.title !== this.state.title) this.setState({ ...this.state, title: survey.title });
+    if (survey.title !== this.state.title || survey.dashboard_code !== this.state.dashboardCode) {
+      this.setState({ ...this.state, title: survey.title, dashboardCode: survey.dashboard_code });
+    }
     return { answerFiles: this.listFiles("/answers/").length, newAnswers };
   }
 
@@ -455,6 +514,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
       report: report?.content ?? null,
       reportUpdatedAt: report?.updatedAt ?? null,
       memory: memory?.content ?? null,
+      connections: await this.connectionsSettled(1500),
     };
   }
 
@@ -462,6 +522,196 @@ export class GroupAgent extends Agent<Env, GroupState> {
     this.bind(surveyId);
     const f = this.readFile(path);
     return f ? { path, ...f } : null;
+  }
+
+  // ── Exports: MCP destinations the owner connects ───────────────────
+
+  private connectionsNow(): AgentConnection[] {
+    const { servers, tools } = this.getMcpServers();
+    return Object.entries(servers).map(([id, srv]) => ({
+      id,
+      name: srv.name,
+      url: srv.server_url,
+      state: srv.state,
+      tools: tools.filter((t) => t.serverId === id).map((t) => t.name),
+      error: srv.error ?? null,
+      authUrl: srv.state === "authenticating" ? srv.auth_url : null,
+    }));
+  }
+
+  /** Connections restored after hibernation take a moment to come back; give them one. */
+  private async connectionsSettled(timeoutMs: number): Promise<AgentConnection[]> {
+    await this.mcp.waitForConnections({ timeout: timeoutMs });
+    return this.connectionsNow();
+  }
+
+  async listConnections(surveyId: string): Promise<AgentConnection[]> {
+    this.bind(surveyId);
+    return this.connectionsSettled(3000);
+  }
+
+  /**
+   * Connect an MCP server over HTTP (a Zapier/Pipedream/Composio MCP URL, a
+   * Google Sheets server, anything speaking MCP). The SDK stores the
+   * registration and any OAuth tokens in this agent's SQLite. If the server
+   * wants OAuth the result carries `authUrl`: the browser completes it and the
+   * provider redirects to /api/mcp/callback/<surveyId>, which the Worker
+   * forwards to this agent.
+   */
+  async addConnection(surveyId: string, input: { name: string; url: string; callbackHost: string }): Promise<AddConnectionResult> {
+    this.bind(surveyId);
+    const result = await this.addMcpServer(input.name, input.url, {
+      id: slug(input.name).toLowerCase(),
+      callbackHost: input.callbackHost,
+      callbackPath: `/api/mcp/callback/${surveyId}`,
+    });
+    trackServerEvent(surveyId, "agent_connection_added", { surveyId, state: result.state, host: new URL(input.url).host });
+    return {
+      id: result.id,
+      state: result.state,
+      authUrl: result.state === "authenticating" ? result.authUrl : null,
+      connection: this.connectionsNow().find((c) => c.id === result.id) ?? null,
+    };
+  }
+
+  async removeConnection(surveyId: string, id: string): Promise<{ ok: true }> {
+    this.bind(surveyId);
+    await this.removeMcpServer(id);
+    trackServerEvent(surveyId, "agent_connection_removed", { surveyId });
+    return { ok: true };
+  }
+
+  async setAutoExport(surveyId: string, enabled: boolean): Promise<{ autoExport: boolean }> {
+    this.bind(surveyId);
+    this.setState({ ...this.state, autoExport: enabled });
+    return { autoExport: enabled };
+  }
+
+  /** Scheduled a few seconds after each digest when the owner turned auto-export on. */
+  async runAutoExport() {
+    const surveyId = this.state.surveyId;
+    if (!surveyId || !this.state.autoExport) return;
+    if (!(await this.connectionsSettled(10_000)).some((c) => c.state === "ready")) return;
+    await this.runExport(surveyId, { trigger: "auto" });
+  }
+
+  /**
+   * Push the report and the answers table to the connected destination(s).
+   * The model gets the destinations' own tools plus the read-only file tools
+   * and decides which calls to make; the outcome is filed under /exports/.
+   */
+  async runExport(surveyId: string, opts: { instruction?: string; trigger?: "manual" | "auto" } = {}): Promise<ExportResult> {
+    this.bind(surveyId);
+    const picked = pickAgentModel(this.env);
+    const started = Date.now();
+    const trigger = opts.trigger ?? "manual";
+    let destinations: string[] = [];
+    try {
+      await this.syncFromD1(surveyId);
+      const ready = (await this.connectionsSettled(10_000)).filter((c) => c.state === "ready");
+      destinations = ready.map((c) => c.name);
+      if (ready.length === 0) throw new Error("No destination is connected yet. Add one under Exports first.");
+      const mcpTools = this.mcp.getAITools({ state: "ready" });
+      const toolNames = Object.keys(mcpTools);
+      if (toolNames.length === 0) throw new Error(`${destinations.join(", ")} offers no tools to export with.`);
+      const tools = { ...this.buildTools({ readOnly: true }), ...mcpTools };
+
+      const title = this.state.title ?? "Untitled parlo";
+      const report = this.readFile("/report.md")?.content ?? "(no report yet — the agent has not written one)";
+      const csv = await buildAnswersCsv(this.env.DB, surveyId);
+
+      const system = [
+        "You are the agent running a Parlo: a group conversation where members answer by voice. Right now your job is to EXPORT this parlo's data to the destination(s) the owner connected, using their tools.",
+        "Export, in this order: (1) the current report, as a document, page or note titled after the parlo; (2) the answers table below (CSV, one row per answer, keep the columns as given), as a spreadsheet, table or database rows. If the destination only suits one of the two, export the one it suits.",
+        "Read the tool list first and pick the fewest calls that get the data there. If a tool can find an existing document or sheet named after this parlo, update that one instead of making another.",
+        "The destination belongs to the owner, so member first names are fine. There are no phone numbers in your files; never invent any.",
+        "When finished, reply with two to four plain sentences for the owner: what you exported, where (include any link a tool returned), and anything that failed. If nothing could be exported, say exactly why.",
+      ].join("\n");
+
+      const prompt = [
+        `# ${title}`,
+        `Destinations connected: ${destinations.join(", ")}`,
+        `Their tools: ${toolNames.join(", ")}`,
+        opts.instruction ? `Owner's instruction: ${opts.instruction.slice(0, 600)}` : "",
+        "",
+        "## Report (markdown)",
+        report,
+        "",
+        "## Answers (CSV)",
+        csv.slice(0, 60_000),
+        "",
+        "Export now.",
+      ].join("\n");
+
+      const result = await generateText({
+        model: picked.model,
+        system,
+        prompt,
+        tools,
+        stopWhen: stepCountIs(MAX_LOOP_STEPS),
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+      });
+
+      const toolCalls = result.steps.reduce((n, st) => n + st.toolCalls.filter((tc) => tc.toolName in mcpTools).length, 0);
+      const ok = toolCalls > 0;
+      const summary =
+        result.text.trim() ||
+        (ok ? `Exported with ${toolCalls} tool call${toolCalls === 1 ? "" : "s"}.` : "The agent did not use any destination tool.");
+      const stamp = nowIso();
+      this.writeFile(
+        `/exports/${stamp.replace(/[:.]/g, "-")}.md`,
+        [
+          `# Export ${stamp}`,
+          `trigger: ${trigger}`,
+          `destinations: ${destinations.join(", ")}`,
+          `destination tool calls: ${toolCalls}`,
+          `model: ${picked.provider} / ${picked.modelId}`,
+          "",
+          summary,
+        ].join("\n")
+      );
+      this.setState({
+        ...this.state,
+        lastExportAt: stamp,
+        lastExportSummary: summary.slice(0, 1000),
+        lastExportError: ok ? null : summary.slice(0, 500),
+        provider: picked.provider,
+        model: picked.modelId,
+      });
+
+      trackServerEvent("parlo-ai", "$ai_generation", {
+        $ai_trace_id: `agent-export-${surveyId}-${started}`,
+        $ai_model: picked.modelId,
+        $ai_provider: picked.provider,
+        $ai_input: `[export to ${destinations.join(", ")}; ${toolNames.length} tools]`,
+        $ai_output_choices: [{ message: { content: summary.slice(0, 4000) } }],
+        $ai_latency: (Date.now() - started) / 1000,
+        $ai_input_tokens: result.usage?.inputTokens,
+        $ai_output_tokens: result.usage?.outputTokens,
+        $ai_is_error: !ok,
+        surveyId,
+        trigger,
+        toolCalls,
+      });
+      trackServerEvent(surveyId, "agent_export_completed", { surveyId, ok, trigger, toolCalls, destinations: destinations.length, provider: picked.provider });
+
+      return { ok, summary, toolCalls, destinations, provider: picked.provider, model: picked.modelId, error: ok ? undefined : summary };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[GroupAgent] export failed", message);
+      this.setState({ ...this.state, lastExportError: message.slice(0, 500) });
+      trackServerEvent("parlo-ai", "$ai_generation", {
+        $ai_trace_id: `agent-export-${surveyId}-${started}`,
+        $ai_model: picked.modelId,
+        $ai_provider: picked.provider,
+        $ai_is_error: true,
+        $ai_error: message,
+        $ai_latency: (Date.now() - started) / 1000,
+        surveyId,
+        trigger,
+      });
+      return { ok: false, summary: null, toolCalls: 0, destinations, provider: picked.provider, model: picked.modelId, error: message };
+    }
   }
 
   // ── Digest: rewrite the report from everything on file ─────────────
@@ -576,6 +826,10 @@ export class GroupAgent extends Agent<Env, GroupState> {
         steps: result.steps.length,
       });
       trackServerEvent(surveyId, "agent_digest_completed", { surveyId, answers: answerPaths.length, provider: picked.provider });
+
+      if (this.state.autoExport) {
+        await this.schedule(5, "runAutoExport", undefined, { idempotent: true });
+      }
 
       await notifyManagers(this.env, surveyId, {
         type: "report_ready",

@@ -17,6 +17,12 @@ export interface Env {
   ANTHROPIC_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
+  /** Firebase project whose ID tokens prove a phone number (`aud` claim). */
+  FIREBASE_PROJECT_ID: string;
+  /** Public origin of this API, for OAuth callbacks (wrangler dev reports the custom domain, see pitfall 20). */
+  API_ORIGIN?: string;
+  /** Where the web app lives, for redirects back after OAuth. */
+  FRONTEND_ORIGIN?: string;
   AI: any;
 }
 
@@ -228,9 +234,14 @@ export interface StartResponseResponse {
 }
 
 export interface SubmitResponseRequest {
+  /** Display only — identity comes from the API key, `idToken` or `proof`. */
   phone?: string;
   firstName?: string;
   lastName?: string;
+  /** Firebase ID token from this session's SMS OTP. */
+  idToken?: string;
+  /** Proof token from POST /api/otp/verify-whatsapp. */
+  proof?: string;
 }
 
 export interface SurveyPublicView {

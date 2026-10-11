@@ -36,3 +36,8 @@ new_sqlite_classes = ["GroupAgent"]
 
 [vars]
 WHATSAPP_VERIFY_TOKEN = "REPLACE_WITH_VERIFY_TOKEN"
+# Firebase project whose ID tokens prove a phone (public; it is in the frontend bundle too).
+FIREBASE_PROJECT_ID = "parlo-ad2cb"
+# Public origins, used for OAuth callback URLs and redirects. Override in .dev.vars locally.
+API_ORIGIN = "https://api.parlo.me"
+FRONTEND_ORIGIN = "https://parlo.me"

@@ -35,7 +35,8 @@ import {
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
-import { claimOwnership, displayNameFor, ensureMember, getMemberByToken, normalizePhone } from "../services/groups";
+import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
+import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import { ensureRound1, latestSentRound, pendingAsksFor } from "../services/rounds";
 import {
   batchAll,
@@ -655,58 +656,80 @@ function introKey(surveyId: string) {
   return `surveys/${surveyId}/intro.webm`;
 }
 
-// ── POST /api/surveys/:id/claim ── Attach a verified phone to the survey's creator
+// ── POST /api/surveys/:id/claim ── Attach a verified identity to the parlo's owner seat
+//
+// Proof is mandatory: an API key (a device that passed OTP before), a Firebase
+// ID token or a WhatsApp proof token (see services/phoneProof.ts). A phone
+// number in the body proves nothing and is not read. A parlo whose owner is
+// already a verified user can only be re-claimed by that same user.
 surveys.post("/api/surveys/:id/claim", async (c) => {
   const surveyId = c.req.param("id");
   const db = c.env.DB;
+  type ClaimBody = { idToken?: string; proof?: string; name?: string };
+  const body = await c.req.json<ClaimBody>().catch((): ClaimBody => ({}));
 
-  const body = await c.req.json<{ phone: string; name?: string }>().catch(() => null);
-  if (!body?.phone) {
-    return c.json({ error: "Phone number is required" }, 400);
-  }
-
-  // Find the survey and its owner
   const survey = await db
     .prepare("SELECT id, creator_id FROM surveys WHERE id = ?")
     .bind(surveyId)
     .first<{ id: string; creator_id: string }>();
-
   if (!survey) {
     return c.json({ error: "Survey not found" }, 404);
   }
+  const owner = await db.prepare("SELECT id, phone FROM users WHERE id = ?").bind(survey.creator_id).first<{ id: string; phone: string | null }>();
 
-  const phone = normalizePhone(body.phone);
-  const finalCreatorId = await claimOwnership(db, surveyId, survey.creator_id, phone, body.name ?? null);
+  let finalCreatorId: string;
+  let method: string;
+  const callerId = c.get("userId");
+  if (callerId) {
+    if (owner?.phone && owner.id !== callerId) return c.json({ error: "This parlo already belongs to someone else" }, 403);
+    finalCreatorId = await claimOwnershipForUser(db, surveyId, survey.creator_id, callerId);
+    method = "api_key";
+  } else {
+    let phone: string;
+    try {
+      const verified = await resolveVerifiedPhone(c.env, body);
+      phone = verified.phone;
+      method = verified.method;
+    } catch (err) {
+      if (err instanceof PhoneProofError) return c.json({ error: err.message, code: err.code }, err.status);
+      throw err;
+    }
+    if (owner?.phone && owner.phone !== phone) return c.json({ error: "This parlo already belongs to someone else" }, 403);
+    finalCreatorId = await claimOwnership(db, surveyId, survey.creator_id, phone, body.name ?? null);
+  }
 
-  const creator = await db
-    .prepare("SELECT api_key FROM users WHERE id = ?")
-    .bind(finalCreatorId)
-    .first<{ api_key: string | null }>();
+  const apiKey = await ensureApiKey(db, finalCreatorId);
+  const user = await db.prepare("SELECT phone FROM users WHERE id = ?").bind(finalCreatorId).first<{ phone: string | null }>();
+  trackServerEvent(finalCreatorId, "creator_phone_claimed", { surveyId, method });
 
-  trackServerEvent(finalCreatorId, "creator_phone_claimed", { surveyId, phone });
-
-  return c.json({ ok: true, apiKey: creator?.api_key ?? null });
+  return c.json({ ok: true, apiKey, userId: finalCreatorId, phone: user?.phone ?? null });
 });
 
-// ── POST /api/auth/login ── Look up creator by verified phone, return API key
+// ── POST /api/auth/login ── Prove a phone, get the user's API key
+//
+// Body: {idToken} (Firebase, after the SMS code was confirmed in the browser)
+// or {proof} (from POST /api/otp/verify-whatsapp), optionally with
+// firstName/lastName. Creates the user if the phone is new and mints an API
+// key if they have none, so members who joined by answering can log in too.
 surveys.post("/api/auth/login", async (c) => {
-  const body = await c.req.json<{ phone: string }>().catch(() => null);
-  if (!body?.phone) {
-    return c.json({ error: "Phone is required" }, 400);
+  type LoginBody = { idToken?: string; proof?: string; firstName?: string; lastName?: string };
+  const body = await c.req.json<LoginBody>().catch((): LoginBody => ({}));
+  let phone: string;
+  let method: string;
+  try {
+    const verified = await resolveVerifiedPhone(c.env, body);
+    phone = verified.phone;
+    method = verified.method;
+  } catch (err) {
+    if (err instanceof PhoneProofError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
   }
-  const phone = normalizePhone(body.phone);
   const db = c.env.DB;
+  const user = await upsertUserByPhone(db, phone, { firstName: body.firstName ?? null, lastName: body.lastName ?? null });
+  const apiKey = await ensureApiKey(db, user.id);
+  trackServerEvent(user.id, "user_logged_in", { method, created: user.created });
 
-  const creator = await db
-    .prepare("SELECT id, api_key FROM users WHERE phone = ?")
-    .bind(phone)
-    .first<{ id: string; api_key: string | null }>();
-
-  if (!creator) {
-    return c.json({ apiKey: null });
-  }
-
-  return c.json({ apiKey: creator.api_key, creatorId: creator.id });
+  return c.json({ apiKey, userId: user.id, creatorId: user.id, phone, created: user.created });
 });
 
 // ── GET /api/auth/validate ── Validate API key and return creatorId

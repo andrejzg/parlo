@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { LogIn, LogOut, Menu, User, X } from "lucide-react";
-import { fetchLinkedInProfile, type LinkedInProfile } from "@/api/client";
+import { fetchLinkedInProfile, type LinkedInProfile, startLinkedIn, disconnectLinkedIn } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { transitionSmall } from "@/lib/animations";
 
@@ -9,12 +9,13 @@ interface CreatorSidebarProps {
   open: boolean;
   onClose: () => void;
   phone: string | null;
+  /** The logged-in device's API key; LinkedIn is read and written through it. */
+  apiKey: string | null;
   onLogout?: () => void;
   onLogin?: () => void;
   onLinkedInConnected?: (profile: LinkedInProfile) => void;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 export function MenuButton({ onClick }: { onClick: () => void }) {
   return (
@@ -40,25 +41,27 @@ function LinkedInIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-export default function CreatorSidebar({ open, onClose, phone, onLogout, onLogin, onLinkedInConnected }: CreatorSidebarProps) {
+export default function CreatorSidebar({ open, onClose, phone, apiKey, onLogout, onLogin, onLinkedInConnected }: CreatorSidebarProps) {
   const [linkedIn, setLinkedIn] = useState<LinkedInProfile | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Fetch LinkedIn profile when sidebar opens and user is logged in
   useEffect(() => {
-    if (open && phone) {
+    if (open && apiKey) {
       setLoading(true);
-      fetchLinkedInProfile(phone)
+      fetchLinkedInProfile(apiKey)
         .then(setLinkedIn)
         .catch(() => setLinkedIn({ connected: false }))
         .finally(() => setLoading(false));
     }
-  }, [open, phone]);
+  }, [open, apiKey]);
 
-  const handleConnectLinkedIn = () => {
-    if (!phone) return;
-    // Redirect to backend OAuth start endpoint
-    window.location.href = `${API_BASE}/auth/linkedin/start?phone=${encodeURIComponent(phone)}`;
+  const handleConnectLinkedIn = async () => {
+    if (!apiKey) return;
+    try {
+      const { url } = await startLinkedIn(apiKey);
+      window.location.href = url;
+    } catch {}
   };
 
   const isConnected = linkedIn?.connected === true;
@@ -134,12 +137,9 @@ export default function CreatorSidebar({ open, onClose, phone, onLogout, onLogin
                         <button
                           type="button"
                           onClick={async () => {
+                            if (!apiKey) return;
                             try {
-                              await fetch(`${API_BASE}/auth/linkedin/disconnect`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ phone }),
-                              });
+                              await disconnectLinkedIn(apiKey);
                               setLinkedIn({ connected: false });
                             } catch {}
                           }}

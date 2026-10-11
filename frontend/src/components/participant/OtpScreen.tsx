@@ -6,13 +6,18 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { stagger, fadeUp, transitionSmall } from "@/lib/animations";
 import type { ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, verifyWhatsAppOtp } from "@/api/client";
+import { sendWhatsAppOtp, verifyWhatsAppOtp, type PhoneProof } from "@/api/client";
 import { captureException } from "@/lib/posthog";
 
 interface OtpScreenProps {
   phone: string;
   confirmationResult: ConfirmationResult | null;
-  onNext: (phone: string) => void;
+  /**
+   * The code checked out. `proof` is what the backend accepts as evidence
+   * that this browser owns `phone`: a Firebase ID token (SMS) or the proof
+   * token the WhatsApp verify route minted. A bare phone proves nothing.
+   */
+  onNext: (phone: string, proof: PhoneProof) => void;
   onBack?: () => void;
 }
 
@@ -45,24 +50,27 @@ export default function OtpScreen({ phone, confirmationResult, onNext, onBack }:
       setError("");
 
       try {
+        let proof: PhoneProof;
         if (whatsappMode) {
           const result = await verifyWhatsAppOtp(phone, otp);
-          if (!result.verified) {
+          if (!result.verified || !result.proof) {
             setError("Invalid code. Please try again.");
             setCode("");
             inputRef.current?.focus();
             setVerifying(false);
             return;
           }
+          proof = { proof: result.proof };
         } else {
           if (!confirmationResult) {
             setError("Verification session expired. Please go back and try again.");
             setVerifying(false);
             return;
           }
-          await confirmationResult.confirm(otp);
+          const credential = await confirmationResult.confirm(otp);
+          proof = { idToken: await credential.user.getIdToken() };
         }
-        onNext(phone);
+        onNext(phone, proof);
       } catch (err) {
         captureException(err, { location: "OtpScreen.verify", whatsappMode });
         setError("Invalid code. Please try again.");

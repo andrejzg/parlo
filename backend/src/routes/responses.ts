@@ -6,11 +6,13 @@ import { generatePresignedUploadUrl, generateUploadToken } from "../services/r2"
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
 import { transcribeResponseAnswers } from "../services/transcription";
-import { ensureMember, getMemberByToken, upsertUserByPhone } from "../services/groups";
+import { ensureMember, getMemberByToken, updateUserNames, upsertUserByPhone } from "../services/groups";
+import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
+import type { AuthVariables } from "../middleware/auth";
 import { latestSentRound, pendingAsksFor } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
 
-const responses = new Hono<{ Bindings: Env }>();
+const responses = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // Returns the R2 key for a given response answer based on the question type.
 // Voice questions get .webm, photo questions get .jpg, video questions get .mp4
@@ -117,12 +119,28 @@ responses.post("/api/responses/:id/submit", async (c) => {
   if (!survey) return c.json({ error: "Survey not found" }, 404);
   const visibility: GroupVisibility = survey.visibility === "open" ? "open" : "private";
 
-  // Identity: a verified phone → user → member.
-  let userId = existing.user_id;
-  if (body.phone) {
-    const user = await upsertUserByPhone(db, body.phone, { firstName: body.firstName ?? null, lastName: body.lastName ?? null });
-    userId = user.id;
+  // Identity, in order of trust: the caller's API key (a device that passed
+  // OTP before), a phone proof from this session's OTP, then the member token
+  // the session was started with. A bare phone in the body proves nothing and
+  // is ignored — without proof the answer stays anonymous.
+  let userId: string | null = c.get("userId") ?? null;
+  if (!userId && (body.idToken || body.proof)) {
+    try {
+      const verified = await resolveVerifiedPhone(c.env, body);
+      const user = await upsertUserByPhone(db, verified.phone, { firstName: body.firstName ?? null, lastName: body.lastName ?? null });
+      userId = user.id;
+    } catch (err) {
+      if (err instanceof PhoneProofError) return c.json({ error: err.message, code: err.code }, err.status);
+      throw err;
+    }
+  } else if (userId) {
+    await updateUserNames(db, userId, body.firstName ?? null, body.lastName ?? null);
   }
+  if (!userId) userId = existing.user_id;
+  const identity = userId
+    ? await db.prepare("SELECT phone FROM users WHERE id = ?").bind(userId).first<{ phone: string | null }>()
+    : null;
+  const phone = identity?.phone ?? null;
   let memberToken: string | null = null;
   if (userId) {
     const membership = await ensureMember(db, existing.survey_id, userId, "member");
@@ -136,7 +154,7 @@ responses.post("/api/responses/:id/submit", async (c) => {
            status = 'submitted', submitted_at = datetime('now')
        WHERE id = ?`
     )
-    .bind(body.phone ?? null, body.firstName ?? null, body.lastName ?? null, userId, visibility, responseId)
+    .bind(phone, body.firstName ?? null, body.lastName ?? null, userId, visibility, responseId)
     .run();
 
   // Create response_answers rows for each uploaded file
@@ -215,18 +233,18 @@ responses.post("/api/responses/:id/submit", async (c) => {
     await db.batch(insertStatements);
   }
 
-  trackServerEvent(body.phone ?? responseId, "response_submitted", {
+  trackServerEvent(phone ?? responseId, "response_submitted", {
     responseId,
     surveyId: existing.survey_id,
-    hasPhone: !!body.phone,
+    hasPhone: !!phone,
     joined: !!memberToken,
     visibility,
   });
 
-  if (body.phone) {
-    trackServerEvent(body.phone, "$identify", {
+  if (phone) {
+    trackServerEvent(phone, "$identify", {
       $set: {
-        phone: body.phone,
+        phone,
         first_name: body.firstName,
         last_name: body.lastName,
         role: "participant",

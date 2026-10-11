@@ -1,20 +1,31 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import type { AuthVariables } from "../middleware/auth";
 import { trackServerEvent } from "../services/analytics";
 
-const linkedin = new Hono<{ Bindings: Env }>();
+/**
+ * LinkedIn connect. Every route that reads or writes a profile identifies the
+ * user by API key (`userId`), never by a phone number in the query string: a
+ * phone proves nothing and would let anyone read or wipe anyone's profile.
+ */
+const linkedin = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 const LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization";
 const LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
 const LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo";
 const SCOPES = "openid profile email";
 
-/**
- * Build a stable, never-expiring URL for a creator's LinkedIn photo. The URL
- * points at our own backend, which streams the bytes from R2.
- */
-function buildPhotoUrl(phone: string): string {
-  return `https://api.parlo.me/api/auth/linkedin/photo?phone=${encodeURIComponent(phone)}`;
+function apiOrigin(env: Env, requestUrl: string): string {
+  return env.API_ORIGIN ?? new URL(requestUrl).origin;
+}
+
+function frontendOrigin(env: Env): string {
+  return env.FRONTEND_ORIGIN ?? "https://parlo.me";
+}
+
+/** Stable, never-expiring URL for a user's photo; streams from R2 via the backend. */
+function buildPhotoUrl(env: Env, requestUrl: string, userId: string): string {
+  return `${apiOrigin(env, requestUrl)}/api/users/${encodeURIComponent(userId)}/photo`;
 }
 
 /**
@@ -44,35 +55,38 @@ async function mirrorPhotoToR2(
   }
 }
 
+/** Only same-origin paths may be used as a post-OAuth destination. */
+function safeReturnTo(raw: unknown): string {
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw.slice(0, 200);
+}
+
 /**
- * GET /api/auth/linkedin/start?phone={phone}
+ * POST /api/auth/linkedin/start  (API key)
+ * Body: {returnTo?: "/s/abc123"}
  *
- * Initiates the LinkedIn OAuth flow. The phone param identifies which creator
- * to attach the LinkedIn profile to. We store it in the OAuth state parameter
- * (encrypted via KV with a short TTL) so the callback can look up the creator.
+ * Starts the LinkedIn OAuth flow for the authenticated user. Returns the URL
+ * the browser should go to; the user id and return path travel in the OAuth
+ * `state`, which lives in KV for five minutes.
  */
-linkedin.get("/api/auth/linkedin/start", async (c) => {
-  const phone = c.req.query("phone");
-  if (!phone) {
-    return c.json({ error: "Phone is required" }, 400);
-  }
-  // Optional: where to redirect after success (e.g. /s/abc123 for participants)
-  const returnTo = c.req.query("returnTo") || "/";
+linkedin.post("/api/auth/linkedin/start", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
+  const body = await c.req.json<{ returnTo?: string }>().catch((): { returnTo?: string } => ({}));
+  const returnTo = safeReturnTo(body.returnTo);
 
-  // Generate a random state token and store phone + returnTo in KV (5-min TTL)
   const state = crypto.randomUUID();
-  await c.env.KV.put(`linkedin-state:${state}`, JSON.stringify({ phone, returnTo }), { expirationTtl: 300 });
+  await c.env.KV.put(`linkedin-state:${state}`, JSON.stringify({ userId, returnTo }), { expirationTtl: 300 });
 
-  const redirectUri = "https://api.parlo.me/api/auth/linkedin/callback";
   const params = new URLSearchParams({
     response_type: "code",
     client_id: c.env.LINKEDIN_CLIENT_ID,
-    redirect_uri: redirectUri,
+    redirect_uri: `${apiOrigin(c.env, c.req.url)}/api/auth/linkedin/callback`,
     state,
     scope: SCOPES,
   });
 
-  return c.redirect(`${LINKEDIN_AUTH_URL}?${params.toString()}`);
+  return c.json({ url: `${LINKEDIN_AUTH_URL}?${params.toString()}` });
 });
 
 /**
@@ -80,38 +94,39 @@ linkedin.get("/api/auth/linkedin/start", async (c) => {
  *
  * LinkedIn redirects here after the user authorizes. We exchange the code for
  * an access token, fetch their profile via the userinfo endpoint, and store
- * the data on the creator record. Then redirect back to the frontend.
+ * the data on the user record. Then redirect back to the frontend.
  */
 linkedin.get("/api/auth/linkedin/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   const error = c.req.query("error");
+  const home = frontendOrigin(c.env);
 
   // User denied or error from LinkedIn
   if (error || !code || !state) {
-    return c.redirect("https://parlo.me/?linkedin=error");
+    return c.redirect(`${home}/?linkedin=error`);
   }
 
-  // Validate state and retrieve the phone + returnTo
+  // Validate state and retrieve who started the flow
   const stateData = await c.env.KV.get(`linkedin-state:${state}`);
   if (!stateData) {
-    return c.redirect("https://parlo.me/?linkedin=expired");
+    return c.redirect(`${home}/?linkedin=expired`);
   }
   // Delete state token (one-time use)
   await c.env.KV.delete(`linkedin-state:${state}`);
 
-  let phone: string;
+  let userId: string | null = null;
   let returnTo = "/";
   try {
-    const parsed = JSON.parse(stateData);
-    phone = parsed.phone;
-    returnTo = parsed.returnTo || "/";
+    const parsed = JSON.parse(stateData) as { userId?: string; returnTo?: string };
+    userId = parsed.userId ?? null;
+    returnTo = safeReturnTo(parsed.returnTo);
   } catch {
-    // Legacy format (plain phone string)
-    phone = stateData;
+    userId = null;
   }
-
-  const redirectUri = "https://api.parlo.me/api/auth/linkedin/callback";
+  if (!userId) {
+    return c.redirect(`${home}/?linkedin=expired`);
+  }
 
   // Exchange authorization code for access token
   const tokenRes = await fetch(LINKEDIN_TOKEN_URL, {
@@ -120,7 +135,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
-      redirect_uri: redirectUri,
+      redirect_uri: `${apiOrigin(c.env, c.req.url)}/api/auth/linkedin/callback`,
       client_id: c.env.LINKEDIN_CLIENT_ID,
       client_secret: c.env.LINKEDIN_CLIENT_SECRET,
     }),
@@ -128,7 +143,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
 
   if (!tokenRes.ok) {
     console.error("[linkedin] Token exchange failed:", await tokenRes.text());
-    return c.redirect("https://parlo.me/?linkedin=error");
+    return c.redirect(`${home}/?linkedin=error`);
   }
 
   const tokenData = await tokenRes.json<{ access_token: string }>();
@@ -140,7 +155,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
 
   if (!profileRes.ok) {
     console.error("[linkedin] Userinfo failed:", await profileRes.text());
-    return c.redirect("https://parlo.me/?linkedin=error");
+    return c.redirect(`${home}/?linkedin=error`);
   }
 
   const profile = await profileRes.json<{
@@ -158,18 +173,13 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
     [profile.given_name, profile.family_name].filter(Boolean).join(" ") ||
     null;
 
-  // Normalize phone for lookup
-  const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
-
   // Mirror photo bytes to R2 so we don't depend on LinkedIn's expiring URL
   let photoR2Key: string | null = null;
   if (profile.picture) {
     photoR2Key = await mirrorPhotoToR2(c.env, profile.sub, profile.picture);
   }
 
-  // Update the creator record with LinkedIn data
-  const db = c.env.DB;
-  const result = await db
+  const result = await c.env.DB
     .prepare(
       `UPDATE users
        SET linkedin_sub = ?,
@@ -179,7 +189,7 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
            linkedin_photo_r2_key = ?,
            linkedin_connected_at = datetime('now'),
            wa_name = COALESCE(wa_name, ?)
-       WHERE phone = ?`
+       WHERE id = ?`
     )
     .bind(
       profile.sub,
@@ -188,45 +198,40 @@ linkedin.get("/api/auth/linkedin/callback", async (c) => {
       profile.picture ?? null,
       photoR2Key,
       displayName,
-      normalizedPhone,
+      userId,
     )
     .run();
 
   if (result.meta.changes === 0) {
-    console.error("[linkedin] No user found for phone:", normalizedPhone);
-    return c.redirect("https://parlo.me/?linkedin=not_found");
+    console.error("[linkedin] No user found for id:", userId);
+    return c.redirect(`${home}/?linkedin=not_found`);
   }
 
-  trackServerEvent(normalizedPhone, "linkedin_connected", {
+  trackServerEvent(userId, "linkedin_connected", {
     linkedinSub: profile.sub,
     linkedinName: displayName,
   });
 
   // Redirect back to frontend with success flag
   const separator = returnTo.includes("?") ? "&" : "?";
-  return c.redirect(`https://parlo.me${returnTo}${separator}linkedin=connected`);
+  return c.redirect(`${home}${returnTo}${separator}linkedin=connected`);
 });
 
 /**
- * GET /api/auth/linkedin/profile?phone={phone}
+ * GET /api/auth/linkedin/profile  (API key)
  *
- * Returns the LinkedIn profile data for a creator, if connected.
- * Used by the frontend sidebar to display name + photo.
+ * The authenticated user's LinkedIn profile, if connected.
  */
 linkedin.get("/api/auth/linkedin/profile", async (c) => {
-  const phone = c.req.query("phone");
-  if (!phone) {
-    return c.json({ error: "Phone is required" }, 400);
-  }
-
-  const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
   const db = c.env.DB;
 
-  const creator = await db
+  const user = await db
     .prepare(
-      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM users WHERE phone = ?"
+      "SELECT linkedin_sub, linkedin_name, linkedin_email, linkedin_photo_url, linkedin_photo_r2_key, linkedin_connected_at FROM users WHERE id = ?"
     )
-    .bind(normalizedPhone)
+    .bind(userId)
     .first<{
       linkedin_sub: string | null;
       linkedin_name: string | null;
@@ -236,28 +241,25 @@ linkedin.get("/api/auth/linkedin/profile", async (c) => {
       linkedin_connected_at: string | null;
     }>();
 
-  if (!creator || !creator.linkedin_connected_at) {
+  if (!user || !user.linkedin_connected_at) {
     return c.json({ connected: false });
   }
 
   // Lazy backfill: if we don't yet have an R2 mirror but the LinkedIn URL is
   // still live, mirror it now so it stays usable after LinkedIn's URL expires.
-  let r2Key = creator.linkedin_photo_r2_key;
-  if (!r2Key && creator.linkedin_sub && creator.linkedin_photo_url) {
-    r2Key = await mirrorPhotoToR2(c.env, creator.linkedin_sub, creator.linkedin_photo_url);
+  let r2Key = user.linkedin_photo_r2_key;
+  if (!r2Key && user.linkedin_sub && user.linkedin_photo_url) {
+    r2Key = await mirrorPhotoToR2(c.env, user.linkedin_sub, user.linkedin_photo_url);
     if (r2Key) {
-      await db
-        .prepare("UPDATE users SET linkedin_photo_r2_key = ? WHERE phone = ?")
-        .bind(r2Key, normalizedPhone)
-        .run();
+      await db.prepare("UPDATE users SET linkedin_photo_r2_key = ? WHERE id = ?").bind(r2Key, userId).run();
     }
   }
 
   return c.json({
     connected: true,
-    name: creator.linkedin_name,
-    email: creator.linkedin_email,
-    photoUrl: r2Key ? buildPhotoUrl(normalizedPhone) : null,
+    name: user.linkedin_name,
+    email: user.linkedin_email,
+    photoUrl: r2Key ? buildPhotoUrl(c.env, c.req.url, userId) : null,
   });
 });
 
@@ -276,36 +278,12 @@ async function streamPhoto(env: Env, r2Key: string): Promise<Response> {
 }
 
 /**
- * GET /api/auth/linkedin/photo?phone={phone}
- *
- * Streams a creator's LinkedIn profile photo from R2. Stable URL — never
- * expires — so the frontend can use it directly in <img src=...>.
- */
-linkedin.get("/api/auth/linkedin/photo", async (c) => {
-  const phone = c.req.query("phone");
-  if (!phone) return c.json({ error: "Phone is required" }, 400);
-
-  const normalizedPhone = phone.replace(/^(\+\d{1,4})0+/, "$1");
-  const creator = await c.env.DB
-    .prepare("SELECT linkedin_photo_r2_key FROM users WHERE phone = ?")
-    .bind(normalizedPhone)
-    .first<{ linkedin_photo_r2_key: string | null }>();
-
-  if (!creator?.linkedin_photo_r2_key) {
-    return c.json({ error: "Photo not found" }, 404);
-  }
-
-  return streamPhoto(c.env, creator.linkedin_photo_r2_key);
-});
-
-/**
  * GET /api/users/:userId/photo
  *
- * A member's LinkedIn photo by opaque user id, for the avatar clusters on
- * the home list, where the viewer is not the person pictured (the
- * phone-keyed route above would hand every member everyone's phone number).
- * Participants who connected LinkedIn only have the CDN URL on file, so the
- * first request mirrors it into R2; after that it streams from R2.
+ * A user's LinkedIn photo by opaque user id — used for the viewer's own
+ * profile and for the avatar clusters on the home list. Participants who
+ * connected LinkedIn only have the CDN URL on file, so the first request
+ * mirrors it into R2; after that it streams from R2.
  */
 linkedin.get("/api/users/:userId/photo", async (c) => {
   const userId = c.req.param("userId");
@@ -328,26 +306,26 @@ linkedin.get("/api/users/:userId/photo", async (c) => {
 });
 
 /**
- * POST /api/auth/linkedin/disconnect
+ * POST /api/auth/linkedin/disconnect  (API key)
  *
- * DEV ONLY — wipes LinkedIn profile data from a creator. Remove before go-live.
+ * Removes the authenticated user's own LinkedIn profile data.
  */
 linkedin.post("/api/auth/linkedin/disconnect", async (c) => {
-  const body = await c.req.json<{ phone: string }>().catch(() => null);
-  if (!body?.phone) return c.json({ error: "Phone is required" }, 400);
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
 
-  const phone = body.phone.replace(/^(\+\d{1,4})0+/, "$1");
   await c.env.DB
     .prepare(
       `UPDATE users
        SET linkedin_sub = NULL, linkedin_name = NULL, linkedin_email = NULL,
            linkedin_photo_url = NULL, linkedin_photo_r2_key = NULL,
            linkedin_connected_at = NULL
-       WHERE phone = ?`
+       WHERE id = ?`
     )
-    .bind(phone)
+    .bind(userId)
     .run();
 
+  trackServerEvent(userId, "linkedin_disconnected", {});
   return c.json({ ok: true });
 });
 

@@ -723,7 +723,7 @@ export default function AgentDashboard({
         {activeTab === "agent" ? (
           /* ── Agent tab ── */
           apiKey ? (
-            <AgentPanel apiKey={apiKey} surveyId={survey.id} />
+            <AgentPanel apiKey={apiKey} surveyId={survey.id} surveyCode={survey.code} />
           ) : (
             <div className="flex flex-col items-center justify-center gap-xs py-xxl text-center">
               <p className="text-m font-medium text-foreground">Sign in to see your agent</p>
