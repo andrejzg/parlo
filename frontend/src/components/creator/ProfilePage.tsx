@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { LogIn, LogOut, User } from "lucide-react";
-import { fetchLinkedInProfile, type LinkedInProfile } from "@/api/client";
+import { fetchLinkedInProfile, type LinkedInProfile, startLinkedIn, disconnectLinkedIn } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import BottomTabBar from "./BottomTabBar";
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 interface ProfilePageProps {
   phone: string | null;
+  /** The logged-in device's API key; LinkedIn is read and written through it. */
+  apiKey: string | null;
   linkedInProfile?: LinkedInProfile | null;
   onLogout?: () => void;
   onLogin?: () => void;
@@ -34,23 +35,27 @@ export default function ProfilePage({
   onHome,
   onCreateNew,
   onInbox,
+  apiKey,
 }: ProfilePageProps) {
   const [linkedIn, setLinkedIn] = useState<LinkedInProfile | null>(initialProfile ?? null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (phone && !initialProfile) {
+    if (apiKey && !initialProfile) {
       setLoading(true);
-      fetchLinkedInProfile(phone)
+      fetchLinkedInProfile(apiKey)
         .then(setLinkedIn)
         .catch(() => setLinkedIn({ connected: false }))
         .finally(() => setLoading(false));
     }
-  }, [phone, initialProfile]);
+  }, [apiKey, initialProfile]);
 
-  const handleConnectLinkedIn = () => {
-    if (!phone) return;
-    window.location.href = `${API_BASE}/auth/linkedin/start?phone=${encodeURIComponent(phone)}`;
+  const handleConnectLinkedIn = async () => {
+    if (!apiKey) return;
+    try {
+      const { url } = await startLinkedIn(apiKey);
+      window.location.href = url;
+    } catch {}
   };
 
   const isConnected = linkedIn?.connected === true;
@@ -154,12 +159,9 @@ export default function ProfilePage({
               variant="secondary"
               className="w-full"
               onClick={async () => {
+                if (!apiKey) return;
                 try {
-                  await fetch(`${API_BASE}/auth/linkedin/disconnect`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ phone }),
-                  });
+                  await disconnectLinkedIn(apiKey);
                   setLinkedIn({ connected: false });
                 } catch {}
               }}

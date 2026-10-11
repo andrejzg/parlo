@@ -165,17 +165,47 @@ export function saveIntro(surveyId: string, durationMs: number) {
   });
 }
 
-export function loginByPhone(phone: string) {
-  return apiFetch<{ apiKey: string | null; creatorId?: string }>("/auth/login", {
+// ── Phone proof ───────────────────────────────────────────────────────
+//
+// The backend never trusts a phone number in a request body. After the OTP
+// screen the client holds one of two proofs and sends that instead.
+
+/** A Firebase ID token (SMS code confirmed in the browser) or a WhatsApp proof token. */
+export type PhoneProof = { idToken: string } | { proof: string };
+
+export interface LoginResult {
+  apiKey: string;
+  userId: string;
+  /** @deprecated same as userId */
+  creatorId: string;
+  /** The verified phone, normalised by the server. */
+  phone: string;
+  created: boolean;
+}
+
+/** Prove a phone, get (or mint) the user's API key. Creates the user if the phone is new. */
+export function loginByPhone(proof: PhoneProof, names: { firstName?: string; lastName?: string } = {}) {
+  return apiFetch<LoginResult>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ phone }),
+    body: JSON.stringify({ ...proof, ...names }),
   });
 }
 
-export function claimSurvey(surveyId: string, phone: string) {
-  return apiFetch<{ ok: boolean; apiKey: string | null }>(`/surveys/${surveyId}/claim`, {
+export interface ClaimResult {
+  ok: boolean;
+  apiKey: string;
+  userId: string;
+  phone: string | null;
+}
+
+/** Attach the owner seat of a freshly created parlo to a verified identity: a proof, or a logged-in device's API key. */
+export function claimSurvey(surveyId: string, auth: PhoneProof | { apiKey: string }, name?: string) {
+  if ("apiKey" in auth) {
+    return apiFetch<ClaimResult>(`/surveys/${surveyId}/claim`, authed(auth.apiKey, { method: "POST", body: JSON.stringify({ name }) }));
+  }
+  return apiFetch<ClaimResult>(`/surveys/${surveyId}/claim`, {
     method: "POST",
-    body: JSON.stringify({ phone }),
+    body: JSON.stringify({ ...auth, name }),
   });
 }
 
@@ -311,6 +341,26 @@ export interface AgentState {
   lastError: string | null;
   provider: string | null;
   model: string | null;
+  dashboardCode?: string | null;
+  /** Export to the connected destinations after every report. */
+  autoExport?: boolean;
+  lastExportAt?: string | null;
+  lastExportSummary?: string | null;
+  lastExportError?: string | null;
+}
+
+export type ConnectionState = "authenticating" | "connecting" | "connected" | "discovering" | "ready" | "failed";
+
+/** An MCP server the owner connected as an export destination. */
+export interface AgentConnection {
+  id: string;
+  name: string;
+  url: string;
+  state: ConnectionState;
+  tools: string[];
+  error: string | null;
+  /** Set while the owner still has to authorise the server. */
+  authUrl: string | null;
 }
 
 export interface AgentSnapshot {
@@ -321,6 +371,63 @@ export interface AgentSnapshot {
   memory: string | null;
   rounds: GroupRound[];
   visibility: GroupVisibility;
+  connections: AgentConnection[];
+}
+
+export interface ExportResult {
+  ok: boolean;
+  summary: string | null;
+  toolCalls: number;
+  destinations: string[];
+  provider: string;
+  model: string;
+  error?: string;
+}
+
+export function fetchConnections(apiKey: string, surveyId: string) {
+  return apiFetch<{ connections: AgentConnection[] }>(`/my/surveys/${surveyId}/connections`, authed(apiKey));
+}
+
+/** Connect an MCP server. If it needs OAuth, `authUrl` is where to send the browser. */
+export function addConnection(apiKey: string, surveyId: string, input: { name: string; url: string }) {
+  return apiFetch<{ id: string; state: ConnectionState; authUrl: string | null; connection: AgentConnection | null }>(
+    `/my/surveys/${surveyId}/connections`,
+    authed(apiKey, { method: "POST", body: JSON.stringify(input) }),
+  );
+}
+
+export function removeConnection(apiKey: string, surveyId: string, connectionId: string) {
+  return apiFetch<{ ok: boolean }>(`/my/surveys/${surveyId}/connections/${encodeURIComponent(connectionId)}`, authed(apiKey, { method: "DELETE" }));
+}
+
+/** Ask the agent to export the report and answers to every ready destination now. */
+export async function runAgentExport(apiKey: string, surveyId: string, instruction?: string): Promise<ExportResult> {
+  const res = await fetch(`${API_BASE}/my/surveys/${surveyId}/agent/export`, {
+    ...authed(apiKey, { method: "POST", body: JSON.stringify({ instruction }) }),
+    headers: { "Content-Type": "application/json", "X-Parlo-Api-Key": apiKey },
+  });
+  const body = (await res.json().catch(() => null)) as ExportResult | { error?: string } | null;
+  if (body && "toolCalls" in body) return body; // 200 or 502 both carry the result
+  throw new Error((body as { error?: string } | null)?.error ?? `API ${res.status}`);
+}
+
+export function updateAgentSettings(apiKey: string, surveyId: string, settings: { autoExport: boolean }) {
+  return apiFetch<{ autoExport: boolean }>(`/my/surveys/${surveyId}/agent/settings`, authed(apiKey, { method: "PUT", body: JSON.stringify(settings) }));
+}
+
+/** Download the answers table as a CSV file (the endpoint needs the API key header, so no plain link). */
+export async function downloadAnswersCsv(apiKey: string, surveyId: string, filename: string) {
+  const res = await fetch(`${API_BASE}/my/surveys/${surveyId}/export.csv`, authed(apiKey));
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 export function fetchAgent(apiKey: string, surveyId: string) {
@@ -414,7 +521,15 @@ export function useStartResponse() {
 
 export interface SubmitResponsePayload {
   responseId: string;
-  phone: string;
+  /** Display only; identity comes from `apiKey` or the proof. */
+  phone?: string;
+  firstName?: string;
+  lastName?: string;
+  /** A logged-in device: the server identifies the member by this key. */
+  apiKey?: string;
+  /** Or the proof from this session's OTP. Without either, the answer stays anonymous. */
+  idToken?: string;
+  proof?: string;
 }
 
 export interface SubmitResponseResult {
@@ -427,11 +542,10 @@ export interface SubmitResponseResult {
 
 export function useSubmitResponse() {
   return useMutation({
-    mutationFn: ({ responseId, ...body }: SubmitResponsePayload) =>
-      apiFetch<SubmitResponseResult>(`/responses/${responseId}/submit`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      }),
+    mutationFn: ({ responseId, apiKey, ...body }: SubmitResponsePayload) => {
+      const init: RequestInit = { method: "POST", body: JSON.stringify(body) };
+      return apiFetch<SubmitResponseResult>(`/responses/${responseId}/submit`, apiKey ? authed(apiKey, init) : init);
+    },
   });
 }
 
@@ -444,8 +558,9 @@ export async function sendWhatsAppOtp(phone: string): Promise<{ sent: boolean }>
   });
 }
 
-export async function verifyWhatsAppOtp(phone: string, code: string): Promise<{ verified: boolean }> {
-  return apiFetch<{ verified: boolean }>("/otp/verify-whatsapp", {
+/** On success the server returns a `proof` token (10 min) to present to login / claim / submit. */
+export async function verifyWhatsAppOtp(phone: string, code: string): Promise<{ verified: boolean; proof?: string }> {
+  return apiFetch<{ verified: boolean; proof?: string }>("/otp/verify-whatsapp", {
     method: "POST",
     body: JSON.stringify({ phone, code }),
   });
@@ -561,8 +676,18 @@ export interface LinkedInProfile {
   photoUrl?: string;
 }
 
-export function fetchLinkedInProfile(phone: string) {
-  return apiFetch<LinkedInProfile>(`/auth/linkedin/profile?phone=${encodeURIComponent(phone)}`);
+/** The logged-in user's own LinkedIn profile. */
+export function fetchLinkedInProfile(apiKey: string) {
+  return apiFetch<LinkedInProfile>("/auth/linkedin/profile", authed(apiKey));
+}
+
+/** Start the LinkedIn OAuth flow; send the browser to the returned URL. */
+export function startLinkedIn(apiKey: string, returnTo?: string) {
+  return apiFetch<{ url: string }>("/auth/linkedin/start", authed(apiKey, { method: "POST", body: JSON.stringify({ returnTo }) }));
+}
+
+export function disconnectLinkedIn(apiKey: string) {
+  return apiFetch<{ ok: boolean }>("/auth/linkedin/disconnect", authed(apiKey, { method: "POST" }));
 }
 
 // ── Read state ────────────────────────────────────────────────────────

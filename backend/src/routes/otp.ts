@@ -3,6 +3,8 @@ import type { Env } from "../types";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
+import { mintPhoneProof } from "../services/phoneProof";
+import { normalizePhone } from "../services/phone";
 
 const otp = new Hono<{ Bindings: Env }>();
 
@@ -15,11 +17,10 @@ function generateOtpCode(): string {
 // ── POST /api/otp/send-whatsapp ── Send OTP via WhatsApp
 otp.post("/api/otp/send-whatsapp", async (c) => {
   const body = await c.req.json<{ phone?: string }>().catch((): { phone?: string } => ({}));
-  const phone = body.phone;
-
-  if (!phone) {
+  if (!body.phone) {
     return c.json({ error: "Phone number required" }, 400);
   }
+  const phone = normalizePhone(body.phone);
 
   // Rate limit: 5 OTPs per phone per hour
   const allowed = await checkRateLimit(c.env.KV, "otp-send", phone, 5);
@@ -42,13 +43,17 @@ otp.post("/api/otp/send-whatsapp", async (c) => {
 });
 
 // ── POST /api/otp/verify-whatsapp ── Verify WhatsApp OTP
+//
+// On success the response carries a `proof` token (10 min, KV). The client
+// presents it to POST /api/auth/login, /api/surveys/:id/claim or a response
+// submit instead of a bare phone number, which proves nothing.
 otp.post("/api/otp/verify-whatsapp", async (c) => {
   const body = await c.req.json<{ phone?: string; code?: string }>().catch((): { phone?: string; code?: string } => ({}));
-  const { phone, code } = body;
-
-  if (!phone || !code) {
+  if (!body.phone || !body.code) {
     return c.json({ error: "Phone and code required" }, 400);
   }
+  const phone = normalizePhone(body.phone);
+  const code = body.code;
 
   const stored = await c.env.KV.get(`otp:${phone}`);
 
@@ -62,7 +67,8 @@ otp.post("/api/otp/verify-whatsapp", async (c) => {
 
   trackServerEvent(phone, "otp_verified", { channel: "whatsapp" });
 
-  return c.json({ verified: true });
+  const proof = await mintPhoneProof(c.env.KV, phone);
+  return c.json({ verified: true, proof });
 });
 
 export default otp;

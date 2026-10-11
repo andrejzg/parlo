@@ -16,17 +16,9 @@ import ThankYouScreen from "@/components/participant/ThankYouScreen";
 import GroupReportScreen from "@/components/participant/GroupReportScreen";
 import { Survey, SurveyQuestion, VoiceAnswer } from "@/types/survey";
 import { MOTION, pageVariants, transitionLarge } from "@/lib/animations";
-import {
-  useGetSurvey,
-  useStartResponse,
-  useSubmitResponse,
-  refreshUploadUrls,
-  sendWhatsAppOtp,
-  fetchLinkedInProfile,
-  type LinkedInProfile,
-} from "@/api/client";
+import { useGetSurvey, useStartResponse, useSubmitResponse, refreshUploadUrls, sendWhatsAppOtp, fetchLinkedInProfile, type LinkedInProfile, loginByPhone, startLinkedIn, type PhoneProof } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
-import { trackEvent, identifyUser } from "@/lib/posthog";
+import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
 import { toast } from "@/components/ui/sonner";
 import { forceReleaseSharedStream } from "@/hooks/useVoiceRecorder";
 import {
@@ -39,6 +31,7 @@ import {
   cleanStaleSessions,
   getDeviceAuth,
   saveDeviceAuth,
+  clearDeviceAuth,
   type SessionRecord,
 } from "@/lib/sessionStore";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
@@ -110,6 +103,8 @@ export default function ParticipantPage() {
   const [redoReturnStage, setRedoReturnStage] = useState<Stage>("review");
   const [sessionRestored, setSessionRestored] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+  // A device that passed the OTP holds an API key; that key, not the phone, is what identifies the member.
+  const [deviceApiKey, setDeviceApiKey] = useState<string | null>(null);
   const [devicePhone, setDevicePhone] = useState<string | null>(null);
   const [linkedInProfile, setLinkedInProfile] = useState<LinkedInProfile | null>(null);
 
@@ -157,14 +152,20 @@ export default function ParticipantPage() {
       // deviceAuth status and asked for the phone again.)
       try {
         const deviceAuth = await getDeviceAuth();
-        if (deviceAuth) setDevicePhone(deviceAuth.phone);
+        // A device verified before API keys were handed out can't prove who
+        // it is any more; it goes through the OTP once more.
+        if (deviceAuth && !deviceAuth.apiKey) await clearDeviceAuth();
+        if (deviceAuth?.apiKey) {
+          setDevicePhone(deviceAuth.phone);
+          setDeviceApiKey(deviceAuth.apiKey);
+        }
 
         // Check if returning from LinkedIn OAuth
         const params = new URLSearchParams(window.location.search);
-        if (params.get("linkedin") === "connected" && deviceAuth?.phone) {
+        if (params.get("linkedin") === "connected" && deviceAuth?.apiKey) {
           window.history.replaceState({}, "", window.location.pathname + window.location.hash);
           try {
-            const profile = await fetchLinkedInProfile(deviceAuth.phone);
+            const profile = await fetchLinkedInProfile(deviceAuth.apiKey);
             if (profile.connected) {
               setLinkedInProfile(profile);
               setPhone(deviceAuth.phone);
@@ -472,14 +473,30 @@ export default function ParticipantPage() {
     }
   };
 
-  const handleOtpVerified = async (verifiedPhone: string) => {
-    setPhone(verifiedPhone);
-    identifyUser(verifiedPhone, { role: "participant" });
-    saveDeviceAuth(verifiedPhone).catch(() => {});
+  const handleOtpVerified = async (verifiedPhone: string, proof: PhoneProof) => {
+    // Trade the proof for this device's API key. That key identifies the
+    // member on submit (answering is joining) and for LinkedIn.
+    let key: string;
+    let canonicalPhone = verifiedPhone;
+    try {
+      const login = await loginByPhone(proof);
+      key = login.apiKey;
+      canonicalPhone = login.phone;
+    } catch (err) {
+      captureException(err, { location: "ParticipantPage.handleOtpVerified" });
+      toast("Couldn't verify your number. Please try again.");
+      goBack("phone");
+      return;
+    }
+    setPhone(canonicalPhone);
+    setDevicePhone(canonicalPhone);
+    setDeviceApiKey(key);
+    identifyUser(canonicalPhone, { role: "participant" });
+    saveDeviceAuth(canonicalPhone, key).catch(() => {});
 
     // Check if LinkedIn is already connected
     try {
-      const profile = await fetchLinkedInProfile(verifiedPhone);
+      const profile = await fetchLinkedInProfile(key);
       if (profile.connected) {
         goForward("submit");
         return;
@@ -560,6 +577,7 @@ export default function ParticipantPage() {
     const result = await submitResponse.mutateAsync({
       responseId: responseIdRef.current,
       phone,
+      apiKey: deviceApiKey ?? undefined,
     });
     if (result?.memberToken) {
       saveMemberToken(code, result.memberToken);
@@ -588,11 +606,11 @@ export default function ParticipantPage() {
 
   const handleReviewContinue = async () => {
     // If returning device with verified phone, skip phone + OTP — but check LinkedIn
-    if (devicePhone) {
+    if (devicePhone && deviceApiKey) {
       setPhone(devicePhone);
       identifyUser(devicePhone, { role: "participant" });
       try {
-        const profile = await fetchLinkedInProfile(devicePhone);
+        const profile = await fetchLinkedInProfile(deviceApiKey);
         if (profile.connected) {
           goForward("submit");
           return;
@@ -807,17 +825,24 @@ export default function ParticipantPage() {
                   <Button
                     size="lg"
                     className="w-full bg-linkedin text-neutral-1 dark:text-neutral-10"
-                    onClick={() => {
+                    onClick={async () => {
+                      if (!deviceApiKey) {
+                        toast("Please verify your number first.");
+                        goBack("phone");
+                        return;
+                      }
                       // Save current participant session state before redirect
                       try {
                         sessionStorage.setItem(PARTICIPANT_SESSION_KEY, JSON.stringify({
                           phone: devicePhone || phone,
                         }));
                       } catch {}
-                      const apiBase = import.meta.env.VITE_API_URL || "/api";
-                      const p = devicePhone || phone;
-                      const currentPath = window.location.pathname;
-                      window.location.href = `${apiBase}/auth/linkedin/start?phone=${encodeURIComponent(p)}&returnTo=${encodeURIComponent(currentPath)}`;
+                      try {
+                        const { url } = await startLinkedIn(deviceApiKey, window.location.pathname);
+                        window.location.href = url;
+                      } catch {
+                        toast("Couldn't reach LinkedIn. Please try again.");
+                      }
                     }}
                   >
                     Continue with LinkedIn
