@@ -35,7 +35,7 @@ import {
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
-import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
+import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import { ensureRound1, latestSentRound, pendingAsksFor } from "../services/rounds";
 import {
@@ -92,7 +92,7 @@ surveys.post("/api/surveys", async (c) => {
   let finalCreatorId: string;
   const creatorPhone = body.creatorPhone ? normalizePhone(body.creatorPhone) : null;
   if (creatorPhone) {
-    const existing = await db.prepare("SELECT id FROM users WHERE phone = ?").bind(creatorPhone).first<{ id: string }>();
+    const existing = await findUserByPhone(db, creatorPhone);
     if (existing) {
       finalCreatorId = existing.id;
     } else {

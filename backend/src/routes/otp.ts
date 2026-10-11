@@ -4,6 +4,7 @@ import { createWhatsAppClient } from "../services/whatsapp";
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
 import { mintPhoneProof } from "../services/phoneProof";
+import { normalizePhone } from "../services/phone";
 
 const otp = new Hono<{ Bindings: Env }>();
 
@@ -16,11 +17,10 @@ function generateOtpCode(): string {
 // ── POST /api/otp/send-whatsapp ── Send OTP via WhatsApp
 otp.post("/api/otp/send-whatsapp", async (c) => {
   const body = await c.req.json<{ phone?: string }>().catch((): { phone?: string } => ({}));
-  const phone = body.phone;
-
-  if (!phone) {
+  if (!body.phone) {
     return c.json({ error: "Phone number required" }, 400);
   }
+  const phone = normalizePhone(body.phone);
 
   // Rate limit: 5 OTPs per phone per hour
   const allowed = await checkRateLimit(c.env.KV, "otp-send", phone, 5);
@@ -49,11 +49,11 @@ otp.post("/api/otp/send-whatsapp", async (c) => {
 // submit instead of a bare phone number, which proves nothing.
 otp.post("/api/otp/verify-whatsapp", async (c) => {
   const body = await c.req.json<{ phone?: string; code?: string }>().catch((): { phone?: string; code?: string } => ({}));
-  const { phone, code } = body;
-
-  if (!phone || !code) {
+  if (!body.phone || !body.code) {
     return c.json({ error: "Phone and code required" }, 400);
   }
+  const phone = normalizePhone(body.phone);
+  const code = body.code;
 
   const stored = await c.env.KV.get(`otp:${phone}`);
 

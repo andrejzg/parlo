@@ -13,10 +13,29 @@
 
 import type { GroupMember, GroupRole, User } from "../types";
 import { generateCode, generateId } from "./codes";
+import { legacyNormalizePhone, normalizePhone } from "./phone";
 
 /** Strip leading zeros after the country code: +4407… → +447… */
-export function normalizePhone(phone: string): string {
-  return phone.trim().replace(/^(\+\d{1,4})0+/, "$1");
+export { normalizePhone } from "./phone";
+
+/**
+ * Find a user by phone. Rows written before 2026-10-11 may carry the form
+ * the old normaliser produced (see services/phone.ts); the first lookup
+ * that reaches one through its canonical number rewrites it in place.
+ */
+export async function findUserByPhone(db: D1Database, rawPhone: string): Promise<{ id: string } | null> {
+  const phone = normalizePhone(rawPhone);
+  const hit = await db.prepare("SELECT id FROM users WHERE phone = ?").bind(phone).first<{ id: string }>();
+  if (hit) return hit;
+  const legacy = legacyNormalizePhone(phone);
+  if (legacy !== phone) {
+    const old = await db.prepare("SELECT id FROM users WHERE phone = ?").bind(legacy).first<{ id: string }>();
+    if (old) {
+      await db.prepare("UPDATE users SET phone = ? WHERE id = ?").bind(phone, old.id).run();
+      return old;
+    }
+  }
+  return null;
 }
 
 export function displayNameFor(u: Pick<User, "first_name" | "last_name" | "wa_name" | "linkedin_name" | "phone">): string | null {
@@ -38,7 +57,7 @@ export async function upsertUserByPhone(
   profile: { firstName?: string | null; lastName?: string | null; waName?: string | null } = {}
 ): Promise<{ id: string; created: boolean }> {
   const phone = normalizePhone(rawPhone);
-  const existing = await db.prepare("SELECT id FROM users WHERE phone = ?").bind(phone).first<{ id: string }>();
+  const existing = await findUserByPhone(db, phone);
   if (existing) {
     if (profile.firstName || profile.lastName || profile.waName) {
       await db
@@ -231,10 +250,8 @@ export async function transferOwnership(db: D1Database, surveyId: string, actor:
  */
 export async function claimOwnership(db: D1Database, surveyId: string, anonymousOwnerId: string, rawPhone: string, name?: string | null): Promise<string> {
   const phone = normalizePhone(rawPhone);
-  const existing = await db
-    .prepare("SELECT id FROM users WHERE phone = ? AND id != ?")
-    .bind(phone, anonymousOwnerId)
-    .first<{ id: string }>();
+  const found = await findUserByPhone(db, phone);
+  const existing = found && found.id !== anonymousOwnerId ? found : null;
 
   if (!existing) {
     await db

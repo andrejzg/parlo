@@ -4,6 +4,20 @@ import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { stagger, fadeUp } from "@/lib/animations";
+import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js/min";
+
+/**
+ * E.164 for what was typed. libphonenumber knows whether a country keeps a
+ * leading zero after the code (Italy: +39 06…) or only uses it as a trunk
+ * prefix to drop (UK: +44 (0)7700…); the old rule stripped every zero.
+ */
+export function toE164(countryCode: string, local: string, iso?: string): string {
+  const digits = local.replace(/\D/g, "");
+  const parsed =
+    (iso ? parsePhoneNumberFromString(digits, iso.toUpperCase() as CountryCode) : undefined) ??
+    parsePhoneNumberFromString(`${countryCode}${digits}`);
+  return parsed?.number ?? `${countryCode}${digits.replace(/^0+/, "")}`;
+}
 
 interface PhoneScreenProps {
   onNext: (phone: string) => void | Promise<void>;
@@ -257,8 +271,9 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
       const match = sorted.find((cc) => normalized.startsWith(cc.code));
       if (match) {
         setCountryCode(match.code);
-        // Local number is everything after the country code, strip leading zeros
-        const local = normalized.slice(match.code.length).replace(/^0+/, "");
+        // Local number is everything after the country code. Leading zeros
+        // stay: whether one belongs to the number is decided at submit.
+        const local = normalized.slice(match.code.length);
         setPhone(local);
         return;
       }
@@ -275,9 +290,7 @@ export default function PhoneScreen({ onNext, onBack, initialValue = "" }: Phone
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      // Strip leading zeros from local number — e.g. +44 + 07976... → +447976...
-      const local = phone.replace(/\D/g, "").replace(/^0+/, "");
-      await onNext(`${countryCode}${local}`);
+      await onNext(toE164(countryCode, phone, selectedCountry?.iso));
     } finally {
       setSubmitting(false);
     }
