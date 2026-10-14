@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
-import { Camera, GripVertical, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
+import { Camera, GripVertical, LoaderCircle, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { stagger, fadeUp, transitionLarge, transitionSmall } from "@/lib/animations";
@@ -15,8 +15,8 @@ interface ReviewQuestionsScreenProps {
   questions: ReviewQuestion[];
   onConfirm: (questions: ReviewQuestion[]) => void;
   onRegenerate: () => void;
-  /** Chips: rebuild the whole draft shorter or more playful. */
-  onAdjust?: (kind: "shorter" | "playful") => void;
+  /** Chips: the whole draft rewritten in place (same count, order, type); null when it failed (texts stay). */
+  onAdjust?: (kind: "shorter" | "playful", current: ReviewQuestion[]) => Promise<ReviewQuestion[] | null>;
   /** Chip: the optional follow-up loop, then a rebuild. */
   onSharpen?: () => void;
   /** Per-question swap: resolves to the replacement, or null when it failed (the card keeps its text). */
@@ -32,20 +32,32 @@ function ReviewChip({
   children,
   testId,
   disabled = false,
+  busy = false,
 }: {
   onClick: () => void;
   children: React.ReactNode;
   testId: string;
   disabled?: boolean;
+  /** This chip's request is in flight: it keeps its colour and shows a spinner. */
+  busy?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
+      disabled={disabled || busy}
+      aria-busy={busy}
       data-testid={testId}
-      className="inline-flex items-center gap-xxs rounded-full bg-muted px-m py-xs text-s font-medium text-foreground transition-[background-color,transform] hover:bg-neutral-4 active:translate-y-press focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring disabled:pointer-events-none disabled:text-neutral-6"
+      data-busy={busy}
+      className={`inline-flex items-center gap-xxs rounded-full bg-muted px-m py-xs text-s font-medium transition-[background-color,color,transform] hover:bg-neutral-4 active:translate-y-press focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring disabled:pointer-events-none ${
+        busy ? "text-foreground" : "text-foreground disabled:text-neutral-6"
+      }`}
     >
+      {busy && (
+        <motion.span className="flex" animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+          <LoaderCircle size={14} aria-hidden />
+        </motion.span>
+      )}
       {children}
     </button>
   );
@@ -91,6 +103,7 @@ function QuestionCard({
   canDelete,
   onSwap,
   swapping,
+  dimmed = false,
 }: {
   item: QuestionItem;
   index: number;
@@ -101,6 +114,8 @@ function QuestionCard({
   canDelete: boolean;
   onSwap?: () => void;
   swapping: boolean;
+  /** A rewrite of the whole draft is in flight. */
+  dimmed?: boolean;
 }) {
   const dragControls = useDragControls();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -145,7 +160,10 @@ function QuestionCard({
           because the inline textarea below is drawn without its own outline. */}
       <div
         ref={cardRef}
-        className={`relative flex items-start rounded-m bg-card p-m transition-shadow ${isEditing ? "shadow-edge-accent" : ""}`}
+        className={`relative flex items-start rounded-m bg-card p-m transition-[box-shadow,opacity] ${isEditing ? "shadow-edge-accent" : ""} ${
+          dimmed || swapping ? "opacity-60" : ""
+        }`}
+        data-dimmed={dimmed || swapping}
       >
         {/* Drag handle */}
         <div
@@ -172,7 +190,16 @@ function QuestionCard({
             />
           ) : (
             <button type="button" onClick={onTap} className="text-left text-m font-medium min-h-10">
-              {item.text || <span className="text-neutral-6">Tap to write question...</span>}
+              {/* Keyed by the text so a rewrite or swap fades the new wording in. */}
+              <motion.span
+                key={item.text}
+                className="block"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={transitionSmall}
+              >
+                {item.text || <span className="text-neutral-6">Tap to write question...</span>}
+              </motion.span>
             </button>
           )}
           <div className="flex">
@@ -241,7 +268,29 @@ export default function ReviewQuestionsScreen({
   );
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [swappingId, setSwappingId] = useState<string | null>(null);
+  const [adjusting, setAdjusting] = useState<"shorter" | "playful" | null>(null);
   void onRegenerate;
+
+  /** A chip: rewrite every card in place, keeping ids (and so order and drag state). */
+  const adjust = async (kind: "shorter" | "playful") => {
+    if (!onAdjust || adjusting || swappingId) return;
+    setAdjusting(kind);
+    try {
+      const result = await onAdjust(
+        kind,
+        items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })),
+      );
+      if (result) {
+        setItems((prev) =>
+          prev.map((it, i) =>
+            result[i] ? { ...it, text: result[i].text, hint: result[i].hint ?? it.hint, type: result[i].type ?? it.type } : it,
+          ),
+        );
+      }
+    } finally {
+      setAdjusting(null);
+    }
+  };
 
   const swap = async (index: number) => {
     if (!onSwap || swappingId) return;
@@ -318,17 +367,27 @@ export default function ReviewQuestionsScreen({
             {(onAdjust || onSharpen) && (
               <motion.div variants={fadeUp} className="flex flex-wrap justify-center gap-xs pt-xs">
                 {onAdjust && (
-                  <ReviewChip onClick={() => onAdjust("shorter")} testId="review-adjust-shorter">
+                  <ReviewChip
+                    onClick={() => void adjust("shorter")}
+                    testId="review-adjust-shorter"
+                    busy={adjusting === "shorter"}
+                    disabled={!!adjusting || !!swappingId}
+                  >
                     Shorter
                   </ReviewChip>
                 )}
                 {onAdjust && (
-                  <ReviewChip onClick={() => onAdjust("playful")} testId="review-adjust-playful">
+                  <ReviewChip
+                    onClick={() => void adjust("playful")}
+                    testId="review-adjust-playful"
+                    busy={adjusting === "playful"}
+                    disabled={!!adjusting || !!swappingId}
+                  >
                     More playful
                   </ReviewChip>
                 )}
                 {onSharpen && (
-                  <ReviewChip onClick={onSharpen} testId="review-sharpen" disabled={busy}>
+                  <ReviewChip onClick={onSharpen} testId="review-sharpen" disabled={busy || !!adjusting}>
                     <Sparkles size={14} aria-hidden />
                     {busy ? "Thinking…" : "Sharpen it"}
                   </ReviewChip>
@@ -358,8 +417,9 @@ export default function ReviewQuestionsScreen({
                 onChange={(value) => updateQuestion(item.id, value)}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
-                onSwap={onSwap ? () => void swap(i) : undefined}
+                onSwap={onSwap && !adjusting ? () => void swap(i) : undefined}
                 swapping={swappingId === item.id}
+                dimmed={!!adjusting}
               />
             ))}
           </AnimatePresence>

@@ -375,12 +375,16 @@ Write ONE new question for slot {{index}}: same tone and length as the ones that
 
 Return JSON: {"text": "...", "hint": "Question {{index}} of {{count}}", "type": "voice" | "photo" | "video"}.`;
 
+/** Models sometimes copy a "[voice] …" list format from a prompt into the answer. */
+function stripMediaTag(text: string): string {
+  return text.trim().replace(/^[\[(](voice|photo|video)[\])]\s*/i, "").trim();
+}
+
 export type ReplacementQuestion = { text: string; hint: string; type: "voice" | "photo" | "video" };
 
 function parseReplacementQuestion(text: string): ReplacementQuestion {
   const parsed = JSON.parse(extractJson(text)) as { text?: unknown; hint?: unknown; type?: unknown };
-  // Models sometimes copy the "[voice] …" list format from the prompt into the answer.
-  const q = typeof parsed.text === "string" ? parsed.text.trim().replace(/^[\[(](voice|photo|video)[\])]\s*/i, "") : "";
+  const q = typeof parsed.text === "string" ? stripMediaTag(parsed.text) : "";
   if (!q) throw new Error("Replacement question missing from AI response");
   const type = parsed.type === "photo" ? "photo" : parsed.type === "video" ? "video" : "voice";
   const hint = typeof parsed.hint === "string" && parsed.hint.trim() ? parsed.hint.trim() : "";
@@ -442,6 +446,82 @@ export async function generateReplacementQuestion(
   const out = replacement!;
   if (!out.hint) out.hint = `Question ${input.index + 1} of ${input.questions.length}`;
   return out;
+}
+
+// ── Rewriting the whole draft from a review-screen chip ──────────────
+
+/** The chips on the review screen. Server-side allowlist; the instruction is what the model sees. */
+export const ADJUST_KINDS = {
+  shorter: "Make every question shorter and punchier: one idea each, under 15 words where you can.",
+  playful: "Make the questions more playful and informal, like a friend asking, without losing what each one asks.",
+} as const;
+export type AdjustKind = keyof typeof ADJUST_KINDS;
+export function isAdjustKind(v: unknown): v is AdjustKind {
+  return typeof v === "string" && v in ADJUST_KINDS;
+}
+
+const ADJUST_PROMPT = `A creator is reviewing the questions their agent will ask the group and tapped a button to change all of them at once.
+
+BRIEF:
+{{brief}}
+
+THE QUESTIONS, in order (answered by voice unless noted):
+{{questions}}
+
+THE CHANGE: {{instruction}}
+
+Rewrite every question accordingly. Keep the same number of questions, the same order, and what each one asks; only the wording changes. Warm and conversational, as the agent would say them out loud.
+
+Return JSON: {"questions": [{"text": "..."}, ...]} with exactly {{count}} items in the same order.`;
+
+function parseAdjustedQuestions(text: string): string[] {
+  const parsed = JSON.parse(extractJson(text)) as { questions?: unknown };
+  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+    throw new Error("Adjusted questions missing from AI response");
+  }
+  return parsed.questions.map((q) => {
+    const t = typeof q === "string" ? q : typeof (q as { text?: unknown })?.text === "string" ? (q as { text: string }).text : "";
+    return stripMediaTag(t);
+  });
+}
+
+/**
+ * Review-screen chips ("Shorter", "More playful"): rewrite the draft on
+ * screen in place. Same count, order and media type; a slot the model
+ * skipped keeps its old text rather than failing the tap. Cerebras answers
+ * in about a second, so the review screen never has to leave.
+ */
+export async function adjustQuestions(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: { brief: string; kind: AdjustKind; questions: { text: string; hint?: string; type?: string }[] },
+  traceId?: string
+): Promise<{ text: string; hint: string; type: "voice" | "photo" | "video" }[]> {
+  const count = input.questions.length;
+  const messages = [
+    { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: fill(ADJUST_PROMPT, {
+        brief: input.brief,
+        instruction: ADJUST_KINDS[input.kind],
+        count: String(count),
+        questions: input.questions
+          .map((q, i) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+          .join("\n"),
+      }),
+    },
+  ];
+  const texts = await runJsonCompletion(ai, cerebrasApiKey, messages, parseAdjustedQuestions, {
+    traceId,
+    maxTokens: 900,
+    properties: { adjustKind: input.kind, questionCount: count },
+  });
+  return input.questions.map((q, i) => ({
+    text: texts[i] && texts[i].length > 0 ? texts[i] : q.text,
+    hint: q.hint && q.hint.trim() ? q.hint : `Question ${i + 1} of ${count}`,
+    type: q.type === "photo" ? "photo" : q.type === "video" ? "video" : "voice",
+  }));
 }
 
 // ── Clarifying questions ─────────────────────────────────────────────

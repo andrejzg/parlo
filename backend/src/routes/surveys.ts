@@ -31,6 +31,8 @@ import {
   generateQuestionsFromBrief,
   generateClarifyingQuestion,
   generateReplacementQuestion,
+  adjustQuestions,
+  isAdjustKind,
   type GeneratedSurvey,
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
@@ -59,28 +61,6 @@ const MAX_TRANSCRIBE_BYTES = 12 * 1024 * 1024;
 /** Most clarifying Q&A pairs we'll feed back into the prompts. */
 const MAX_CLARIFICATIONS = 40;
 const MAX_CLARIFICATION_CHARS = 4000;
-
-/** Longest review-screen tweak we fold into a regenerate. */
-const MAX_ADJUST_CHARS = 200;
-
-/**
- * A review-screen tweak ("make them shorter") rides into the generate prompt
- * as one more clarification, with the draft it refers to, so the KV-editable
- * prompt needs no new placeholder. It is not persisted with the real ones.
- */
-function adjustmentAsClarification(adjust: unknown, current: unknown): Clarification | null {
-  if (typeof adjust !== "string" || !adjust.trim()) return null;
-  const draft = Array.isArray(current)
-    ? current
-        .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
-        .slice(0, 20)
-        .map((q, i) => `${i + 1}. ${q.trim().slice(0, 300)}`)
-    : [];
-  return {
-    question: "You saw a draft of the questions. What should change?",
-    answer: `${adjust.trim().slice(0, MAX_ADJUST_CHARS)}${draft.length ? ` The draft was:\n${draft.join("\n")}` : ""}`,
-  };
-}
 
 /** Validate and trim a clarifications array from an untrusted body. */
 function sanitizeClarifications(input: unknown): Clarification[] {
@@ -292,6 +272,48 @@ surveys.post("/api/surveys/:id/clarify", async (c) => {
   return c.json(response);
 });
 
+/** The draft on the review screen, as the swap and adjust routes read it from an untrusted body. */
+function draftFromBody(input: unknown): { text: string; hint?: string; type: string }[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((q): q is { text: string; hint?: unknown; type?: unknown } => !!q && typeof q === "object" && typeof (q as { text?: unknown }).text === "string")
+    .slice(0, 20)
+    .map((q) => ({
+      text: q.text.trim().slice(0, 500),
+      hint: typeof q.hint === "string" ? q.hint.slice(0, 80) : undefined,
+      type: typeof q.type === "string" ? q.type : "voice",
+    }))
+    .filter((q) => q.text.length > 0);
+}
+
+// ── POST /api/surveys/:id/questions/adjust ── Rewrite the whole draft in place
+// Review-screen chips. Body: { kind: "shorter" | "playful", questions: [{text, hint?, type?}] }.
+// Same count, order and media type back, only the wording changed. Nothing
+// is saved; the review screen persists with PUT /questions on confirm.
+surveys.post("/api/surveys/:id/questions/adjust", async (c) => {
+  const surveyId = c.req.param("id");
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "question-adjust", ip, 300);
+  if (!allowed) return c.json({ error: "Too many requests" }, 429);
+
+  const survey = await c.env.DB.prepare("SELECT brief FROM surveys WHERE id = ?").bind(surveyId).first<{ brief: string | null }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const body = await c.req.json<{ kind?: unknown; questions?: unknown }>().catch(() => ({}) as { kind?: unknown; questions?: unknown });
+  if (!isAdjustKind(body.kind)) return c.json({ error: "unknown kind" }, 400);
+  const questions = draftFromBody(body.questions);
+  if (questions.length === 0) return c.json({ error: "questions are required" }, 400);
+
+  const adjusted = await adjustQuestions(
+    c.env.AI,
+    c.env.CEREBRAS_API_KEY,
+    { brief: survey.brief?.trim() || "(no brief)", kind: body.kind, questions },
+    `survey-${surveyId}`
+  );
+  trackServerEvent(surveyId, "survey_questions_adjusted", { surveyId, kind: body.kind, questionCount: questions.length });
+  return c.json({ questions: adjusted });
+});
+
 // ── POST /api/surveys/:id/questions/swap ── One different question for a slot
 // Review-screen fidget. Body: { index, questions: [{text, type?}] } — the
 // draft on screen. Nothing is saved here; the review screen persists the
@@ -310,12 +332,7 @@ surveys.post("/api/surveys/:id/questions/swap", async (c) => {
   if (!survey.brief?.trim()) return c.json({ error: "This parlo has no brief to work from yet" }, 400);
 
   const body = await c.req.json<{ index?: unknown; questions?: unknown }>().catch(() => ({} as { index?: unknown; questions?: unknown }));
-  const questions = Array.isArray(body.questions)
-    ? body.questions
-        .filter((q): q is { text: string; type?: unknown } => !!q && typeof q === "object" && typeof (q as { text?: unknown }).text === "string")
-        .slice(0, 20)
-        .map((q) => ({ text: q.text.trim().slice(0, 500), type: typeof q.type === "string" ? q.type : "voice" }))
-    : [];
+  const questions = draftFromBody(body.questions);
   const index = typeof body.index === "number" ? Math.floor(body.index) : -1;
   if (questions.length === 0 || index < 0 || index >= questions.length) {
     return c.json({ error: "index and questions are required" }, 400);
@@ -387,13 +404,7 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
 
   if (brief) {
     const clarifications = sanitizeClarifications(body.clarifications);
-    const adjustment = adjustmentAsClarification(body.adjust, body.current);
-    const generated = await generateQuestionsFromBrief(
-      c.env.AI,
-      c.env.KV,
-      { brief, clarifications: adjustment ? [...clarifications, adjustment] : clarifications },
-      c.env.CEREBRAS_API_KEY
-    );
+    const generated = await generateQuestionsFromBrief(c.env.AI, c.env.KV, { brief, clarifications }, c.env.CEREBRAS_API_KEY);
     console.log("[generate] Generated from brief:", JSON.stringify(generated));
 
     await db
@@ -413,7 +424,6 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       audience: audienceKind,
       length: lengthKind,
       clarificationCount: clarifications.length,
-      adjusted: !!adjustment,
     });
 
     const response: GenerateSurveyResponse = {

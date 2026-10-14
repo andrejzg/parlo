@@ -108,21 +108,18 @@ export interface GenerateQuestionsInput {
   /** Free brief ("Something else"): the creator's own words. */
   brief?: string;
   clarifications?: Clarification[];
-  /** Review-screen tweak to fold into this generate, with the draft it refers to. */
-  adjust?: string;
-  current?: string[];
   /** Legacy two-question flow. */
   textAnswers?: { questionId: string; text: string }[];
 }
 
 export function useGenerateQuestions() {
   return useMutation({
-    mutationFn: ({ surveyId, shape, audience, length, topic, brief, clarifications, adjust, current, textAnswers }: GenerateQuestionsInput) => {
+    mutationFn: ({ surveyId, shape, audience, length, topic, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
       if (shape && shape !== "other" && topic?.trim()) {
-        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), clarifications: clarifications ?? [], adjust, current });
+        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), clarifications: clarifications ?? [] });
       } else if (brief?.trim()) {
-        body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [], adjust, current });
+        body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
       } else if (textAnswers?.length) {
         // Legacy: map frontend question IDs to backend field names.
         const mapped: Record<string, string> = {};
@@ -138,6 +135,20 @@ export function useGenerateQuestions() {
       });
     },
   });
+}
+
+export type AdjustKind = "shorter" | "playful";
+
+/** Review-screen chips: the draft on screen rewritten in place (same count, order and type). Nothing is saved. */
+export function adjustQuestions(
+  surveyId: string,
+  kind: AdjustKind,
+  questions: { text: string; hint?: string; type?: string }[],
+) {
+  return apiFetch<{ questions: { text: string; hint: string; type: "voice" | "photo" | "video" }[] }>(
+    `/surveys/${surveyId}/questions/adjust`,
+    { method: "POST", body: JSON.stringify({ kind, questions }) }
+  );
 }
 
 /** Review-screen swap: one different question for slot `index`, given the draft on screen. Nothing is saved. */

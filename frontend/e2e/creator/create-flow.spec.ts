@@ -37,11 +37,18 @@ type GenerateBody = {
   topic?: string;
   brief?: string;
   clarifications?: unknown[];
-  adjust?: string;
-  current?: string[];
 };
 
-async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarifyBriefs: string[]) {
+type AdjustBody = { kind: string; questions: { text: string; type?: string }[] };
+
+const DRAFT = [
+  { text: "What's your first reaction to the offsite plan?", hint: "Question 1 of 3", type: "voice" as const },
+  { text: "Show me where you'd rather spend the day", hint: "Question 2 of 3", type: "photo" as const },
+  { text: "Walk me through what an ideal venue looks like to you", hint: "Question 3 of 3", type: "video" as const },
+];
+const SHORTER = ["Gut feeling about the offsite?", "Snap where you'd rather be", "Walk me round your ideal venue"];
+
+async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarifyBriefs: string[], adjustBodies: AdjustBody[] = []) {
   await page.route("**/api/surveys", async (route: Route) => {
     if (route.request().method() !== "POST") return route.fallback();
     await route.fulfill({
@@ -108,18 +115,27 @@ async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarif
     if (route.request().method() !== "POST") return route.fallback();
     const body = route.request().postDataJSON() as GenerateBody;
     generateBodies.push(body);
-    const shorter = body.adjust?.toLowerCase().includes("shorter");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ title: "The offsite plan", brief: body.brief ?? COMPOSED_BRIEF, questions: DRAFT }),
+    });
+  });
+
+  // The chips rewrite the draft in place: same count, order and type, new wording.
+  await page.route("**/api/surveys/*/questions/adjust", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const body = route.request().postDataJSON() as AdjustBody;
+    adjustBodies.push(body);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        title: "The offsite plan",
-        brief: body.brief ?? COMPOSED_BRIEF,
-        questions: [
-          { text: shorter ? "Gut feeling about the offsite?" : "What's your first reaction to the offsite plan?", hint: "Question 1 of 3", type: "voice" },
-          { text: shorter ? "Snap where you'd rather be" : "Show me where you'd rather spend the day", hint: "Question 2 of 3", type: "photo" },
-          { text: shorter ? "Walk me round your ideal venue" : "Walk me through what an ideal venue looks like to you", hint: "Question 3 of 3", type: "video" },
-        ],
+        questions: body.questions.map((q, i) => ({
+          text: body.kind === "shorter" ? SHORTER[i] ?? q.text : `${q.text} (playful)`,
+          hint: `Question ${i + 1} of ${body.questions.length}`,
+          type: q.type ?? "voice",
+        })),
       }),
     });
   });
@@ -165,11 +181,16 @@ async function answerFollowUp(page: Page, text: string) {
   await page.getByTestId("creation-next").last().click();
 }
 
-async function openCreator(deviceName: (typeof DEVICES)[number], generateBodies: GenerateBody[], clarifyBriefs: string[]) {
+async function openCreator(
+  deviceName: (typeof DEVICES)[number],
+  generateBodies: GenerateBody[],
+  clarifyBriefs: string[],
+  adjustBodies: AdjustBody[] = [],
+) {
   const browser = await chromium.launch();
   const context = await browser.newContext({ ...devices[deviceName], permissions: ["microphone"] });
   const page = await context.newPage();
-  await mockCreatorApi(page, generateBodies, clarifyBriefs);
+  await mockCreatorApi(page, generateBodies, clarifyBriefs, adjustBodies);
   await injectAudioMocks(page);
   await page.goto(BASE_URL);
   await page.waitForLoadState("networkidle");
@@ -184,7 +205,8 @@ for (const deviceName of DEVICES) {
     fs.mkdirSync(OUT, { recursive: true });
     const generateBodies: GenerateBody[] = [];
     const clarifyBriefs: string[] = [];
-    const { browser, context, page } = await openCreator(deviceName, generateBodies, clarifyBriefs);
+    const adjustBodies: AdjustBody[] = [];
+    const { browser, context, page } = await openCreator(deviceName, generateBodies, clarifyBriefs, adjustBodies);
 
     await page.screenshot({ path: `${OUT}/01-landing.png` });
     await page.getByRole("button", { name: /create a parlo/i }).click();
@@ -233,17 +255,19 @@ for (const deviceName of DEVICES) {
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/05-review.png`, fullPage: true });
 
-    // ── "Shorter": a rebuild that carries the tweak and the draft it refers to ──
+    // ── "Shorter": the draft is rewritten in place; the review screen never leaves ──
     await page.getByTestId("review-adjust-shorter").click();
-    await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
-    await page.getByText("Gut feeling about the offsite?").waitFor({ timeout: 20_000 });
-    expect(generateBodies.length).toBe(2);
-    expect(generateBodies[1].adjust).toMatch(/shorter/i);
-    expect(generateBodies[1].current).toEqual([
-      "What's your first reaction to the offsite plan?",
-      "Show me where you'd rather spend the day",
-      "Walk me through what an ideal venue looks like to you",
-    ]);
+    await page.getByText("Gut feeling about the offsite?").waitFor({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
+    await expect(page.getByText("Review your questions")).toBeVisible();
+    expect(generateBodies.length).toBe(1);
+    expect(adjustBodies.length).toBe(1);
+    expect(adjustBodies[0].kind).toBe("shorter");
+    expect(adjustBodies[0].questions.map((q) => q.text)).toEqual(DRAFT.map((q) => q.text));
+    // Order and media types survive the rewrite.
+    await page.getByText("Snap where you'd rather be").waitFor({ timeout: 5000 });
+    await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
+    await expect(page.getByTestId("review-adjust-shorter")).toHaveAttribute("data-busy", "false");
 
     // ── Swap question 2 in place ──
     await page.getByTestId("review-swap").nth(1).click();
@@ -267,9 +291,9 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/08-checkpoint.png` });
     await page.getByTestId("checkpoint-create").click();
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
-    expect(generateBodies.length).toBe(3);
-    expect(generateBodies[2].clarifications).toHaveLength(2);
-    expect(generateBodies[2].shape).toBe("temperature");
+    expect(generateBodies.length).toBe(2);
+    expect(generateBodies[1].clarifications).toHaveLength(2);
+    expect(generateBodies[1].shape).toBe("temperature");
 
     // ── Intro: record a hello, use it → phone ──
     const introSaved = page.waitForRequest((r) => r.method() === "PUT" && /\/api\/surveys\/[^/]+\/intro$/.test(r.url()));

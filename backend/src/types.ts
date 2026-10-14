@@ -189,10 +189,6 @@ export interface GenerateSurveyRequest {
   /** Free-form brief ("Something else") — when present without `shape`, used as is. */
   brief?: string;
   clarifications?: Clarification[];
-  /** Review-screen fidgeting: a one-line change to apply to the draft ("shorter", "more playful"). */
-  adjust?: string;
-  /** The draft the creator was looking at when they asked for the adjustment. */
-  current?: string[];
   /** Legacy two-question flow. */
   textAnswers?: {
     audience?: string;

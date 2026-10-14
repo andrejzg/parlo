@@ -25,7 +25,7 @@ import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, adjustQuestions, type AdjustKind, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -77,8 +77,6 @@ export default function CreatorPage() {
   const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
   const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
   const [topic, setTopic] = useState("");
-  /** A review-screen tweak ("shorter") to fold into the next generate; cleared once used. */
-  const adjustRef = useRef<{ adjust: string; current: string[] } | null>(null);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
   const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
@@ -264,7 +262,6 @@ export default function CreatorPage() {
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
     setTopic("");
-    adjustRef.current = null;
   };
 
   /**
@@ -407,13 +404,10 @@ export default function CreatorPage() {
     }
 
     try {
-      const tweak = adjustRef.current;
-      adjustRef.current = null;
       const result = await generateQuestions.mutateAsync({
         surveyId,
         ...(shape && shape !== "other" ? { shape, audience, length, topic } : { brief }),
         clarifications,
-        ...(tweak ?? {}),
       });
       // The backend composes the brief from the taps; keep it for follow-ups and the agent.
       if (result.brief) setBrief(result.brief);
@@ -553,17 +547,19 @@ export default function CreatorPage() {
     goForward("building");
   };
 
-  /** Review-screen chips: rebuild the draft with a one-line tweak. */
-  const handleAdjust = (kind: "shorter" | "playful") => {
-    trackEvent("review_adjust", { kind });
-    adjustRef.current = {
-      adjust:
-        kind === "shorter"
-          ? "Make every question shorter and punchier."
-          : "Make the questions more playful and informal.",
-      current: generatedQuestions.map((q) => q.text),
-    };
-    goForward("building");
+  /** Review-screen chips: the draft rewritten in place; the screen never leaves. */
+  const handleAdjust = async (kind: AdjustKind, current: ReviewQuestion[]): Promise<ReviewQuestion[] | null> => {
+    if (!surveyId) return null;
+    trackEvent("review_adjust", { kind, questionCount: current.length });
+    try {
+      const { questions } = await adjustQuestions(surveyId, kind, current);
+      setGeneratedQuestions(questions);
+      return questions;
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.handleAdjust" });
+      toast.error("Couldn't rewrite them just now. Try again?");
+      return null;
+    }
   };
 
   /** Review-screen "Sharpen it": the optional follow-up loop, then a rebuild. */
