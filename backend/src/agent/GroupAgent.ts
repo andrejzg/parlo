@@ -28,6 +28,7 @@ import { z } from "zod";
 import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types";
 import { pickAgentModel } from "./model";
 import { initAnalytics, trackServerEvent } from "../services/analytics";
+import { shapeReport } from "../services/shapes";
 import { createProposedRound, type ProposedAsk } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
 import { displayNameFor } from "../services/groups";
@@ -298,9 +299,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
   private async syncFromD1(surveyId: string): Promise<{ answerFiles: number; newAnswers: number }> {
     const db = this.env.DB;
     const survey = await db
-      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript FROM surveys WHERE id = ?")
+      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape FROM surveys WHERE id = ?")
       .bind(surveyId)
-      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null }>();
+      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null }>();
     if (!survey) throw new Error("Parlo not found");
 
     // /brief.md
@@ -320,6 +321,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "",
         "## The creator's brief",
         survey.brief?.trim() || "(no brief recorded)",
+        "",
+        "## What should come back to the group",
+        shapeReport(survey.output_shape) ?? "A report on what the group said.",
         "",
         "## Clarifications",
         clarifications || "(none)",
@@ -742,6 +746,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "You are the agent running a Parlo: a group conversation where members answer by voice and you, the agent, gather the answers, follow up, and report back.",
         "You have a small file system. Read what you need with the tools, then WRITE the report with write_file. Never invent answers that are not on file.",
         "Raw answers are private to the owner, admins and you. The report goes to every member, so write it for them: what the group said, where people agree, where they differ, memorable lines (quote briefly, attribute by first name only if the group is open, otherwise keep quotes unattributed), and what is still unclear.",
+        "The brief says what should come back to the group (a decision, a ranking, where people stand, ideas, stories, feedback, a head count): give the report that shape, and make the opening paragraph answer it directly.",
         "Write in the creator's language and tone. Markdown, headed sections, under 500 words. Start with a one-paragraph summary.",
         "Also keep /memory.md: your own running notes about this group (threads to follow, who has not answered, hypotheses). Replace it each time; keep it under 300 words.",
       ].join("\n");

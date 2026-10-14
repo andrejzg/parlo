@@ -354,6 +354,96 @@ export async function generateQuestionsFromBrief(
   });
 }
 
+// ── Swapping one question on the review screen ───────────────────────
+
+const SWAP_PROMPT = `A creator is reviewing the questions their agent will ask the group. They want question {{index}} of {{count}} replaced with a different one.
+
+BRIEF:
+{{brief}}
+
+CLARIFICATIONS:
+{{clarifications}}
+
+THE QUESTIONS THAT STAY (answered by voice unless noted; do not duplicate any of these):
+{{others}}
+
+THE QUESTION BEING REPLACED (the creator does not want this one; never return it or a rewording of it):
+{{current}}
+(its media type is "{{currentType}}")
+
+Write ONE new question for slot {{index}}: same tone and length as the ones that stay, a genuinely different angle on the brief that none of them covers, warm and conversational as the agent would say it out loud. Keep the slot's media type unless a different one is clearly better.{{nudge}}
+
+Return JSON: {"text": "...", "hint": "Question {{index}} of {{count}}", "type": "voice" | "photo" | "video"}.`;
+
+export type ReplacementQuestion = { text: string; hint: string; type: "voice" | "photo" | "video" };
+
+function parseReplacementQuestion(text: string): ReplacementQuestion {
+  const parsed = JSON.parse(extractJson(text)) as { text?: unknown; hint?: unknown; type?: unknown };
+  // Models sometimes copy the "[voice] …" list format from the prompt into the answer.
+  const q = typeof parsed.text === "string" ? parsed.text.trim().replace(/^[\[(](voice|photo|video)[\])]\s*/i, "") : "";
+  if (!q) throw new Error("Replacement question missing from AI response");
+  const type = parsed.type === "photo" ? "photo" : parsed.type === "video" ? "video" : "voice";
+  const hint = typeof parsed.hint === "string" && parsed.hint.trim() ? parsed.hint.trim() : "";
+  return { text: q, hint, type };
+}
+
+/**
+ * Review-screen swap: one new question for slot `index` (0-based) that covers
+ * an angle the rest of the draft doesn't. The prompt is code, not KV: it is
+ * small and tied to the response shape.
+ */
+export async function generateReplacementQuestion(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: {
+    brief: string;
+    clarifications: { question: string; answer: string }[];
+    questions: { text: string; type?: string }[];
+    index: number;
+  },
+  traceId?: string
+): Promise<ReplacementQuestion> {
+  const current = input.questions[input.index];
+  const others = input.questions
+    .map((q, i) => ({ q, i }))
+    .filter(({ i }) => i !== input.index)
+    .map(({ q, i }) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+    .join("\n");
+  const normalise = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const taken = new Set(input.questions.map((q) => normalise(q.text)));
+
+  let replacement: ReplacementQuestion | null = null;
+  // Small models sometimes hand the old question back; one retry with a blunter nudge fixes most of those.
+  for (let attempt = 0; attempt < 2 && !replacement; attempt++) {
+    const messages = [
+      { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: fill(SWAP_PROMPT, {
+          index: String(input.index + 1),
+          count: String(input.questions.length),
+          brief: input.brief,
+          clarifications: formatClarifications(input.clarifications),
+          others: others || "(none)",
+          current: current?.text ?? "",
+          currentType: current?.type ?? "voice",
+          nudge: attempt === 0 ? "" : " Your previous answer repeated the question being replaced. This one must ask about something else entirely.",
+        }),
+      },
+    ];
+    const candidate = await runJsonCompletion(ai, cerebrasApiKey, messages, parseReplacementQuestion, {
+      traceId,
+      maxTokens: 300,
+      properties: { swapIndex: input.index, questionCount: input.questions.length, attempt },
+    });
+    if (!taken.has(normalise(candidate.text))) replacement = candidate;
+    else if (attempt === 1) replacement = candidate; // give up gracefully rather than fail the tap
+  }
+  const out = replacement!;
+  if (!out.hint) out.hint = `Question ${input.index + 1} of ${input.questions.length}`;
+  return out;
+}
+
 // ── Clarifying questions ─────────────────────────────────────────────
 
 export type ClarifyingQuestion = { question: string; hint: string | null };

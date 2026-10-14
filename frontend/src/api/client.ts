@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import type { AudienceId, LengthId, ShapeId } from "@/lib/shapes";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
 
@@ -93,23 +94,35 @@ export interface GeneratedQuestion {
 export interface GenerateQuestionsResponse {
   title?: string;
   questions: GeneratedQuestion[];
+  /** The brief the questions were built from — composed server-side from the taps in the output-first flow. */
+  brief?: string;
 }
 
 export interface GenerateQuestionsInput {
   surveyId: string;
-  /** Agent brief flow: the creator's transcribed brief + clarifying Q&A. */
+  /** Output-first flow: the shape of what comes back, who, how long, and the one blank. */
+  shape?: ShapeId;
+  audience?: AudienceId;
+  length?: LengthId;
+  topic?: string;
+  /** Free brief ("Something else"): the creator's own words. */
   brief?: string;
   clarifications?: Clarification[];
+  /** Review-screen tweak to fold into this generate, with the draft it refers to. */
+  adjust?: string;
+  current?: string[];
   /** Legacy two-question flow. */
   textAnswers?: { questionId: string; text: string }[];
 }
 
 export function useGenerateQuestions() {
   return useMutation({
-    mutationFn: ({ surveyId, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
+    mutationFn: ({ surveyId, shape, audience, length, topic, brief, clarifications, adjust, current, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
-      if (brief?.trim()) {
-        body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
+      if (shape && shape !== "other" && topic?.trim()) {
+        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), clarifications: clarifications ?? [], adjust, current });
+      } else if (brief?.trim()) {
+        body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [], adjust, current });
       } else if (textAnswers?.length) {
         // Legacy: map frontend question IDs to backend field names.
         const mapped: Record<string, string> = {};
@@ -125,6 +138,14 @@ export function useGenerateQuestions() {
       });
     },
   });
+}
+
+/** Review-screen swap: one different question for slot `index`, given the draft on screen. Nothing is saved. */
+export function swapQuestion(surveyId: string, index: number, questions: { text: string; type?: string }[]) {
+  return apiFetch<{ question: { text: string; hint: string; type: "voice" | "photo" | "video" } }>(
+    `/surveys/${surveyId}/questions/swap`,
+    { method: "POST", body: JSON.stringify({ index, questions }) }
+  );
 }
 
 export function useUpdateQuestions() {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
-import { Camera, GripVertical, Mic, Plus, Trash2, Video } from "lucide-react";
+import { Camera, GripVertical, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { stagger, fadeUp, transitionLarge, transitionSmall } from "@/lib/animations";
@@ -15,6 +15,40 @@ interface ReviewQuestionsScreenProps {
   questions: ReviewQuestion[];
   onConfirm: (questions: ReviewQuestion[]) => void;
   onRegenerate: () => void;
+  /** Chips: rebuild the whole draft shorter or more playful. */
+  onAdjust?: (kind: "shorter" | "playful") => void;
+  /** Chip: the optional follow-up loop, then a rebuild. */
+  onSharpen?: () => void;
+  /** Per-question swap: resolves to the replacement, or null when it failed (the card keeps its text). */
+  onSwap?: (index: number, current: ReviewQuestion[]) => Promise<ReviewQuestion | null>;
+  /** What the agent will hand back to the group (the chosen shape's report). */
+  reportPreview?: string | null;
+  /** Parent is fetching the first follow-up. */
+  busy?: boolean;
+}
+
+function ReviewChip({
+  onClick,
+  children,
+  testId,
+  disabled = false,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+  testId: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      data-testid={testId}
+      className="inline-flex items-center gap-xxs rounded-full bg-muted px-m py-xs text-s font-medium text-foreground transition-[background-color,transform] hover:bg-neutral-4 active:translate-y-press focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring disabled:pointer-events-none disabled:text-neutral-6"
+    >
+      {children}
+    </button>
+  );
 }
 
 interface QuestionItem {
@@ -55,6 +89,8 @@ function QuestionCard({
   onChange,
   onDelete,
   canDelete,
+  onSwap,
+  swapping,
 }: {
   item: QuestionItem;
   index: number;
@@ -63,6 +99,8 @@ function QuestionCard({
   onChange: (value: string) => void;
   onDelete: () => void;
   canDelete: boolean;
+  onSwap?: () => void;
+  swapping: boolean;
 }) {
   const dragControls = useDragControls();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -142,6 +180,29 @@ function QuestionCard({
           </div>
         </div>
 
+        {/* Swap: one different question for this slot */}
+        {onSwap && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onSwap}
+            disabled={swapping}
+            aria-label="Swap this question"
+            className="shrink-0 text-muted-foreground"
+            data-testid="review-swap"
+            data-swapping={swapping}
+          >
+            <motion.span
+              className="flex"
+              animate={swapping ? { rotate: 360 } : { rotate: 0 }}
+              transition={swapping ? { duration: 1, repeat: Infinity, ease: "linear" } : transitionSmall}
+            >
+              <RefreshCw aria-hidden />
+            </motion.span>
+          </Button>
+        )}
+
         {/* Delete */}
         {canDelete && (
           <Button
@@ -164,6 +225,11 @@ export default function ReviewQuestionsScreen({
   questions,
   onConfirm,
   onRegenerate,
+  onAdjust,
+  onSharpen,
+  onSwap,
+  reportPreview = null,
+  busy = false,
 }: ReviewQuestionsScreenProps) {
   const [items, setItems] = useState<QuestionItem[]>(() =>
     questions.map((q) => ({
@@ -174,6 +240,32 @@ export default function ReviewQuestionsScreen({
     }))
   );
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [swappingId, setSwappingId] = useState<string | null>(null);
+  void onRegenerate;
+
+  const swap = async (index: number) => {
+    if (!onSwap || swappingId) return;
+    const target = items[index];
+    if (!target) return;
+    setSwappingId(target.id);
+    try {
+      const replacement = await onSwap(
+        index,
+        items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })),
+      );
+      if (replacement) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === target.id
+              ? { ...it, text: replacement.text, hint: replacement.hint ?? it.hint, type: replacement.type ?? it.type }
+              : it,
+          ),
+        );
+      }
+    } finally {
+      setSwappingId(null);
+    }
+  };
 
   const updateQuestion = (id: string, value: string) => {
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: value } : item)));
@@ -223,6 +315,26 @@ export default function ReviewQuestionsScreen({
             <motion.p variants={fadeUp} className="text-s text-muted-foreground">
               Tap to edit, drag to reorder.
             </motion.p>
+            {(onAdjust || onSharpen) && (
+              <motion.div variants={fadeUp} className="flex flex-wrap justify-center gap-xs pt-xs">
+                {onAdjust && (
+                  <ReviewChip onClick={() => onAdjust("shorter")} testId="review-adjust-shorter">
+                    Shorter
+                  </ReviewChip>
+                )}
+                {onAdjust && (
+                  <ReviewChip onClick={() => onAdjust("playful")} testId="review-adjust-playful">
+                    More playful
+                  </ReviewChip>
+                )}
+                {onSharpen && (
+                  <ReviewChip onClick={onSharpen} testId="review-sharpen" disabled={busy}>
+                    <Sparkles size={14} aria-hidden />
+                    {busy ? "Thinking…" : "Sharpen it"}
+                  </ReviewChip>
+                )}
+              </motion.div>
+            )}
           </div>
         </motion.div>
       </div>
@@ -246,6 +358,8 @@ export default function ReviewQuestionsScreen({
                 onChange={(value) => updateQuestion(item.id, value)}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
+                onSwap={onSwap ? () => void swap(i) : undefined}
+                swapping={swappingId === item.id}
               />
             ))}
           </AnimatePresence>
@@ -255,6 +369,15 @@ export default function ReviewQuestionsScreen({
           <Plus aria-hidden />
           Add question
         </Button>
+
+        {reportPreview && (
+          <div className="mt-l rounded-m bg-card p-m flex flex-col gap-xs" data-testid="review-report-preview">
+            <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
+              What comes back to the group
+            </span>
+            <p className="text-s text-foreground">{reportPreview}</p>
+          </div>
+        )}
       </motion.div>
 
       {/* Action zone — hidden when keyboard is open */}

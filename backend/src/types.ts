@@ -177,9 +177,22 @@ export interface Clarification {
 }
 
 export interface GenerateSurveyRequest {
-  /** Agent brief flow — when present, `textAnswers` and the R2 audio are ignored. */
+  /**
+   * Output-first flow (current): the shape of what should come back, who the
+   * group is, how long it should take, and the one blank the creator filled.
+   * The route composes the brief from these (services/shapes.ts).
+   */
+  shape?: string;
+  audience?: string;
+  length?: string;
+  topic?: string;
+  /** Free-form brief ("Something else") — when present without `shape`, used as is. */
   brief?: string;
   clarifications?: Clarification[];
+  /** Review-screen fidgeting: a one-line change to apply to the draft ("shorter", "more playful"). */
+  adjust?: string;
+  /** The draft the creator was looking at when they asked for the adjustment. */
+  current?: string[];
   /** Legacy two-question flow. */
   textAnswers?: {
     audience?: string;
@@ -221,6 +234,8 @@ export interface GenerateSurveyResponse {
     hint: string;
     type?: "voice" | "photo" | "video";
   }[];
+  /** The brief the questions were built from (composed from the taps in the output-first flow). */
+  brief: string;
 }
 
 export interface StartResponseRequest {
