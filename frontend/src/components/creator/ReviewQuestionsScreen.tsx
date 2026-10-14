@@ -160,26 +160,28 @@ function QuestionCard({
           because the inline textarea below is drawn without its own outline. */}
       <div
         ref={cardRef}
-        className={`relative flex items-start rounded-m bg-card p-m transition-[box-shadow,opacity] ${isEditing ? "shadow-edge-accent" : ""} ${
+        className={`relative flex items-stretch overflow-hidden rounded-m bg-card transition-[box-shadow,opacity] ${isEditing ? "shadow-edge-accent" : ""} ${
           dimmed || swapping ? "opacity-60" : ""
         }`}
         data-dimmed={dimmed || swapping}
       >
-        {/* Drag handle */}
+        {/* Drag rail: the whole left edge of the card, top to bottom, is the handle.
+            It carries the number too, so the text keeps its width on a 320px phone. */}
         <div
-          className="shrink-0 flex items-center justify-center w-11 h-11 -ml-xxs cursor-grab active:cursor-grabbing touch-none text-neutral-6"
+          className="relative shrink-0 flex w-11 items-center justify-center bg-muted text-neutral-8 cursor-grab active:cursor-grabbing touch-none transition-colors hover:bg-neutral-4"
           onPointerDown={(e) => dragControls.start(e)}
+          aria-label="Drag to reorder"
+          role="button"
+          data-testid="review-drag-rail"
         >
-          <GripVertical size={16} aria-hidden />
+          <span className="absolute inset-x-0 top-m text-center font-data text-xs font-medium tabular-nums" aria-hidden>
+            {index + 1}
+          </span>
+          <GripVertical size={18} aria-hidden />
         </div>
 
-        {/* Number — sized to the first text line so it reads as its label */}
-        <span className="shrink-0 flex h-6 w-5 items-center justify-center mt-xxs font-data text-xs font-medium tabular-nums text-muted-foreground">
-          {index + 1}
-        </span>
-
         {/* Question text + media-type badge — tap text to edit */}
-        <div className="flex-1 ml-s min-w-0 flex flex-col gap-xs py-xxs text-foreground">
+        <div className="flex-1 ml-s min-w-0 flex flex-col gap-xs py-m text-foreground">
           {isEditing ? (
             <Textarea
               ref={textareaRef}
@@ -207,7 +209,8 @@ function QuestionCard({
           </div>
         </div>
 
-        {/* Swap: one different question for this slot */}
+        {/* Swap and delete, stacked in one column so the text keeps its width. */}
+        <div className="shrink-0 flex flex-col items-center py-s mr-xxs">
         {onSwap && (
           <Button
             type="button"
@@ -238,11 +241,12 @@ function QuestionCard({
             size="icon"
             onClick={onDelete}
             aria-label="Delete question"
-            className="shrink-0 -mr-xxs text-muted-foreground hover:bg-error-transparent hover:text-error"
+            className="shrink-0 text-muted-foreground hover:bg-error-transparent hover:text-error"
           >
             <Trash2 aria-hidden />
           </Button>
         )}
+        </div>
       </div>
     </Reorder.Item>
   );
