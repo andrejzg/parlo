@@ -44,7 +44,7 @@ import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
 import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
 import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, type AudienceId, type LengthId, type ShapeId } from "@/lib/shapes";
-import type { OutputId } from "@/lib/outputs";
+import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
  * Creation flow (output-first, 2026-10-14):
@@ -80,7 +80,7 @@ export default function CreatorPage() {
   const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
   const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
   const [topic, setTopic] = useState("");
-  const [outputs, setOutputs] = useState<OutputId[]>([]);
+  const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
   const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
@@ -273,7 +273,7 @@ export default function CreatorPage() {
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
     setTopic("");
-    setOutputs([]);
+    setOutputs(DEFAULT_OUTPUTS);
   };
 
   /**

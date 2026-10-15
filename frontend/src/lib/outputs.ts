@@ -1,16 +1,16 @@
 /**
  * What the agent should make from the answers, beyond the report it always
  * writes. The second card screen of creation ("What should the agent make?"),
- * multi-select: transcripts, a video reel, a podcast, a LinkedIn post, an
- * Instagram carousel, a Google Sheet, an agent-ready table, somewhere else.
- * The picks are stored on the survey and shape the questions the model
- * writes (a podcast wants voice stories, Instagram adds a photo ask, a reel
- * adds a video ask); the artefacts themselves arrive with the report after
- * each round. See GROWTH.md, 2026-10-15.
+ * multi-select: a Google Sheet (on by default), Instagram, LinkedIn, TikTok,
+ * Google Drive, an agent-ready URL, a podcast, somewhere else. The picks are
+ * stored on the survey and shape the questions the model writes (a podcast
+ * wants voice stories, Instagram adds a photo ask, TikTok adds a video ask);
+ * the artefacts themselves arrive with the report after each round. See
+ * GROWTH.md, 2026-10-15.
  *
  * Ids and order MUST match `backend/src/services/outputs.ts`.
  */
-export type OutputId = "transcripts" | "reel" | "podcast" | "linkedin" | "instagram" | "sheet" | "table" | "other";
+export type OutputId = "sheet" | "instagram" | "linkedin" | "tiktok" | "drive" | "table" | "podcast" | "other";
 
 export interface Output {
   id: OutputId;
@@ -21,15 +21,18 @@ export interface Output {
 }
 
 export const OUTPUTS: Output[] = [
-  { id: "transcripts", label: "Transcripts", example: "every answer, by person" },
-  { id: "reel", label: "Video reel", example: "their clips cut together" },
-  { id: "podcast", label: "Podcast", example: "an episode from their voices" },
-  { id: "linkedin", label: "LinkedIn", example: "your voice, their best lines" },
-  { id: "instagram", label: "Instagram", example: "carousel, adds a photo ask" },
   { id: "sheet", label: "Google Sheet", example: "fills as answers land" },
-  { id: "table", label: "Agent-ready table", example: "your other AI tools can ask it" },
+  { id: "instagram", label: "Instagram", example: "carousel, adds a photo ask" },
+  { id: "linkedin", label: "LinkedIn", example: "your voice, their best lines" },
+  { id: "tiktok", label: "TikTok", example: "a vertical cut, adds a video ask" },
+  { id: "drive", label: "Google Drive", example: "the raw answers, as files" },
+  { id: "table", label: "Agent-ready URL", example: "your other AI tools can ask it" },
+  { id: "podcast", label: "Podcast", example: "an episode from their voices" },
   { id: "other", label: "Somewhere else", example: "Notion, Slack, your own tool" },
 ];
+
+/** On before the creator touches the screen; a tap turns it off like any other card. */
+export const DEFAULT_OUTPUTS: OutputId[] = ["sheet"];
 
 export const OUTPUT_IDS = OUTPUTS.map((o) => o.id);
 

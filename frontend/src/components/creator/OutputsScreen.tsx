@@ -1,19 +1,9 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import {
-  Check,
-  ChevronLeft,
-  Clapperboard,
-  Database,
-  Ellipsis,
-  Instagram,
-  Linkedin,
-  MessageSquareQuote,
-  Mic,
-  Sheet,
-  type LucideIcon,
-} from "lucide-react";
+import { Check, ChevronLeft, Database, Ellipsis, Mic } from "lucide-react";
+import type { ComponentType } from "react";
 import { Button } from "@/components/ui/button";
+import { GoogleDriveIcon, GoogleSheetIcon, InstagramIcon, LinkedinIcon, TiktokIcon } from "@/components/creator/BrandIcons";
 import { OUTPUTS, sortOutputs, type OutputId } from "@/lib/outputs";
 import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
@@ -21,7 +11,8 @@ import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
  * The second card screen of creation: what should the agent make, beyond
  * the report it always writes? Same deck as the shape cards, but several
  * can be on at once: a tap flips a card to the primary fill, "Build it" is
- * live from the first frame (nothing picked is a valid answer).
+ * live from the first frame (nothing picked is a valid answer). The Google
+ * Sheet starts on (`DEFAULT_OUTPUTS`); the page owns that default.
  */
 interface OutputsScreenProps {
   initialOutputs?: OutputId[];
@@ -29,14 +20,14 @@ interface OutputsScreenProps {
   onBack?: () => void;
 }
 
-const ICONS: Record<OutputId, LucideIcon> = {
-  transcripts: MessageSquareQuote,
-  reel: Clapperboard,
-  podcast: Mic,
-  linkedin: Linkedin,
-  instagram: Instagram,
-  sheet: Sheet,
+const ICONS: Record<OutputId, ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>> = {
+  sheet: GoogleSheetIcon,
+  instagram: InstagramIcon,
+  linkedin: LinkedinIcon,
+  tiktok: TiktokIcon,
+  drive: GoogleDriveIcon,
   table: Database,
+  podcast: Mic,
   other: Ellipsis,
 };
 

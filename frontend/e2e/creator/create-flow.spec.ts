@@ -244,12 +244,15 @@ for (const deviceName of DEVICES) {
     await page.getByText("What should the agent make?").waitFor({ timeout: 10_000 });
     await expect(page.getByTestId("output-card")).toHaveCount(8);
     await expect(page.getByTestId("outputs-build")).toBeEnabled();
+    // The Google Sheet starts on; everything else off.
+    await expect(page.locator('[data-testid="output-card"][data-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="output-card"][data-output="sheet"]')).toHaveAttribute("data-selected", "true");
     await page.locator('[data-testid="output-card"][data-output="podcast"]').click();
-    await page.locator('[data-testid="output-card"][data-output="transcripts"]').click();
-    await page.locator('[data-testid="output-card"][data-output="reel"]').click();
-    await page.locator('[data-testid="output-card"][data-output="reel"]').click();
+    await page.locator('[data-testid="output-card"][data-output="instagram"]').click();
+    await page.locator('[data-testid="output-card"][data-output="tiktok"]').click();
+    await page.locator('[data-testid="output-card"][data-output="tiktok"]').click();
     await expect(page.locator('[data-testid="output-card"][data-output="podcast"]')).toHaveAttribute("data-selected", "true");
-    await expect(page.locator('[data-testid="output-card"][data-output="reel"]')).toHaveAttribute("data-selected", "false");
+    await expect(page.locator('[data-testid="output-card"][data-output="tiktok"]')).toHaveAttribute("data-selected", "false");
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03b-outputs.png`, fullPage: true });
     await page.getByTestId("outputs-build").click();
@@ -262,8 +265,8 @@ for (const deviceName of DEVICES) {
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
     expect(generateBodies[0]).toMatchObject({ shape: "temperature", audience: "team", length: "deep", topic: "the new offsite plan" });
-    // Canonical order, whatever order they were tapped in; the un-tapped reel is gone.
-    expect(generateBodies[0].outputs).toEqual(["transcripts", "podcast"]);
+    // Canonical order, whatever order they were tapped in; the toggled-off TikTok is gone.
+    expect(generateBodies[0].outputs).toEqual(["sheet", "instagram", "podcast"]);
     expect(generateBodies[0].brief).toBeUndefined();
     await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
