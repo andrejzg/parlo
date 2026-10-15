@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, type SyntheticEvent } from "r
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
 import { Camera, GripVertical, LoaderCircle, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useDragAutoScroll } from "@/hooks/useDragAutoScroll";
 import { stagger, fadeUp, transitionLarge, transitionSmall } from "@/lib/animations";
 
 export type ReviewQuestion = {
@@ -160,10 +161,15 @@ function QuestionCard({
   onSwap,
   swapping,
   dimmed = false,
+  onDragStart,
+  onDragEnd,
 }: {
   item: QuestionItem;
   index: number;
   isEditing: boolean;
+  /** From `useDragAutoScroll`: the list scrolls when the card is dragged to an edge. */
+  onDragStart: (e: PointerEvent | MouseEvent | TouchEvent) => void;
+  onDragEnd: () => void;
   onTap: () => void;
   onChange: (value: string) => void;
   onTypeChange: (type: MediaType) => void;
@@ -206,11 +212,15 @@ function QuestionCard({
       value={item}
       dragListener={false}
       dragControls={dragControls}
+      onDragStart={(e) => onDragStart(e)}
+      onDragEnd={onDragEnd}
       className="list-none touch-none rounded-m"
       initial={{ opacity: 0, x: -12 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 40, transition: transitionSmall }}
-      transition={{ ...transitionLarge, delay: 0.04 * (index + 1) }}
+      // The staggered delay is for the entrance only: a reorder slide must start at once,
+      // or a card dragged down a scrolling list leaves an empty slot behind it.
+      transition={{ ...transitionLarge, delay: 0.04 * (index + 1), layout: { ...transitionSmall, delay: 0 } }}
       whileDrag={{ zIndex: 50, boxShadow: "var(--shadow-m)" }}
     >
       {/* No edge while editing: the caret and the keyboard say enough. */}
@@ -348,6 +358,8 @@ export default function ReviewQuestionsScreen({
   }, [revisionKey]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [swappingId, setSwappingId] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const autoScroll = useDragAutoScroll(listRef);
   const [adjusting, setAdjusting] = useState<"shorter" | "playful" | null>(null);
   void onRegenerate;
 
@@ -485,12 +497,17 @@ export default function ReviewQuestionsScreen({
         </motion.div>
       </div>
 
-      {/* Content zone */}
+      {/* Content zone. No `layoutScroll` here on purpose: Framer caches a layoutScroll ancestor's
+          offset between layout updates, and a list that scrolls continuously under a drag then throws
+          the other cards off by the stale amount at every reorder. useDragAutoScroll keeps Framer in
+          viewport coordinates and shifts the pointer by the scrolled distance instead. */}
       <motion.div
+        ref={listRef}
         className="flex-1 min-h-0 overflow-y-auto px-l pt-xl pb-xs"
         variants={fadeUp}
         initial="initial"
         animate="animate"
+        data-testid="review-list"
       >
         <Reorder.Group axis="y" values={items} onReorder={setItems} className="list-none space-y-s">
           <AnimatePresence initial={false}>
@@ -503,6 +520,8 @@ export default function ReviewQuestionsScreen({
                 onTap={() => setEditingIndex(editingIndex === i ? null : i)}
                 onChange={(value) => updateQuestion(item.id, value)}
                 onTypeChange={(type) => updateType(item.id, type)}
+                onDragStart={autoScroll.onDragStart}
+                onDragEnd={autoScroll.onDragEnd}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
                 onSwap={onSwap && !adjusting ? () => void swap(i) : undefined}
