@@ -524,6 +524,85 @@ export async function adjustQuestions(
   }));
 }
 
+// ── Revising the draft with the creator's follow-up answers ───────────
+
+const REVISE_PROMPT = `A creator is reviewing the questions their agent will ask the group. They answered a few follow-up questions about what they really want, and tapped "Update with feedback". Fold what they said into the questions.
+
+BRIEF:
+{{brief}}
+
+WHAT THE CREATOR SAID WHEN ASKED MORE:
+{{clarifications}}
+
+THE QUESTIONS AS THEY STAND, in order (answered by voice unless noted):
+{{questions}}
+
+Revise the list so it reflects what the creator told you: reword a question that now misses the point, drop one that the answers made redundant, add one where they surfaced something the list doesn't cover, reorder if the flow improves. Keep what already works; this is an edit, not a rewrite. Stay within {{min}} to {{max}} questions. Warm and conversational, as the agent would say them out loud.
+
+Return JSON: {"questions": [{"text": "...", "type": "voice" | "photo" | "video"}, ...]} in the order they should be asked. Keep each question's type unless the creator's answers call for a different one.`;
+
+function parseRevisedQuestions(text: string): { text: string; type: "voice" | "photo" | "video" }[] {
+  const parsed = JSON.parse(extractJson(text)) as { questions?: unknown };
+  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+    throw new Error("Revised questions missing from AI response");
+  }
+  return parsed.questions
+    .map((q) => {
+      const raw = typeof q === "string" ? q : typeof (q as { text?: unknown })?.text === "string" ? (q as { text: string }).text : "";
+      const type = (q as { type?: unknown })?.type;
+      return {
+        text: stripMediaTag(raw).trim(),
+        type: type === "photo" ? ("photo" as const) : type === "video" ? ("video" as const) : ("voice" as const),
+      };
+    })
+    .filter((q) => q.text.length > 0);
+}
+
+/**
+ * The checkpoint after "Sharpen it": the draft on the review screen edited
+ * in the light of the creator's follow-up answers. Unlike `adjustQuestions`
+ * the count may change (within two of the current length) and questions may
+ * be added, dropped or reordered; the model is told it is an edit, not a
+ * rewrite. Cerebras answers in a second or two, so the review screen shows
+ * the old draft dimmed and fades the new one in.
+ */
+export async function reviseQuestions(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: {
+    brief: string;
+    clarifications: { question: string; answer: string }[];
+    questions: { text: string; hint?: string; type?: string }[];
+  },
+  traceId?: string
+): Promise<{ text: string; hint: string; type: "voice" | "photo" | "video" }[]> {
+  const count = input.questions.length;
+  const min = Math.max(1, count - 2);
+  const max = Math.min(20, count + 2);
+  const messages = [
+    { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: fill(REVISE_PROMPT, {
+        brief: input.brief,
+        clarifications: formatClarifications(input.clarifications),
+        min: String(min),
+        max: String(max),
+        questions: input.questions
+          .map((q, i) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+          .join("\n"),
+      }),
+    },
+  ];
+  const revised = await runJsonCompletion(ai, cerebrasApiKey, messages, parseRevisedQuestions, {
+    traceId,
+    maxTokens: 1200,
+    properties: { questionCount: count, clarificationCount: input.clarifications.length },
+  });
+  const kept = revised.slice(0, max);
+  return kept.map((q, i) => ({ ...q, hint: `Question ${i + 1} of ${kept.length}` }));
+}
+
 // ── Clarifying questions ─────────────────────────────────────────────
 
 export type ClarifyingQuestion = { question: string; hint: string | null };

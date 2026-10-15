@@ -154,6 +154,18 @@ export function adjustQuestions(
   );
 }
 
+/** The checkpoint after "Sharpen it": the draft edited with the follow-up answers (count may change). Persists the clarifications; the draft is not saved. */
+export function reviseQuestions(
+  surveyId: string,
+  questions: { text: string; hint?: string; type?: string }[],
+  clarifications: { question: string; answer: string }[],
+) {
+  return apiFetch<{ questions: { text: string; hint: string; type: "voice" | "photo" | "video" }[] }>(
+    `/surveys/${surveyId}/questions/revise`,
+    { method: "POST", body: JSON.stringify({ questions, clarifications }) }
+  );
+}
+
 /** Review-screen swap: one different question for slot `index`, given the draft on screen. Nothing is saved. */
 export function swapQuestion(surveyId: string, index: number, questions: { text: string; type?: string }[]) {
   return apiFetch<{ question: { text: string; hint: string; type: "voice" | "photo" | "video" } }>(

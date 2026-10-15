@@ -69,6 +69,14 @@ Statuses: `idea` → `planned` → `running` → `kept` / `killed`.
 
 Newest first. Each entry: context, what was discussed, where we lean, what it forces, what's still open.
 
+### 2026-10-15 · The checkpoint edits the draft instead of rebuilding it
+
+**Context.** After "Sharpen it" the checkpoint said "Create agent" and threw the draft away: back through the building screen, a fresh generate with the clarifications, every swap and edit lost. Andrej: call it "Update with feedback", go back to the questions, and use the answers to add, remove and reword them. Then: a back arrow that returns without applying anything.
+
+**Decided and shipped.** The fidget principle applied to the follow-up loop: the model's job is an edit of the list on screen, not a rewrite. `POST /questions/revise` takes the draft and the answers and may reword, drop, add or reorder within two of the current count; the review screen reappears at once with the old cards dimmed and the new ones fade in, like "Shorter". "Sharpen it" now hands the draft up to the page, so swaps survive the loop. The back arrow on the checkpoint restores the draft and drops the session's answers, so sharpening is a free experiment. "Create agent" is gone from the flow; the agent is created at "Confirm & go live" as before.
+
+**Watch.** Whether people tap "Update with feedback" and then "Confirm", or bounce back into "Sharpen it" repeatedly (`clarify_checkpoint {choice}` and `survey_questions_revised {before, after}`). If `after` is usually equal to `before`, the model is treating it as a rewrite after all and the prompt needs the edit framing strengthened.
+
 ### 2026-10-15 · What should the agent make? An outputs step before the build
 
 **Context.** Andrej likes the "Building your agent…" screen but not that the blank goes straight into it. He wants a step in between that asks about the output format, multi-select: transcripts, a coded data table, content (LinkedIn, Instagram), a podcast, a Google Sheet, a "virtual sheet" that is agent-ready and stored securely. Sketch only, nothing built.

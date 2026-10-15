@@ -18,7 +18,12 @@ interface ReviewQuestionsScreenProps {
   /** Chips: the whole draft rewritten in place (same count, order, type); null when it failed (texts stay). */
   onAdjust?: (kind: "shorter" | "playful", current: ReviewQuestion[]) => Promise<ReviewQuestion[] | null>;
   /** Chip: the optional follow-up loop, then a rebuild. */
-  onSharpen?: () => void;
+  /** "Sharpen it": hands up the draft as it stands so the follow-up loop can edit *this* list, swaps and all. */
+  onSharpen?: (current: ReviewQuestion[]) => void;
+  /** The draft is being edited with the creator's follow-up answers: cards dim, actions wait. */
+  revising?: boolean;
+  /** Bump to re-seed the cards from `questions` (after a revision lands). */
+  revisionKey?: number;
   /** Per-question swap: resolves to the replacement, or null when it failed (the card keeps its text). */
   onSwap?: (index: number, current: ReviewQuestion[]) => Promise<ReviewQuestion | null>;
   /** What the agent will hand back to the group (the chosen shape's report). */
@@ -261,15 +266,25 @@ export default function ReviewQuestionsScreen({
   onSwap,
   reportPreview = null,
   busy = false,
+  revising = false,
+  revisionKey = 0,
 }: ReviewQuestionsScreenProps) {
-  const [items, setItems] = useState<QuestionItem[]>(() =>
-    questions.map((q) => ({
+  const seed = (qs: ReviewQuestion[]): QuestionItem[] =>
+    qs.map((q) => ({
       id: makeId(),
       text: q.text,
       hint: q.hint,
       type: q.type ?? "voice",
-    }))
-  );
+    }));
+  const [items, setItems] = useState<QuestionItem[]>(() => seed(questions));
+  const seededFor = useRef(revisionKey);
+  useEffect(() => {
+    if (seededFor.current === revisionKey) return;
+    seededFor.current = revisionKey;
+    setItems(seed(questions));
+    setEditingIndex(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revisionKey]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [swappingId, setSwappingId] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<"shorter" | "playful" | null>(null);
@@ -277,7 +292,7 @@ export default function ReviewQuestionsScreen({
 
   /** A chip: rewrite every card in place, keeping ids (and so order and drag state). */
   const adjust = async (kind: "shorter" | "playful") => {
-    if (!onAdjust || adjusting || swappingId) return;
+    if (!onAdjust || adjusting || swappingId || revising) return;
     setAdjusting(kind);
     try {
       const result = await onAdjust(
@@ -297,7 +312,7 @@ export default function ReviewQuestionsScreen({
   };
 
   const swap = async (index: number) => {
-    if (!onSwap || swappingId) return;
+    if (!onSwap || swappingId || revising) return;
     const target = items[index];
     if (!target) return;
     setSwappingId(target.id);
@@ -391,7 +406,11 @@ export default function ReviewQuestionsScreen({
                   </ReviewChip>
                 )}
                 {onSharpen && (
-                  <ReviewChip onClick={onSharpen} testId="review-sharpen" disabled={busy || !!adjusting}>
+                  <ReviewChip
+                    onClick={() => onSharpen(items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })))}
+                    testId="review-sharpen"
+                    disabled={busy || !!adjusting || revising}
+                  >
                     <Sparkles size={14} aria-hidden />
                     {busy ? "Thinking…" : "Sharpen it"}
                   </ReviewChip>
@@ -423,7 +442,7 @@ export default function ReviewQuestionsScreen({
                 canDelete={items.length > 1}
                 onSwap={onSwap && !adjusting ? () => void swap(i) : undefined}
                 swapping={swappingId === item.id}
-                dimmed={!!adjusting}
+                dimmed={!!adjusting || revising}
               />
             ))}
           </AnimatePresence>

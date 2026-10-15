@@ -26,7 +26,7 @@ import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, adjustQuestions, type AdjustKind, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, adjustQuestions, reviseQuestions, type AdjustKind, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -85,6 +85,11 @@ export default function CreatorPage() {
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
   const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
   const [nextLoading, setNextLoading] = useState(false);
+  // "Update with feedback": the review screen shows the old draft dimmed while the revision lands.
+  const [revising, setRevising] = useState(false);
+  const [revisionKey, setRevisionKey] = useState(0);
+  // What the clarifications were when "Sharpen it" was tapped, so the checkpoint's back arrow can drop this session's answers.
+  const clarificationsBeforeSharpen = useRef<Clarification[] | null>(null);
 
   // Error state for building screen
   const [buildError, setBuildError] = useState(false);
@@ -386,10 +391,37 @@ export default function CreatorPage() {
     setScreenKey((k) => k + 1);
   };
 
-  const handleCheckpointCreate = () => {
-    trackEvent("clarify_checkpoint", { choice: "create", answered: clarifications.length });
+  /** "Update with feedback": back to review at once, the draft dimmed, then edited with the answers. */
+  const handleCheckpointCreate = async () => {
+    if (!surveyId || revising) return;
+    trackEvent("clarify_checkpoint", { choice: "update", answered: clarifications.length });
     forceReleaseSharedStream();
-    goForward("building");
+    clarificationsBeforeSharpen.current = null;
+    setRevising(true);
+    goForward("review");
+    try {
+      const { questions } = await reviseQuestions(surveyId, generatedQuestions, clarifications);
+      setGeneratedQuestions(questions);
+      setRevisionKey((k) => k + 1);
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.reviseQuestions" });
+      toast.error("Couldn't fold that in just now. Your questions are as they were.");
+    } finally {
+      setRevising(false);
+    }
+  };
+
+  /** The checkpoint's back arrow: review as it was, this sharpen session's answers dropped. */
+  const handleCheckpointBack = () => {
+    trackEvent("clarify_checkpoint", { choice: "back", answered: clarifications.length });
+    forceReleaseSharedStream();
+    if (clarificationsBeforeSharpen.current) setClarifications(clarificationsBeforeSharpen.current);
+    clarificationsBeforeSharpen.current = null;
+    setCurrentQuestion(null);
+    setClarifyAnswerDraft(null);
+    setDirection(-1);
+    setStage("review");
+    setScreenKey((k) => k + 1);
   };
 
   const handleCheckpointContinue = async () => {
@@ -574,9 +606,11 @@ export default function CreatorPage() {
     }
   };
 
-  /** Review-screen "Sharpen it": the optional follow-up loop, then a rebuild. */
-  const handleSharpen = async () => {
+  /** Review-screen "Sharpen it": the optional follow-up loop; the checkpoint then edits *this* draft. */
+  const handleSharpen = async (current: ReviewQuestion[]) => {
     trackEvent("review_sharpen", { answered: clarifications.length });
+    setGeneratedQuestions(current);
+    clarificationsBeforeSharpen.current = clarifications;
     await fetchNextQuestion(brief, clarifications);
   };
 
@@ -932,8 +966,9 @@ export default function CreatorPage() {
                 answeredCount={clarifications.length}
                 canContinue={clarifications.length < MAX_CLARIFICATIONS}
                 busy={nextLoading}
-                onCreate={handleCheckpointCreate}
+                onCreate={() => void handleCheckpointCreate()}
                 onContinue={handleCheckpointContinue}
+                onBack={handleCheckpointBack}
               />
             )}
             {stage === "building" && (
@@ -971,8 +1006,10 @@ export default function CreatorPage() {
                 onConfirm={handleReviewConfirm}
                 onRegenerate={handleRegenerate}
                 onAdjust={handleAdjust}
-                onSharpen={handleSharpen}
+                onSharpen={(current) => void handleSharpen(current)}
                 onSwap={handleSwap}
+                revising={revising}
+                revisionKey={revisionKey}
                 reportPreview={shape && shape !== "other" ? shapeById(shape).report : null}
                 busy={nextLoading}
               />

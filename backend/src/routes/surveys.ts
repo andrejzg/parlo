@@ -31,7 +31,7 @@ import {
   generateQuestionsFromBrief,
   generateClarifyingQuestion,
   generateReplacementQuestion,
-  adjustQuestions,
+  adjustQuestions, reviseQuestions,
   isAdjustKind,
   type GeneratedSurvey,
 } from "../services/ai";
@@ -313,6 +313,45 @@ surveys.post("/api/surveys/:id/questions/adjust", async (c) => {
   );
   trackServerEvent(surveyId, "survey_questions_adjusted", { surveyId, kind: body.kind, questionCount: questions.length });
   return c.json({ questions: adjusted });
+});
+
+// ── POST /api/surveys/:id/questions/revise ── The draft edited with the follow-up answers
+// The checkpoint after "Sharpen it". Body: { questions: [{text, hint?, type?}],
+// clarifications: [{question, answer}] }. Questions may be reworded, dropped,
+// added or reordered (count within two of the draft). The clarifications are
+// persisted to brief_clarifications so the agent and /swap see them. Nothing
+// else is saved; the review screen persists with PUT /questions on confirm.
+surveys.post("/api/surveys/:id/questions/revise", async (c) => {
+  const surveyId = c.req.param("id");
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "question-revise", ip, 300);
+  if (!allowed) return c.json({ error: "Too many requests" }, 429);
+
+  const survey = await c.env.DB.prepare("SELECT brief FROM surveys WHERE id = ?").bind(surveyId).first<{ brief: string | null }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const body = await c.req
+    .json<{ questions?: unknown; clarifications?: unknown }>()
+    .catch(() => ({}) as { questions?: unknown; clarifications?: unknown });
+  const questions = draftFromBody(body.questions);
+  if (questions.length === 0) return c.json({ error: "questions are required" }, 400);
+  const clarifications = sanitizeClarifications(body.clarifications);
+  if (clarifications.length === 0) return c.json({ error: "clarifications are required" }, 400);
+
+  const revised = await reviseQuestions(
+    c.env.AI,
+    c.env.CEREBRAS_API_KEY,
+    { brief: survey.brief?.trim() || "(no brief)", clarifications, questions },
+    `survey-${surveyId}`
+  );
+  await c.env.DB.prepare("UPDATE surveys SET brief_clarifications = ? WHERE id = ?").bind(JSON.stringify(clarifications), surveyId).run();
+  trackServerEvent(surveyId, "survey_questions_revised", {
+    surveyId,
+    clarificationCount: clarifications.length,
+    before: questions.length,
+    after: revised.length,
+  });
+  return c.json({ questions: revised });
 });
 
 // ── POST /api/surveys/:id/questions/swap ── One different question for a slot

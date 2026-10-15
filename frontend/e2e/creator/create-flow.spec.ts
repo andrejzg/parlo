@@ -41,6 +41,14 @@ type GenerateBody = {
 };
 
 type AdjustBody = { kind: string; questions: { text: string; type?: string }[] };
+type ReviseBody = { questions: { text: string; type?: string }[]; clarifications: { question: string; answer: string }[] };
+/** What the stubbed /questions/revise hands back: q1 reworded, the swapped q2 kept, q3 dropped, one added. */
+const REVISED = [
+  { text: "Which part of the plan worries you most?", hint: "Question 1 of 3", type: "voice" as const },
+  { text: "What's the one thing that would make you skip it?", hint: "Question 2 of 3", type: "voice" as const },
+  { text: "If a third couldn't make it, what would you change?", hint: "Question 3 of 3", type: "voice" as const },
+];
+const reviseBodies: ReviseBody[] = [];
 
 const DRAFT = [
   { text: "What's your first reaction to the offsite plan?", hint: "Question 1 of 3", type: "voice" as const },
@@ -121,6 +129,13 @@ async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarif
       contentType: "application/json",
       body: JSON.stringify({ title: "The offsite plan", brief: body.brief ?? COMPOSED_BRIEF, questions: DRAFT }),
     });
+  });
+
+  await page.route("**/api/surveys/*/questions/revise", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    reviseBodies.push(route.request().postDataJSON() as ReviseBody);
+    await new Promise((r) => setTimeout(r, 400));
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ questions: REVISED }) });
   });
 
   // The chips rewrite the draft in place: same count, order and type, new wording.
@@ -296,7 +311,8 @@ for (const deviceName of DEVICES) {
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/06-review-swapped.png`, fullPage: true });
 
-    // ── "Sharpen it": follow-ups from the composed brief → checkpoint → rebuild ──
+    reviseBodies.length = 0;
+    // ── "Sharpen it": follow-ups from the composed brief → checkpoint → the draft edited in place ──
     await page.getByTestId("review-sharpen").click();
     await expect(question(page)).toHaveText(FOLLOW_UPS[0].question, { timeout: 10_000 });
     expect(clarifyBriefs[0]).toBe(COMPOSED_BRIEF);
@@ -306,14 +322,37 @@ for (const deviceName of DEVICES) {
     await expect(question(page)).toHaveText(FOLLOW_UPS[1].question, { timeout: 10_000 });
     await answerFollowUp(page, "If more than a third can't make it.");
 
-    await page.getByTestId("checkpoint-create").waitFor({ timeout: 10_000 });
+    await page.getByTestId("checkpoint-update").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/08-checkpoint.png` });
-    await page.getByTestId("checkpoint-create").click();
-    await page.getByText("Review your").waitFor({ timeout: 20_000 });
-    expect(generateBodies.length).toBe(2);
-    expect(generateBodies[1].clarifications).toHaveLength(2);
-    expect(generateBodies[1].shape).toBe("temperature");
+
+    // The back arrow: review as it was, the swapped draft intact, nothing applied, the answers dropped.
+    await page.getByTestId("checkpoint-back").click();
+    await page.getByText("Review your").waitFor({ timeout: 10_000 });
+    await expect(page.getByText(SWAPPED.text)).toBeVisible();
+    expect(reviseBodies.length).toBe(0);
+    await page.getByTestId("review-sharpen").click();
+    // Dropped answers mean the follow-ups start again from the first one.
+    await expect(question(page)).toHaveText(FOLLOW_UPS[0].question, { timeout: 10_000 });
+    await answerFollowUp(page, "The dates, people have holidays booked.");
+    await expect(question(page)).toHaveText(FOLLOW_UPS[1].question, { timeout: 10_000 });
+    await answerFollowUp(page, "If more than a third can't make it.");
+    await page.getByTestId("checkpoint-update").waitFor({ timeout: 10_000 });
+
+    // "Update with feedback": straight back to review, the old cards dimmed, the revised ones fade in. No rebuild.
+    await page.getByTestId("checkpoint-update").click();
+    await page.getByText("Review your").waitFor({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
+    await page.getByText(REVISED[0].text).waitFor({ timeout: 10_000 });
+    await expect(page.getByText(REVISED[2].text)).toBeVisible();
+    await expect(page.getByText(DRAFT[2].text)).toHaveCount(0);
+    expect(generateBodies.length).toBe(1);
+    expect(reviseBodies.length).toBe(1);
+    expect(reviseBodies[0].clarifications).toHaveLength(2);
+    // The draft sent is the one on screen: the swap survived "Sharpen it".
+    expect(reviseBodies[0].questions.map((q) => q.text)).toEqual(["Gut feeling about the offsite?", SWAPPED.text, SHORTER[2]]);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${OUT}/09-review-revised.png`, fullPage: true });
 
     // ── Intro: record a hello, use it → phone ──
     const introSaved = page.waitForRequest((r) => r.method() === "PUT" && /\/api\/surveys\/[^/]+\/intro$/.test(r.url()));
