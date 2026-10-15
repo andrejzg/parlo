@@ -313,6 +313,27 @@ for (const deviceName of DEVICES) {
     await page.locator('[data-testid="review-type-option"][data-type="voice"]').click();
     await expect(page.locator('[data-testid="review-type"][data-type="video"]')).toHaveCount(1);
 
+    // ── Add a question: the textarea takes focus, the header collapses, and picking a type keeps it that way (no jump) ──
+    await page.getByRole("button", { name: /add question/i }).click();
+    const newQuestion = page.getByRole("textbox", { name: "Question 4" });
+    await expect(newQuestion).toBeFocused();
+    await newQuestion.fill("Anything else on your mind?");
+    await page.waitForTimeout(500); // the header's collapse transition
+    const before = await newQuestion.boundingBox();
+    await page.locator('[data-testid="review-type"][data-type="voice"]').last().click();
+    await page.locator('[data-testid="review-type-option"][data-type="photo"]').click();
+    await expect(newQuestion).toBeFocused();
+    await expect(page.locator('[data-testid="review-type"][data-type="photo"]')).toHaveCount(2);
+    await page.waitForTimeout(500);
+    const after = await newQuestion.boundingBox();
+    // Still editing, so the header stayed collapsed and the card did not move.
+    expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(2);
+    // Tapping away ends editing.
+    await page.locator('[data-testid="review-drag-rail"]').first().click();
+    await expect(page.getByRole("textbox", { name: "Question 4" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Delete question" }).last().click();
+    await expect(page.getByRole("textbox", { name: "Question 4" })).toHaveCount(0);
+
     // ── Swap question 2 in place ──
     await page.getByTestId("review-swap").nth(1).click();
     await page.getByText(SWAPPED.text).waitFor({ timeout: 10_000 });

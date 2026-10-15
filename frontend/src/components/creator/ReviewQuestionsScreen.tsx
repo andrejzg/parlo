@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type SyntheticEvent } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
 import { Camera, GripVertical, LoaderCircle, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -93,10 +93,17 @@ const MEDIA_TYPES: { type: MediaType; label: string; Icon: typeof Mic }[] = [
 function MediaTypePicker({ type, onChange }: { type: MediaType; onChange: (type: MediaType) => void }) {
   const [open, setOpen] = useState(false);
   const current = MEDIA_TYPES.find((m) => m.type === type) ?? MEDIA_TYPES[0];
+  // Pressing the chip must not move focus: while the question's textarea is
+  // being edited the header is collapsed for the keyboard, and a blur would
+  // end editing, spring the header back and drop the keyboard (the jump
+  // reported on 2026-10-15). Cancelling the press keeps the caret where it is.
+  const keepFocus = (e: SyntheticEvent) => e.preventDefault();
   if (!open) {
     return (
       <button
         type="button"
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
         onClick={() => setOpen(true)}
         className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-s py-xxs text-xs font-medium text-neutral-8 transition-colors hover:bg-neutral-4 active:translate-y-press"
         aria-label={`${current.label} answer. Change how it's answered`}
@@ -120,6 +127,8 @@ function MediaTypePicker({ type, onChange }: { type: MediaType; onChange: (type:
             type="button"
             role="option"
             aria-selected={selected}
+            onPointerDown={keepFocus}
+            onMouseDown={keepFocus}
             onClick={() => {
               onChange(m.type);
               setOpen(false);
@@ -234,7 +243,14 @@ function QuestionCard({
               ref={textareaRef}
               value={item.text}
               onChange={(e) => onChange(e.target.value)}
-              onBlur={onTap}
+              onBlur={(e) => {
+                const next = e.relatedTarget as Node | null;
+                if (next && cardRef.current?.contains(next)) {
+                  textareaRef.current?.focus();
+                  return;
+                }
+                onTap();
+              }}
               rows={1}
               placeholder="Write the question"
               aria-label={`Question ${index + 1}`}
