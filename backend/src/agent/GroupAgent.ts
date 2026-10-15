@@ -29,6 +29,7 @@ import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types"
 import { pickAgentModel } from "./model";
 import { initAnalytics, trackServerEvent } from "../services/analytics";
 import { shapeReport } from "../services/shapes";
+import { outputsAgentSection, parseOutputs } from "../services/outputs";
 import { createProposedRound, type ProposedAsk } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
 import { displayNameFor } from "../services/groups";
@@ -299,9 +300,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
   private async syncFromD1(surveyId: string): Promise<{ answerFiles: number; newAnswers: number }> {
     const db = this.env.DB;
     const survey = await db
-      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape FROM surveys WHERE id = ?")
+      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape, outputs FROM surveys WHERE id = ?")
       .bind(surveyId)
-      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null }>();
+      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null; outputs: string | null }>();
     if (!survey) throw new Error("Parlo not found");
 
     // /brief.md
@@ -324,6 +325,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "",
         "## What should come back to the group",
         shapeReport(survey.output_shape) ?? "A report on what the group said.",
+        "",
+        "## Also make, after every round",
+        outputsAgentSection(parseOutputs(survey.outputs)),
         "",
         "## Clarifications",
         clarifications || "(none)",

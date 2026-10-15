@@ -7,7 +7,7 @@ const BASE_URL = "http://localhost:5173";
 const OUT_ROOT = process.env.PARLO_SHOTS_DIR ?? "/tmp";
 
 /**
- * Creator flow, output-first: shape cards → the one-blank sentence → building
+ * Creator flow, output-first: shape cards → the one-blank sentence → the outputs cards → building
  * → review (swap / shorter / sharpen) → intro. Plus the "Something else"
  * escape hatch into the free brief on one device.
  *
@@ -35,6 +35,7 @@ type GenerateBody = {
   audience?: string;
   length?: string;
   topic?: string;
+  outputs?: string[];
   brief?: string;
   clarifications?: unknown[];
 };
@@ -239,6 +240,20 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
     await page.getByTestId("topic-build").click();
 
+    // ── What should the agent make? Eight cards, multi-select, build is live at once ──
+    await page.getByText("What should the agent make?").waitFor({ timeout: 10_000 });
+    await expect(page.getByTestId("output-card")).toHaveCount(8);
+    await expect(page.getByTestId("outputs-build")).toBeEnabled();
+    await page.locator('[data-testid="output-card"][data-output="podcast"]').click();
+    await page.locator('[data-testid="output-card"][data-output="transcripts"]').click();
+    await page.locator('[data-testid="output-card"][data-output="reel"]').click();
+    await page.locator('[data-testid="output-card"][data-output="reel"]').click();
+    await expect(page.locator('[data-testid="output-card"][data-output="podcast"]')).toHaveAttribute("data-selected", "true");
+    await expect(page.locator('[data-testid="output-card"][data-output="reel"]')).toHaveAttribute("data-selected", "false");
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${OUT}/03b-outputs.png`, fullPage: true });
+    await page.getByTestId("outputs-build").click();
+
     // ── Building → review with media badges and the report preview ──
     await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
     await page.waitForTimeout(600);
@@ -247,6 +262,8 @@ for (const deviceName of DEVICES) {
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
     expect(generateBodies[0]).toMatchObject({ shape: "temperature", audience: "team", length: "deep", topic: "the new offsite plan" });
+    // Canonical order, whatever order they were tapped in; the un-tapped reel is gone.
+    expect(generateBodies[0].outputs).toEqual(["transcripts", "podcast"]);
     expect(generateBodies[0].brief).toBeUndefined();
     await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });

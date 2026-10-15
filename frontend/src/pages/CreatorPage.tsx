@@ -7,6 +7,7 @@ import CreationQuestionScreen from "@/components/creator/CreationQuestionScreen"
 import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
 import ShapeScreen from "@/components/creator/ShapeScreen";
 import TopicScreen, { type TopicResult } from "@/components/creator/TopicScreen";
+import OutputsScreen from "@/components/creator/OutputsScreen";
 import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import ReviewQuestionsScreen, { type ReviewQuestion } from "@/components/creator/ReviewQuestionsScreen";
@@ -43,18 +44,20 @@ import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
 import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
 import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, type AudienceId, type LengthId, type ShapeId } from "@/lib/shapes";
+import type { OutputId } from "@/lib/outputs";
 
 /**
  * Creation flow (output-first, 2026-10-14):
  *   welcome → shape ("What do you want back?", eight cards)
  *           → topic (the sentence the card started, one blank; who + length chips)
+ *           → outputs ("What should the agent make?", eight cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
  *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
  *           → intro (voice hello, skippable) → phone/otp → linkedin → ready
  *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
  *   and then builds straight away; follow-ups are the same review-screen option.
  */
-type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -77,6 +80,7 @@ export default function CreatorPage() {
   const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
   const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
   const [topic, setTopic] = useState("");
+  const [outputs, setOutputs] = useState<OutputId[]>([]);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
   const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
@@ -235,7 +239,7 @@ export default function CreatorPage() {
     goForward("topic");
   };
 
-  /** The blank is filled: build straight away. */
+  /** The blank is filled: on to what the agent should make. */
   const handleTopicContinue = (result: TopicResult) => {
     setTopic(result.topic);
     setAudience(result.audience);
@@ -249,6 +253,13 @@ export default function CreatorPage() {
       chars: result.topic.length,
     });
     forceReleaseSharedStream();
+    goForward("outputs");
+  };
+
+  /** The outputs are picked (possibly none): build. */
+  const handleOutputsContinue = (picked: OutputId[]) => {
+    setOutputs(picked);
+    trackEvent("create_outputs_picked", { shape, audience, outputs: picked, count: picked.length });
     goForward("building");
   };
 
@@ -262,6 +273,7 @@ export default function CreatorPage() {
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
     setTopic("");
+    setOutputs([]);
   };
 
   /**
@@ -406,7 +418,7 @@ export default function CreatorPage() {
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        ...(shape && shape !== "other" ? { shape, audience, length, topic } : { brief }),
+        ...(shape && shape !== "other" ? { shape, audience, length, topic, outputs } : { brief }),
         clarifications,
       });
       // The backend composes the brief from the taps; keep it for follow-ups and the agent.
@@ -417,7 +429,7 @@ export default function CreatorPage() {
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, topic]);
+  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, topic, outputs]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -679,6 +691,8 @@ export default function CreatorPage() {
       ? "shape"
       : stage === "topic"
       ? "topic"
+      : stage === "outputs"
+      ? "outputs"
       : stage === "brief"
       ? `brief-${screenKey}`
       : stage === "checkpoint"
@@ -865,6 +879,17 @@ export default function CreatorPage() {
                   setDirection(-1);
                   forceReleaseSharedStream();
                   setStage("shape");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
+            {stage === "outputs" && surveyId && shape && shape !== "other" && (
+              <OutputsScreen
+                initialOutputs={outputs}
+                onContinue={handleOutputsContinue}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage("topic");
                   setScreenKey((k) => k + 1);
                 }}
               />

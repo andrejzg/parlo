@@ -37,6 +37,7 @@ import {
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { composeBrief, isAudienceId, isLengthId, isShapeId, TOPIC_MAX_CHARS } from "../services/shapes";
+import { sanitizeOutputs } from "../services/outputs";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
@@ -387,13 +388,14 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
   let outputShape: string | null = null;
   let audienceKind: string | null = null;
   let lengthKind: string | null = null;
+  const outputs = sanitizeOutputs(body.outputs);
   if (typeof body.shape === "string" && body.shape !== "other") {
     if (!isShapeId(body.shape) || body.shape === "other") return c.json({ error: "unknown shape" }, 400);
     const topic = typeof body.topic === "string" ? body.topic.trim().slice(0, TOPIC_MAX_CHARS) : "";
     if (!topic) return c.json({ error: "topic is required" }, 400);
     const audience = isAudienceId(body.audience) ? body.audience : "group";
     const length = isLengthId(body.length) ? body.length : "few";
-    brief = composeBrief({ shape: body.shape, audience, length, topic });
+    brief = composeBrief({ shape: body.shape, audience, length, topic, outputs });
     outputShape = body.shape;
     audienceKind = audience;
     lengthKind = length;
@@ -409,9 +411,9 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
 
     await db
       .prepare(
-        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, output_shape = ?, audience_kind = ? WHERE id = ?"
+        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, output_shape = ?, audience_kind = ?, outputs = ? WHERE id = ?"
       )
-      .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, surveyId)
+      .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, JSON.stringify(outputs), surveyId)
       .run();
     await replaceQuestions(db, surveyId, generated);
 
@@ -423,6 +425,8 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       shape: outputShape,
       audience: audienceKind,
       length: lengthKind,
+      outputs,
+      outputCount: outputs.length,
       clarificationCount: clarifications.length,
     });
 

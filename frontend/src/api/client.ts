@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import type { AudienceId, LengthId, ShapeId } from "@/lib/shapes";
+import type { OutputId } from "@/lib/outputs";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
 
@@ -105,6 +106,8 @@ export interface GenerateQuestionsInput {
   audience?: AudienceId;
   length?: LengthId;
   topic?: string;
+  /** What the agent should make beyond the report. */
+  outputs?: OutputId[];
   /** Free brief ("Something else"): the creator's own words. */
   brief?: string;
   clarifications?: Clarification[];
@@ -114,10 +117,10 @@ export interface GenerateQuestionsInput {
 
 export function useGenerateQuestions() {
   return useMutation({
-    mutationFn: ({ surveyId, shape, audience, length, topic, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
+    mutationFn: ({ surveyId, shape, audience, length, topic, outputs, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
       if (shape && shape !== "other" && topic?.trim()) {
-        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), clarifications: clarifications ?? [] });
+        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), outputs: outputs ?? [], clarifications: clarifications ?? [] });
       } else if (brief?.trim()) {
         body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
       } else if (textAnswers?.length) {

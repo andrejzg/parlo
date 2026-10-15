@@ -7,6 +7,8 @@
  *
  * Ids and order MUST match `frontend/src/lib/shapes.ts`.
  */
+import { outputsBriefLines, type OutputId } from "./outputs";
+
 export type ShapeId = "decide" | "rank" | "temperature" | "ideas" | "stories" | "feedback" | "headcount" | "other";
 export type AudienceId = "group" | "friends" | "team" | "customers" | "community" | "strangers";
 export type LengthId = "one" | "few" | "deep";
@@ -128,6 +130,8 @@ export interface ShapeInput {
   audience: AudienceId;
   length: LengthId;
   topic: string;
+  /** What the agent should make beyond the report; shapes the asks (services/outputs.ts). */
+  outputs?: OutputId[];
 }
 
 /** The prose brief the pipeline works from, assembled from the creator's taps and the one blank they filled. */
@@ -143,6 +147,7 @@ export function composeBrief(input: ShapeInput): string {
     `Who they are: ${audience.phrase}. Tone: ${audience.tone}`,
     `How the questions should work: ${shape.questions}`,
     `Length: ${length.note}.`,
+    ...outputsBriefLines(input.outputs ?? []),
   ].join("\n");
 }
 

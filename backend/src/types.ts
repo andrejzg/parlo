@@ -188,6 +188,8 @@ export interface GenerateSurveyRequest {
   topic?: string;
   /** Free-form brief ("Something else") — when present without `shape`, used as is. */
   brief?: string;
+  /** What the agent should make beyond the report (ids from services/outputs.ts). */
+  outputs?: string[];
   clarifications?: Clarification[];
   /** Legacy two-question flow. */
   textAnswers?: {
