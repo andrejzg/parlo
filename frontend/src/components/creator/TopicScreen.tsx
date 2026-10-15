@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronLeft, Mic, Square } from "lucide-react";
-import VoiceWave from "@/components/VoiceWave";
+import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
-import { useLiveTranscript } from "@/hooks/useLiveTranscript";
 import {
   AUDIENCES,
   DEFAULT_AUDIENCE,
@@ -15,26 +12,26 @@ import {
   type LengthId,
   type Shape,
 } from "@/lib/shapes";
-import { fadeUp, stagger, transitionLarge, transitionSmall } from "@/lib/animations";
+import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
 /**
  * The second screen of creation: the sentence the chosen shape started, with
  * one blank to fill ("Take the temperature of [my team] on ___"). The blank
- * is typed, or spoken into with the mic button beside the CTA (the heard
- * words land in the blank as they come). The audience chips swap the phrase
- * in the sentence and set the tone; the length chips set how many questions
- * the agent writes. Every tap changes the screen at once; nothing here
- * calls a model.
+ * is typed (the mic beside the CTA was removed on 2026-10-15: a few words is
+ * a typing job, and the next screen is where the picks happen). The audience
+ * chips swap the phrase in the sentence and set the tone; the length chips
+ * set how many questions the agent writes. Every tap changes the screen at
+ * once; nothing here calls a model. "Continue" goes to the outputs cards.
  */
 export interface TopicResult {
   topic: string;
   audience: AudienceId;
   length: LengthId;
+  /** Always "text" since the mic went; kept for the `create_blank_filled` event. */
   mode: "voice" | "text";
 }
 
 interface TopicScreenProps {
-  surveyId: string;
   shape: Shape;
   initialTopic?: string;
   initialAudience?: AudienceId;
@@ -85,27 +82,11 @@ export default function TopicScreen({
   onContinue,
   onBack,
 }: TopicScreenProps) {
-  const recorder = useVoiceRecorder();
-  const transcript = useLiveTranscript({
-    surveyId,
-    getAudioBlob: recorder.getRecordedBlob,
-    analyser: recorder.analyser,
-    live: true,
-  });
-
   const [topic, setTopic] = useState(initialTopic);
   const [audience, setAudience] = useState<AudienceId>(initialAudience);
   const [length, setLength] = useState<LengthId>(initialLength);
-  const [listening, setListening] = useState(false);
-  const [micDenied, setMicDenied] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const spokeRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // While the mic is on, the blank mirrors the live transcript.
-  useEffect(() => {
-    if (listening) setTopic(transcript.text);
-  }, [listening, transcript.text]);
 
   // The blank grows with its text and starts focused, so typing is one tap away.
   useEffect(() => {
@@ -118,45 +99,17 @@ export default function TopicScreen({
     textareaRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (recorder.permissionDenied) {
-      setMicDenied(true);
-      setListening(false);
-    }
-  }, [recorder.permissionDenied]);
-
-  const startListening = async () => {
-    const ok = await recorder.start();
-    if (!ok) return;
-    spokeRef.current = true;
-    transcript.seed(topic);
-    transcript.start();
-    setListening(true);
-  };
-
-  const stopListening = async (): Promise<string> => {
-    setListening(false);
-    if (recorder.isRecording) await recorder.stop();
-    const heard = await transcript.stop();
-    const final = (heard || transcript.text).trim();
-    if (final) setTopic(final);
-    textareaRef.current?.focus();
-    return final;
-  };
-
-  const handleContinue = async () => {
+  const handleContinue = () => {
     if (leaving || busy) return;
-    let text = topic.trim();
-    if (listening) text = (await stopListening()) || text;
+    const text = topic.trim();
     if (!text) return;
     setLeaving(true);
-    onContinue({ topic: text, audience, length, mode: spokeRef.current ? "voice" : "text" });
+    onContinue({ topic: text, audience, length, mode: "text" });
   };
 
-  const handleBack = async () => {
+  const handleBack = () => {
     if (leaving) return;
     setLeaving(true);
-    if (listening) await stopListening();
     onBack();
   };
 
@@ -189,19 +142,15 @@ export default function TopicScreen({
           <textarea
             ref={textareaRef}
             value={topic}
-            onChange={(e) => {
-              if (listening) return;
-              setTopic(e.target.value);
-            }}
+            onChange={(e) => setTopic(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void handleContinue();
+                handleContinue();
               }
             }}
             placeholder={shape.example}
             rows={1}
-            readOnly={listening}
             aria-label="What it's about"
             data-testid="topic-textarea"
             className="w-full mt-xs resize-none bg-transparent font-editorial text-l sm:text-xl font-medium text-foreground placeholder:text-neutral-6 caret-color-1 outline-none"
@@ -247,44 +196,10 @@ export default function TopicScreen({
         initial="initial"
         animate="animate"
       >
-        {micDenied && (
-          <motion.div variants={fadeUp} className="w-full text-center text-xs text-muted-foreground rounded-s bg-card px-m py-xs">
-            Mic unavailable — type it instead
-          </motion.div>
-        )}
-
-        {listening && (
-          <motion.div
-            className="w-full flex flex-col items-center gap-xs"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={transitionSmall}
-          >
-            <div className="w-full h-11">
-              <VoiceWave analyser={recorder.analyser} isRecording={recorder.isRecording} />
-            </div>
-            <p className="text-xs text-muted-foreground">Listening — say what it's about</p>
-          </motion.div>
-        )}
-
-        <motion.div variants={fadeUp} className="w-full flex items-center gap-s">
-          <Button size="lg" className="flex-1 min-w-0" onClick={handleContinue} disabled={!canContinue} data-testid="topic-build">
-            {busy ? "One moment…" : "Build it"}
+        <motion.div variants={fadeUp} className="w-full">
+          <Button size="lg" className="w-full" onClick={handleContinue} disabled={!canContinue} data-testid="topic-continue">
+            {busy ? "One moment…" : "Continue"}
           </Button>
-          {!micDenied && (
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              className={`h-14 w-14 shrink-0 ${listening ? "text-color-1" : ""}`}
-              onClick={() => (listening ? void stopListening() : void startListening())}
-              aria-label={listening ? "Stop listening" : "Say it instead"}
-              aria-pressed={listening}
-              data-testid="topic-mic"
-            >
-              {listening ? <Square className="!size-5" aria-hidden /> : <Mic className="!size-5" aria-hidden />}
-            </Button>
-          )}
         </motion.div>
       </motion.div>
     </div>

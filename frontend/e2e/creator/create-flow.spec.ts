@@ -223,7 +223,7 @@ for (const deviceName of DEVICES) {
     const ta = page.getByTestId("topic-textarea");
     await ta.waitFor({ timeout: 10_000 });
     await expect(page.getByTestId("topic-sentence")).toContainText("Take the temperature of the group on");
-    await expect(page.getByTestId("topic-build")).toBeDisabled();
+    await expect(page.getByTestId("topic-continue")).toBeDisabled();
 
     // The who chip swaps the phrase in the sentence; tapping it again puts "the group" back.
     await page.locator('[data-testid="who-chip"][data-value="team"]').click();
@@ -235,10 +235,10 @@ for (const deviceName of DEVICES) {
     await expect(page.locator('[data-testid="length-chip"][data-value="deep"]')).toHaveAttribute("data-selected", "true");
 
     await ta.fill("the new offsite plan");
-    await expect(page.getByTestId("topic-build")).toBeEnabled();
+    await expect(page.getByTestId("topic-continue")).toBeEnabled();
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
-    await page.getByTestId("topic-build").click();
+    await page.getByTestId("topic-continue").click();
 
     // ── What should the agent make? Eight cards, multi-select, build is live at once ──
     await page.getByText("What should the agent make?").waitFor({ timeout: 10_000 });

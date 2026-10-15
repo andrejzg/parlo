@@ -869,7 +869,6 @@ export default function CreatorPage() {
             )}
             {stage === "topic" && surveyId && shape && shape !== "other" && (
               <TopicScreen
-                surveyId={surveyId}
                 shape={shapeById(shape)}
                 initialTopic={topic}
                 initialAudience={audience}
