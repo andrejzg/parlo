@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
 import { Camera, GripVertical, LoaderCircle, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { stagger, fadeUp, transitionLarge, transitionSmall } from "@/lib/animations";
 
 export type ReviewQuestion = {
@@ -80,21 +79,63 @@ function makeId() {
   return `q-${++nextId}-${Date.now()}`;
 }
 
-/** Small chip showing whether a question is voice, photo, or video, so the
- *  creator sees at a glance what the AI picked per question (future: tap to
- *  change the type). The visible label is asserted exactly by the creator
- *  e2e spec — keep "Voice" / "Photo" / "Video". */
-function MediaTypeBadge({ type }: { type: "voice" | "photo" | "video" }) {
-  const label = type === "voice" ? "Voice" : type === "photo" ? "Photo" : "Video";
-  const Icon = type === "voice" ? Mic : type === "photo" ? Camera : Video;
+type MediaType = "voice" | "photo" | "video";
+const MEDIA_TYPES: { type: MediaType; label: string; Icon: typeof Mic }[] = [
+  { type: "voice", label: "Voice", Icon: Mic },
+  { type: "photo", label: "Photo", Icon: Camera },
+  { type: "video", label: "Video", Icon: Video },
+];
+
+/** The chip showing whether a question is answered by voice, photo or video.
+ *  Tap it and it opens into the three options in the same row; tap one and
+ *  it closes on the pick. The visible label is asserted exactly by the
+ *  creator e2e spec — keep "Voice" / "Photo" / "Video". */
+function MediaTypePicker({ type, onChange }: { type: MediaType; onChange: (type: MediaType) => void }) {
+  const [open, setOpen] = useState(false);
+  const current = MEDIA_TYPES.find((m) => m.type === type) ?? MEDIA_TYPES[0];
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-s py-xxs text-xs font-medium text-neutral-8 transition-colors hover:bg-neutral-4 active:translate-y-press"
+        aria-label={`${current.label} answer. Change how it's answered`}
+        aria-haspopup="listbox"
+        aria-expanded={false}
+        data-testid="review-type"
+        data-type={type}
+      >
+        <current.Icon size={12} aria-hidden />
+        {current.label}
+      </button>
+    );
+  }
   return (
-    <span
-      className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-s py-xxs text-xs font-medium text-neutral-8"
-      title={`${label} answer`}
-    >
-      <Icon size={12} aria-hidden />
-      {label}
-    </span>
+    <div className="flex flex-wrap gap-xxs" role="listbox" aria-label="How it's answered" data-testid="review-type-options">
+      {MEDIA_TYPES.map((m) => {
+        const selected = m.type === type;
+        return (
+          <button
+            key={m.type}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            onClick={() => {
+              onChange(m.type);
+              setOpen(false);
+            }}
+            className={`inline-flex items-center gap-xxs rounded-full px-s py-xxs text-xs font-medium transition-colors active:translate-y-press ${
+              selected ? "bg-primary text-primary-foreground" : "bg-muted text-neutral-8 hover:bg-neutral-4"
+            }`}
+            data-testid="review-type-option"
+            data-type={m.type}
+          >
+            <m.Icon size={12} aria-hidden />
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -104,6 +145,7 @@ function QuestionCard({
   isEditing,
   onTap,
   onChange,
+  onTypeChange,
   onDelete,
   canDelete,
   onSwap,
@@ -115,6 +157,7 @@ function QuestionCard({
   isEditing: boolean;
   onTap: () => void;
   onChange: (value: string) => void;
+  onTypeChange: (type: MediaType) => void;
   onDelete: () => void;
   canDelete: boolean;
   onSwap?: () => void;
@@ -161,11 +204,10 @@ function QuestionCard({
       transition={{ ...transitionLarge, delay: 0.04 * (index + 1) }}
       whileDrag={{ zIndex: 50, boxShadow: "var(--shadow-m)" }}
     >
-      {/* While editing, the card carries the focus indicator (accent edge)
-          because the inline textarea below is drawn without its own outline. */}
+      {/* No edge while editing: the caret and the keyboard say enough. */}
       <div
         ref={cardRef}
-        className={`relative flex items-stretch overflow-hidden rounded-m bg-card transition-[box-shadow,opacity] ${isEditing ? "shadow-edge-accent" : ""} ${
+        className={`relative flex items-stretch overflow-hidden rounded-m bg-card transition-[box-shadow,opacity] ${
           dimmed || swapping ? "opacity-60" : ""
         }`}
         data-dimmed={dimmed || swapping}
@@ -188,12 +230,15 @@ function QuestionCard({
         {/* Question text + media-type badge — tap text to edit */}
         <div className="flex-1 ml-s min-w-0 flex flex-col gap-xs py-m text-foreground">
           {isEditing ? (
-            <Textarea
+            <textarea
               ref={textareaRef}
               value={item.text}
               onChange={(e) => onChange(e.target.value)}
               onBlur={onTap}
-              className="min-h-10 rounded-none bg-transparent px-zero py-zero text-m font-medium caret-color-1 focus-visible:outline-none"
+              rows={1}
+              placeholder="Write the question"
+              aria-label={`Question ${index + 1}`}
+              className="w-full min-h-10 resize-none bg-transparent p-zero font-ui text-m font-medium text-foreground placeholder:text-neutral-6 caret-color-1 outline-none ring-0 shadow-none"
             />
           ) : (
             <button type="button" onClick={onTap} className="text-left text-m font-medium min-h-10">
@@ -210,7 +255,7 @@ function QuestionCard({
             </button>
           )}
           <div className="flex">
-            <MediaTypeBadge type={item.type} />
+            <MediaTypePicker type={item.type} onChange={onTypeChange} />
           </div>
         </div>
 
@@ -339,14 +384,17 @@ export default function ReviewQuestionsScreen({
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: value } : item)));
   };
 
+  const updateType = (id: string, type: MediaType) => {
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, type } : item)));
+  };
+
   const deleteQuestion = (id: string) => {
     setItems((prev) => prev.filter((item) => item.id !== id));
     setEditingIndex(null);
   };
 
   const addQuestion = () => {
-    // Manually-added questions default to voice — user can't pick the type
-    // here yet. (Future: add a long-press or context menu to switch.)
+    // A new question is voice until the creator taps its chip to make it photo or video.
     const newItem: QuestionItem = { id: makeId(), text: "", type: "voice" };
     setItems((prev) => [...prev, newItem]);
     setTimeout(() => setEditingIndex(items.length), 50);
@@ -438,6 +486,7 @@ export default function ReviewQuestionsScreen({
                 isEditing={editingIndex === i}
                 onTap={() => setEditingIndex(editingIndex === i ? null : i)}
                 onChange={(value) => updateQuestion(item.id, value)}
+                onTypeChange={(type) => updateType(item.id, type)}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
                 onSwap={onSwap && !adjusting ? () => void swap(i) : undefined}

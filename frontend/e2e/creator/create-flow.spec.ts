@@ -304,6 +304,15 @@ for (const deviceName of DEVICES) {
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
     await expect(page.getByTestId("review-adjust-shorter")).toHaveAttribute("data-busy", "false");
 
+    // ── The type chip is a picker: tap it, pick Video, the chip says Video ──
+    await page.locator('[data-testid="review-type"][data-type="voice"]').first().click();
+    await page.locator('[data-testid="review-type-option"][data-type="video"]').click();
+    await expect(page.getByTestId("review-type-options")).toHaveCount(0);
+    await expect(page.locator('[data-testid="review-type"][data-type="video"]')).toHaveCount(2);
+    await page.locator('[data-testid="review-type"][data-type="video"]').first().click();
+    await page.locator('[data-testid="review-type-option"][data-type="voice"]').click();
+    await expect(page.locator('[data-testid="review-type"][data-type="video"]')).toHaveCount(1);
+
     // ── Swap question 2 in place ──
     await page.getByTestId("review-swap").nth(1).click();
     await page.getByText(SWAPPED.text).waitFor({ timeout: 10_000 });
