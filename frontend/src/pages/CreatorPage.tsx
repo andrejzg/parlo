@@ -296,10 +296,10 @@ export default function CreatorPage() {
         trackEvent("clarify_question_shown", { index: q.index });
         goForward("clarify");
       } catch (err) {
+        // Stay where the creator is (review or the checkpoint). The old fallback went to the
+        // build and threw the draft away, which is never what a tap on "Sharpen it" means.
         captureException(err, { location: "CreatorPage.fetchNextQuestion" });
-        toast("Couldn't think of a follow-up — building your agent with what I have.");
-        forceReleaseSharedStream();
-        goForward("building");
+        toast.error("Couldn't think of a follow-up just now. Try again?");
       } finally {
         setNextLoading(false);
       }

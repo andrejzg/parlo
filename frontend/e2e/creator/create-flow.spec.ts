@@ -342,6 +342,14 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/06-review-swapped.png`, fullPage: true });
 
     reviseBodies.length = 0;
+    // ── A failed follow-up call never leaves the review screen (it used to bounce to the build) ──
+    await page.route("**/api/surveys/*/clarify", (route: Route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Internal Server Error" }) }), { times: 1 });
+    await page.getByTestId("review-sharpen").click();
+    await page.getByText("Couldn't think of a follow-up just now").waitFor({ timeout: 10_000 });
+    await expect(page.getByText("Review your questions")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
+    await expect(page.getByTestId("review-sharpen")).toHaveText(/Sharpen it/);
+
     // ── "Sharpen it": follow-ups from the composed brief → checkpoint → the draft edited in place ──
     await page.getByTestId("review-sharpen").click();
     await expect(question(page)).toHaveText(FOLLOW_UPS[0].question, { timeout: 10_000 });

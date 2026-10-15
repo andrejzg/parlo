@@ -189,22 +189,50 @@ export async function runCerebras(
   messages: ChatMessage[],
   opts: { maxTokens?: number } = {}
 ): Promise<string> {
-  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: CEREBRAS_MODEL,
-      messages,
-      response_format: { type: "json_object" },
-      reasoning_effort: "low",
-      ...(opts.maxTokens && { max_tokens: opts.maxTokens }),
-    }),
-  });
+  const call = () =>
+    fetch("https://api.cerebras.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: CEREBRAS_MODEL,
+        messages,
+        response_format: { type: "json_object" },
+        reasoning_effort: "low",
+        ...(opts.maxTokens && { max_tokens: opts.maxTokens }),
+      }),
+    });
+  let res = await call();
+  if (res.status === 429) {
+    // Cerebras sheds load with a 429 "queue_exceeded" under traffic; one short retry
+    // usually gets through and keeps the fast model (seen 2026-10-15).
+    await new Promise((r) => setTimeout(r, 700));
+    res = await call();
+  }
   if (!res.ok) {
     throw new Error(`Cerebras ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   return data.choices?.[0]?.message?.content ?? "";
+}
+
+/**
+ * The text of a Workers AI chat result, whatever shape it came in. The
+ * Llama models answer `{response: string}` most of the time, but the
+ * fp8-fast variant has returned `response` as an already-parsed object
+ * and an OpenAI-style `{choices: [{message: {content}}]}`; a bare string
+ * and `{text}` have been seen too. `.trim()` on the raw field took the
+ * whole fallback down on 2026-10-15, which turned a Cerebras 429 into a
+ * 500 for the creator.
+ */
+export function textFromWorkersAi(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (!result || typeof result !== "object") return "";
+  const r = result as { response?: unknown; text?: unknown; choices?: { message?: { content?: unknown } }[] };
+  const fromChoices = r.choices?.[0]?.message?.content;
+  const candidate = r.response ?? r.text ?? fromChoices;
+  if (typeof candidate === "string") return candidate;
+  if (candidate && typeof candidate === "object") return JSON.stringify(candidate);
+  return "";
 }
 
 /**
@@ -231,10 +259,7 @@ export async function runJsonCompletion<T>(
   providers.push({
     provider: "cloudflare-workers-ai",
     model: WORKERS_AI_MODEL,
-    run: async () => {
-      const result = await ai.run(WORKERS_AI_MODEL, { messages });
-      return result.response ?? result.text ?? "";
-    },
+    run: async () => textFromWorkersAi(await ai.run(WORKERS_AI_MODEL, { messages })),
   });
 
   let lastError: unknown;
