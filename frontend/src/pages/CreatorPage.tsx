@@ -5,10 +5,12 @@ import CreateLanding from "@/components/creator/CreateLanding";
 import ConsentScreen from "@/components/ConsentScreen";
 import CreationQuestionScreen from "@/components/creator/CreationQuestionScreen";
 import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
-import CreateModeSheet, { type BriefMode } from "@/components/creator/CreateModeSheet";
+import ShapeScreen from "@/components/creator/ShapeScreen";
+import TopicScreen, { type TopicResult } from "@/components/creator/TopicScreen";
+import OutputsScreen from "@/components/creator/OutputsScreen";
 import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
-import ReviewQuestionsScreen from "@/components/creator/ReviewQuestionsScreen";
+import ReviewQuestionsScreen, { type ReviewQuestion } from "@/components/creator/ReviewQuestionsScreen";
 import IntroScreen, { type IntroResult } from "@/components/creator/IntroScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
 import PhoneScreen from "@/components/participant/PhoneScreen";
@@ -24,7 +26,7 @@ import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, adjustQuestions, reviseQuestions, type AdjustKind, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -41,16 +43,21 @@ import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
 import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
+import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, type AudienceId, type LengthId, type ShapeId } from "@/lib/shapes";
+import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
- * Creation flow:
- *   welcome → brief (one screen, 5-item checklist ticks live via TypeSafe Jev)
- *           → clarify ×N (one Cerebras follow-up per screen)
- *           → checkpoint after answer 2, 5, 10, 15… ("Create agent" / "Ask me more")
- *           → building → review → intro (voice hello, skippable)
- *           → phone/otp → linkedin → ready
+ * Creation flow (output-first, 2026-10-14):
+ *   welcome → shape ("What do you want back?", eight cards)
+ *           → topic (the sentence the card started, one blank; who + length chips)
+ *           → outputs ("What should the agent make?", eight cards, multi-select)
+ *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
+ *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
+ *           → intro (voice hello, skippable) → phone/otp → linkedin → ready
+ *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
+ *   and then builds straight away; follow-ups are the same review-screen option.
  */
-type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -66,10 +73,23 @@ export default function CreatorPage() {
   // Agent brief flow state
   const [brief, setBrief] = useState("");
   const [briefMode, setBriefMode] = useState<"voice" | "text">("voice");
+
+  // Output-first flow state: the shape of what comes back, who the group is,
+  // how long it should take, and the one blank the creator filled.
+  const [shape, setShape] = useState<ShapeId | null>(null);
+  const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
+  const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
+  const [topic, setTopic] = useState("");
+  const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
   const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
   const [nextLoading, setNextLoading] = useState(false);
+  // "Update with feedback": the review screen shows the old draft dimmed while the revision lands.
+  const [revising, setRevising] = useState(false);
+  const [revisionKey, setRevisionKey] = useState(0);
+  // What the clarifications were when "Sharpen it" was tapped, so the checkpoint's back arrow can drop this session's answers.
+  const clarificationsBeforeSharpen = useRef<Clarification[] | null>(null);
 
   // Error state for building screen
   const [buildError, setBuildError] = useState(false);
@@ -83,9 +103,8 @@ export default function CreatorPage() {
   // Sidebar
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // "+" → voice or type? The survey is only created once a mode is picked.
-  const [createSheetOpen, setCreateSheetOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
+  // "+" creates the parlo and opens the shape cards; one at a time.
+  const creatingRef = useRef(false);
 
   // Home screen state
   const [mySurveys, setMySurveys] = useState<MySurvey[]>([]);
@@ -180,9 +199,19 @@ export default function CreatorPage() {
     setScreenKey((k) => k + 1);
   };
 
-  /** Create a survey and open the brief — in `mode` if given, else whatever the creator used last. */
-  const handleStart = async (mode?: BriefMode) => {
-    trackEvent("survey_creation_started", { mode: mode ?? preferredMode });
+  // The share link is on screen: the creation loop closed (GROWTH.md S8).
+  const shareReachedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (stage !== "ready" || !surveyId || shareReachedFor.current === surveyId) return;
+    shareReachedFor.current = surveyId;
+    trackEvent("create_share_reached", { surveyId, shape });
+  }, [stage, surveyId, shape]);
+
+  /** Create a parlo and open the shape cards ("What do you want back?"). */
+  const handleStart = async () => {
+    if (creatingRef.current) return false;
+    creatingRef.current = true;
+    trackEvent("survey_creation_started", { mode: preferredMode });
     trackEvent("consent_accepted", { role: "creator" });
 
     try {
@@ -192,25 +221,51 @@ export default function CreatorPage() {
       setDashboardCode(result.dashboardCode);
       setUploadUrls(result.uploadUrls);
       resetBriefFlow();
-      if (mode) setPreferredMode(mode);
-
-      goForward("brief");
+      goForward("shape");
       return true;
     } catch (err) {
       captureException(err, { location: "CreatorPage.handleStart" });
       toast.error("Something went wrong. Please try again.");
       return false;
+    } finally {
+      creatingRef.current = false;
     }
   };
 
-  const openCreateSheet = () => setCreateSheetOpen(true);
+  /** A shape card was tapped: "Something else" opens the free brief, anything else the one-blank sentence. */
+  const handleShapePick = (id: ShapeId) => {
+    trackEvent("create_shape_picked", { shape: id });
+    setShape(id);
+    if (id === "other") {
+      trackEvent("create_free_brief_opened", {});
+      goForward("brief");
+      return;
+    }
+    goForward("topic");
+  };
 
-  const handleChooseCreateMode = async (mode: BriefMode) => {
-    if (creating) return;
-    setCreating(true);
-    const ok = await handleStart(mode);
-    setCreating(false);
-    if (ok) setCreateSheetOpen(false);
+  /** The blank is filled: on to what the agent should make. */
+  const handleTopicContinue = (result: TopicResult) => {
+    setTopic(result.topic);
+    setAudience(result.audience);
+    setLength(result.length);
+    setPreferredMode(result.mode);
+    trackEvent("create_blank_filled", {
+      shape,
+      audience: result.audience,
+      length: result.length,
+      mode: result.mode,
+      chars: result.topic.length,
+    });
+    forceReleaseSharedStream();
+    goForward("outputs");
+  };
+
+  /** The outputs are picked (possibly none): build. */
+  const handleOutputsContinue = (picked: OutputId[]) => {
+    setOutputs(picked);
+    trackEvent("create_outputs_picked", { shape, audience, outputs: picked, count: picked.length });
+    goForward("building");
   };
 
   const resetBriefFlow = () => {
@@ -219,6 +274,11 @@ export default function CreatorPage() {
     setCurrentQuestion(null);
     setClarifyAnswerDraft(null);
     setNextLoading(false);
+    setShape(null);
+    setAudience(DEFAULT_AUDIENCE);
+    setLength(DEFAULT_LENGTH);
+    setTopic("");
+    setOutputs(DEFAULT_OUTPUTS);
   };
 
   /**
@@ -236,10 +296,10 @@ export default function CreatorPage() {
         trackEvent("clarify_question_shown", { index: q.index });
         goForward("clarify");
       } catch (err) {
+        // Stay where the creator is (review or the checkpoint). The old fallback went to the
+        // build and threw the draft away, which is never what a tap on "Sharpen it" means.
         captureException(err, { location: "CreatorPage.fetchNextQuestion" });
-        toast("Couldn't think of a follow-up — building your agent with what I have.");
-        forceReleaseSharedStream();
-        goForward("building");
+        toast.error("Couldn't think of a follow-up just now. Try again?");
       } finally {
         setNextLoading(false);
       }
@@ -248,7 +308,7 @@ export default function CreatorPage() {
     [surveyId],
   );
 
-  /** Step 1 done: the brief is in. Keep the recording, ask the first follow-up. */
+  /** The free brief is in. Keep the recording and build straight away; follow-ups are a review-screen option. */
   const handleBriefContinue = async (result: BriefResult) => {
     const text = result.transcript.trim();
     if (!text) {
@@ -279,7 +339,9 @@ export default function CreatorPage() {
       pendingUploads.current.push(uploadPromise);
     }
 
-    await fetchNextQuestion(text, []);
+    setShape("other");
+    forceReleaseSharedStream();
+    goForward("building");
   };
 
   /** A follow-up was answered. Checkpoint, cap, or fetch the next one. */
@@ -316,8 +378,8 @@ export default function CreatorPage() {
   const handleClarifyBack = () => {
     setDirection(-1);
     if (clarifications.length === 0) {
-      setBriefMode("text");
-      setStage("brief");
+      // "Sharpen it" was tapped on the review screen; that's where back goes.
+      setStage("review");
       setScreenKey((k) => k + 1);
       return;
     }
@@ -329,10 +391,37 @@ export default function CreatorPage() {
     setScreenKey((k) => k + 1);
   };
 
-  const handleCheckpointCreate = () => {
-    trackEvent("clarify_checkpoint", { choice: "create", answered: clarifications.length });
+  /** "Update with feedback": back to review at once, the draft dimmed, then edited with the answers. */
+  const handleCheckpointCreate = async () => {
+    if (!surveyId || revising) return;
+    trackEvent("clarify_checkpoint", { choice: "update", answered: clarifications.length });
     forceReleaseSharedStream();
-    goForward("building");
+    clarificationsBeforeSharpen.current = null;
+    setRevising(true);
+    goForward("review");
+    try {
+      const { questions } = await reviseQuestions(surveyId, generatedQuestions, clarifications);
+      setGeneratedQuestions(questions);
+      setRevisionKey((k) => k + 1);
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.reviseQuestions" });
+      toast.error("Couldn't fold that in just now. Your questions are as they were.");
+    } finally {
+      setRevising(false);
+    }
+  };
+
+  /** The checkpoint's back arrow: review as it was, this sharpen session's answers dropped. */
+  const handleCheckpointBack = () => {
+    trackEvent("clarify_checkpoint", { choice: "back", answered: clarifications.length });
+    forceReleaseSharedStream();
+    if (clarificationsBeforeSharpen.current) setClarifications(clarificationsBeforeSharpen.current);
+    clarificationsBeforeSharpen.current = null;
+    setCurrentQuestion(null);
+    setClarifyAnswerDraft(null);
+    setDirection(-1);
+    setStage("review");
+    setScreenKey((k) => k + 1);
   };
 
   const handleCheckpointContinue = async () => {
@@ -345,7 +434,8 @@ export default function CreatorPage() {
       toast.error("Parlo not found. Please start over.");
       return undefined;
     }
-    if (!brief.trim()) {
+    const usesShape = !!shape && shape !== "other";
+    if (!usesShape && !brief.trim()) {
       toast.error("Your brief is empty. Please start over.");
       return undefined;
     }
@@ -360,16 +450,18 @@ export default function CreatorPage() {
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        brief,
+        ...(shape && shape !== "other" ? { shape, audience, length, topic, outputs } : { brief }),
         clarifications,
       });
+      // The backend composes the brief from the taps; keep it for follow-ups and the agent.
+      if (result.brief) setBrief(result.brief);
       return result;
     } catch (err) {
       captureException(err, { location: "CreatorPage.generateQuestions" });
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, brief, clarifications]);
+  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, topic, outputs]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -499,6 +591,47 @@ export default function CreatorPage() {
     goForward("building");
   };
 
+  /** Review-screen chips: the draft rewritten in place; the screen never leaves. */
+  const handleAdjust = async (kind: AdjustKind, current: ReviewQuestion[]): Promise<ReviewQuestion[] | null> => {
+    if (!surveyId) return null;
+    trackEvent("review_adjust", { kind, questionCount: current.length });
+    try {
+      const { questions } = await adjustQuestions(surveyId, kind, current);
+      setGeneratedQuestions(questions);
+      return questions;
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.handleAdjust" });
+      toast.error("Couldn't rewrite them just now. Try again?");
+      return null;
+    }
+  };
+
+  /** Review-screen "Sharpen it": the optional follow-up loop; the checkpoint then edits *this* draft. */
+  const handleSharpen = async (current: ReviewQuestion[]) => {
+    trackEvent("review_sharpen", { answered: clarifications.length });
+    setGeneratedQuestions(current);
+    clarificationsBeforeSharpen.current = clarifications;
+    await fetchNextQuestion(brief, clarifications);
+  };
+
+  /** Review-screen swap: one different question for that slot. */
+  const handleSwap = async (index: number, current: ReviewQuestion[]): Promise<ReviewQuestion | null> => {
+    if (!surveyId) return null;
+    try {
+      const { question } = await swapQuestion(
+        surveyId,
+        index,
+        current.map((q) => ({ text: q.text, type: q.type })),
+      );
+      trackEvent("review_swap", { index });
+      return question;
+    } catch (err) {
+      captureException(err, { location: "CreatorPage.handleSwap" });
+      toast.error("Couldn't think of another one. Try again?");
+      return null;
+    }
+  };
+
   const handleDashboard = () => {
     if (dashboardCode) {
       navigate(`/d/${dashboardCode}`);
@@ -588,6 +721,12 @@ export default function CreatorPage() {
       ? "welcome"
       : stage === "consent"
       ? "consent"
+      : stage === "shape"
+      ? "shape"
+      : stage === "topic"
+      ? "topic"
+      : stage === "outputs"
+      ? "outputs"
       : stage === "brief"
       ? `brief-${screenKey}`
       : stage === "checkpoint"
@@ -675,7 +814,7 @@ export default function CreatorPage() {
                 surveys={mySurveys}
                 phone={devicePhone || phone}
                 linkedInProfile={linkedInProfile}
-                onCreateNew={openCreateSheet}
+                onCreateNew={() => void handleStart()}
                 onOpenSettings={() => {
                   setStage("profile");
                   setScreenKey((k) => k + 1);
@@ -698,7 +837,7 @@ export default function CreatorPage() {
                     setDashboardCode(survey.dashboardCode);
                     setUploadUrls(null);
                     resetBriefFlow();
-                    goForward("brief");
+                    goForward("shape");
                   }
                 }}
               />
@@ -723,7 +862,7 @@ export default function CreatorPage() {
                   setStage("home");
                   setScreenKey((k) => k + 1);
                 }}
-                onCreateNew={openCreateSheet}
+                onCreateNew={() => void handleStart()}
                 onInbox={() => {
                   setStage("inbox");
                   setScreenKey((k) => k + 1);
@@ -738,7 +877,7 @@ export default function CreatorPage() {
                   setStage("home");
                   setScreenKey((k) => k + 1);
                 }}
-                onCreateNew={openCreateSheet}
+                onCreateNew={() => void handleStart()}
                 onProfile={() => {
                   setStage("profile");
                   setScreenKey((k) => k + 1);
@@ -752,17 +891,52 @@ export default function CreatorPage() {
             {stage === "welcome" && (
               <CreateLanding onCreateAgent={() => void handleStart()} />
             )}
+            {stage === "shape" && (
+              <ShapeScreen
+                onPick={handleShapePick}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage(apiKey ? "home" : "welcome");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
+            {stage === "topic" && surveyId && shape && shape !== "other" && (
+              <TopicScreen
+                shape={shapeById(shape)}
+                initialTopic={topic}
+                initialAudience={audience}
+                initialLength={length}
+                onContinue={handleTopicContinue}
+                onBack={() => {
+                  setDirection(-1);
+                  forceReleaseSharedStream();
+                  setStage("shape");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
+            {stage === "outputs" && surveyId && shape && shape !== "other" && (
+              <OutputsScreen
+                initialOutputs={outputs}
+                onContinue={handleOutputsContinue}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage("topic");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
             {stage === "brief" && surveyId && (
               <BriefScreen
                 surveyId={surveyId}
                 initialMode={brief ? briefMode : preferredMode}
-                initialTranscript={brief}
-                busy={nextLoading}
+                initialTranscript={shape === "other" ? brief : ""}
                 onContinue={handleBriefContinue}
                 onBack={() => {
                   setDirection(-1);
                   forceReleaseSharedStream();
-                  setStage(apiKey ? "home" : "welcome");
+                  setStage("shape");
                   setScreenKey((k) => k + 1);
                 }}
               />
@@ -792,8 +966,9 @@ export default function CreatorPage() {
                 answeredCount={clarifications.length}
                 canContinue={clarifications.length < MAX_CLARIFICATIONS}
                 busy={nextLoading}
-                onCreate={handleCheckpointCreate}
+                onCreate={() => void handleCheckpointCreate()}
                 onContinue={handleCheckpointContinue}
+                onBack={handleCheckpointBack}
               />
             )}
             {stage === "building" && (
@@ -830,6 +1005,13 @@ export default function CreatorPage() {
                 questions={generatedQuestions}
                 onConfirm={handleReviewConfirm}
                 onRegenerate={handleRegenerate}
+                onAdjust={handleAdjust}
+                onSharpen={(current) => void handleSharpen(current)}
+                onSwap={handleSwap}
+                revising={revising}
+                revisionKey={revisionKey}
+                reportPreview={shape && shape !== "other" ? shapeById(shape).report : null}
+                busy={nextLoading}
               />
             )}
             {stage === "intro" && (
@@ -997,12 +1179,6 @@ export default function CreatorPage() {
             )}
           </motion.div>
         </AnimatePresence>
-        <CreateModeSheet
-          open={createSheetOpen}
-          busy={creating}
-          onClose={() => setCreateSheetOpen(false)}
-          onChoose={handleChooseCreateMode}
-        />
       </div>
       <div id="recaptcha-container" style={{ position: "fixed", bottom: 0, right: 0, opacity: 0, pointerEvents: "none" }} />
     </div>
