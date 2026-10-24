@@ -7,7 +7,7 @@ const BASE_URL = "http://localhost:5173";
 const OUT_ROOT = process.env.PARLO_SHOTS_DIR ?? "/tmp";
 
 /**
- * Creator flow, output-first: shape cards → the one-blank sentence → the outputs cards → building
+ * Creator flow, output-first: shape cards (six + More) → the one-blank sentence → the outputs cards → building
  * → review (swap / shorter / sharpen) → intro. Plus the "Something else"
  * escape hatch into the free brief on one device.
  *
@@ -228,16 +228,18 @@ for (const deviceName of DEVICES) {
     await page.getByRole("button", { name: /create a parlo/i }).click();
 
     // ── Shape cards ──
-    await page.getByText("What do you want back?").waitFor({ timeout: 10_000 });
-    await expect(page.getByTestId("shape-card")).toHaveCount(8);
+    await page.getByText("What do you want to find out?").waitFor({ timeout: 10_000 });
+    await expect(page.getByTestId("shape-card")).toHaveCount(6);
+    await expect(page.getByTestId("shape-more")).toBeVisible();
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/02-shapes.png`, fullPage: true });
-    await page.locator('[data-testid="shape-card"][data-shape="temperature"]').click();
+    await page.locator('[data-testid="shape-card"][data-shape="feedback"]').click();
 
     // ── The sentence with one blank ──
     const ta = page.getByTestId("topic-textarea");
     await ta.waitFor({ timeout: 10_000 });
-    await expect(page.getByTestId("topic-sentence")).toContainText("Take the temperature of the group on");
+    // The card pre-picks its audience: feedback goes to your network.
+    await expect(page.getByTestId("topic-sentence")).toContainText("Get honest feedback from my network on");
     await expect(page.getByTestId("topic-continue")).toBeDisabled();
 
     // The who chip swaps the phrase in the sentence; tapping it again puts "the group" back.
@@ -279,14 +281,14 @@ for (const deviceName of DEVICES) {
 
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
-    expect(generateBodies[0]).toMatchObject({ shape: "temperature", audience: "team", length: "deep", topic: "the new offsite plan" });
+    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep", topic: "the new offsite plan" });
     // Canonical order, whatever order they were tapped in; the toggled-off TikTok is gone.
     expect(generateBodies[0].outputs).toEqual(["sheet", "instagram", "podcast"]);
     expect(generateBodies[0].brief).toBeUndefined();
     await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Video", { exact: true }).first().waitFor({ timeout: 5000 });
-    await expect(page.getByTestId("review-report-preview")).toContainText("Where the group stands");
+    await expect(page.getByTestId("review-report-preview")).toContainText("What works and what to fix");
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/05-review.png`, fullPage: true });
 
@@ -410,7 +412,7 @@ for (const deviceName of DEVICES) {
   });
 }
 
-test("the \"Something else\" card opens the free brief and builds from it (iPhone SE)", async () => {
+test("More → \"Something else\" opens the free brief and builds from it (iPhone SE)", async () => {
   test.setTimeout(90_000);
   const OUT = path.join(OUT_ROOT, "parlo-creator-iphone-se");
   fs.mkdirSync(OUT, { recursive: true });
@@ -419,7 +421,15 @@ test("the \"Something else\" card opens the free brief and builds from it (iPhon
   const { browser, context, page } = await openCreator("iPhone SE", generateBodies, clarifyBriefs);
 
   await page.getByRole("button", { name: /create a parlo/i }).click();
-  await page.getByText("What do you want back?").waitFor({ timeout: 10_000 });
+  await page.getByText("What do you want to find out?").waitFor({ timeout: 10_000 });
+  // "Something else" waits behind More, with the team and references cards; back returns to the deck.
+  await page.getByTestId("shape-more").click();
+  await expect(page.getByTestId("shape-card")).toHaveCount(3);
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/08-more.png`, fullPage: true });
+  await page.getByTestId("shape-back").click();
+  await expect(page.getByTestId("shape-card")).toHaveCount(6);
+  await page.getByTestId("shape-more").click();
   await page.locator('[data-testid="shape-card"][data-shape="other"]').click();
 
   // Free brief opens in voice mode (mocked mic); type instead.

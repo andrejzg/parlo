@@ -48,7 +48,7 @@ import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
  * Creation flow (output-first, 2026-10-14):
- *   welcome → shape ("What do you want back?", eight cards)
+ *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
  *           → topic (the sentence the card started, one blank; who + length chips)
  *           → outputs ("What should the agent make?", eight cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
@@ -232,10 +232,13 @@ export default function CreatorPage() {
     }
   };
 
-  /** A shape card was tapped: "Something else" opens the free brief, anything else the one-blank sentence. */
+  /** A shape card was tapped: "Something else" opens the free brief, anything else the one-blank sentence with the shape's audience and outputs pre-picked. */
   const handleShapePick = (id: ShapeId) => {
-    trackEvent("create_shape_picked", { shape: id });
+    const picked = shapeById(id);
+    trackEvent("create_shape_picked", { shape: id, from: picked.more ? "more" : "deck" });
     setShape(id);
+    setAudience(picked.audience);
+    setOutputs(picked.outputs);
     if (id === "other") {
       trackEvent("create_free_brief_opened", {});
       goForward("brief");
@@ -894,6 +897,7 @@ export default function CreatorPage() {
             {stage === "shape" && (
               <ShapeScreen
                 onPick={handleShapePick}
+                onMore={() => trackEvent("create_more_opened", {})}
                 onBack={() => {
                   setDirection(-1);
                   setStage(apiKey ? "home" : "welcome");
