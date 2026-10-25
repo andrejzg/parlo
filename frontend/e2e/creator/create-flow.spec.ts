@@ -231,6 +231,9 @@ for (const deviceName of DEVICES) {
     await page.getByText("What do you want to find out?").waitFor({ timeout: 10_000 });
     await expect(page.getByTestId("shape-card")).toHaveCount(6);
     await expect(page.getByTestId("shape-more")).toBeVisible();
+    // 2026-10-25: Regular check-in replaced Validate an idea (now retired on the backend only).
+    await expect(page.locator('[data-testid="shape-card"][data-shape="checkin"]')).toContainText("Regular check-in");
+    await expect(page.locator('[data-testid="shape-card"][data-shape="validate"]')).toHaveCount(0);
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/02-shapes.png`, fullPage: true });
     await page.locator('[data-testid="shape-card"][data-shape="feedback"]').click();

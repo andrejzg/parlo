@@ -19,6 +19,7 @@ export type ShapeId =
   | "validate"
   | "customers"
   | "feedback"
+  | "checkin"
   | "team"
   | "references"
   | "decide"
@@ -68,11 +69,11 @@ export const SHAPES: ShapeSpec[] = [
       "The answers become a post celebrating the milestone. Ask for a memory or moment along the way, what it meant to them, and one line for the post. Warm and specific.",
   },
   {
-    id: "validate",
-    sentence: "Validate an idea with {who}:",
-    report: "Whether people want it, what they'd pay, and what would stop them.",
+    id: "checkin",
+    sentence: "Run a regular check-in with {who} on",
+    report: "Who's on track, what's blocked, and what needs you. Same shape every round, so weeks compare.",
     questions:
-      "Test the idea without pitching it: how they handle the problem today, what it costs them, how they react to the idea, and what they would pay. No leading questions; past behaviour beats predictions.",
+      "A recurring check-in, a standup by voice. Keep it short and the same shape every round so answers compare week to week: what moved since last time, what is blocked, what they need from the creator. Answerable in a minute; no retrospectives.",
   },
   {
     id: "customers",
@@ -102,6 +103,14 @@ export const SHAPES: ShapeSpec[] = [
     report: "Where the references agree, where they differ, and any flags.",
     questions:
       "The people answering worked with a candidate. Ask how they worked together, the candidate's strengths, where they needed support, and whether they would work with them again. Neutral, never leading.",
+  },
+  {
+    id: "validate",
+    sentence: "Validate an idea with {who}:",
+    report: "Whether people want it, what they'd pay, and what would stop them.",
+    questions:
+      "Test the idea without pitching it: how they handle the problem today, what it costs them, how they react to the idea, and what they would pay. No leading questions; past behaviour beats predictions.",
+    retired: true,
   },
   {
     retired: true,

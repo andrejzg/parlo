@@ -9,7 +9,7 @@
  * Ids MUST match `backend/src/services/shapes.ts`, which composes the brief
  * the model builds the questions from and tells the agent what the report
  * should look like. The backend also keeps the retired ids (decide, rank…)
- * so parlos made before 2026-10-24 keep their report shape.
+ * so parlos made before 2026-10-24 keep their report shape; "validate" joined them on 2026-10-25.
  */
 import type { OutputId } from "./outputs";
 
@@ -17,9 +17,9 @@ export type ShapeId =
   | "post"
   | "testimonials"
   | "milestone"
-  | "validate"
   | "customers"
   | "feedback"
+  | "checkin"
   | "team"
   | "references"
   | "other";
@@ -78,13 +78,13 @@ export const SHAPES: Shape[] = [
     outputs: ["sheet", "linkedin"],
   },
   {
-    id: "validate",
-    label: "Validate an idea",
-    card: "whether PMs would pay for it",
-    example: "would PMs pay for an AI spec writer?",
-    sentence: "Validate an idea with {who}:",
-    report: "Whether people want it, what they'd pay, and what would stop them.",
-    audience: "strangers",
+    id: "feedback",
+    label: "Get feedback",
+    card: "on my pitch deck",
+    example: "my pitch deck",
+    sentence: "Get honest feedback from {who} on",
+    report: "What works and what to fix, in order of how often it came up.",
+    audience: "network",
     outputs: ["sheet"],
   },
   {
@@ -98,13 +98,13 @@ export const SHAPES: Shape[] = [
     outputs: ["sheet"],
   },
   {
-    id: "feedback",
-    label: "Get feedback",
-    card: "on my pitch deck",
-    example: "my pitch deck",
-    sentence: "Get honest feedback from {who} on",
-    report: "What works and what to fix, in order of how often it came up.",
-    audience: "network",
+    id: "checkin",
+    label: "Regular check-in",
+    card: "run a weekly standup",
+    example: "how the week went",
+    sentence: "Run a regular check-in with {who} on",
+    report: "Who's on track, what's blocked, and what needs you. Same shape every round, so weeks compare.",
+    audience: "team",
     outputs: ["sheet"],
   },
   {
