@@ -32,9 +32,7 @@ export interface Shape {
   label: string;
   /** The line under the verb on the card; reads on from the label. */
   card: string;
-  /** The blank's placeholder on the next screen. */
-  example: string;
-  /** The sentence the card starts. `{who}` is the audience; the blank follows the sentence. No `{who}` = the audience is fixed and the chips are hidden. */
+  /** The sentence the card starts, shown as the heading of the next screen. `{who}` is the audience chip; no `{who}` = the audience is fixed and the chips are hidden. The blank it used to end in went on 2026-10-25: the screen is taps only. */
   sentence: string;
   /** What the agent hands back. Shown on review; the agent commits to it. */
   report: string;
@@ -51,8 +49,7 @@ export const SHAPES: Shape[] = [
     id: "post",
     label: "Crowdsource a post",
     card: "on how founders hire engineer #1",
-    example: "how founders hire engineer #1",
-    sentence: "Crowdsource a post from {who} on",
+    sentence: "Crowdsource a post from {who}",
     report: "A LinkedIn post built from everyone's best lines, ready to copy, then the themes behind it.",
     audience: "network",
     outputs: ["sheet", "linkedin"],
@@ -61,8 +58,7 @@ export const SHAPES: Shape[] = [
     id: "testimonials",
     label: "Collect testimonials",
     card: "from clients, for your launch post",
-    example: "our launch post",
-    sentence: "Collect testimonials from {who} for",
+    sentence: "Collect testimonials from {who}",
     report: "The strongest quotes, ready for a post or your site, with who said them.",
     audience: "customers",
     outputs: ["sheet", "linkedin"],
@@ -71,8 +67,7 @@ export const SHAPES: Shape[] = [
     id: "milestone",
     label: "Celebrate a milestone",
     card: "our first 100 customers, in their words",
-    example: "our first 100 customers",
-    sentence: "Celebrate a milestone with {who}:",
+    sentence: "Celebrate a milestone with {who}",
     report: "A post celebrating it in their words, with the lines that stuck.",
     audience: "customers",
     outputs: ["sheet", "linkedin"],
@@ -81,8 +76,7 @@ export const SHAPES: Shape[] = [
     id: "feedback",
     label: "Get feedback",
     card: "on my pitch deck",
-    example: "my pitch deck",
-    sentence: "Get honest feedback from {who} on",
+    sentence: "Get honest feedback from {who}",
     report: "What works and what to fix, in order of how often it came up.",
     audience: "network",
     outputs: ["sheet"],
@@ -91,8 +85,7 @@ export const SHAPES: Shape[] = [
     id: "customers",
     label: "Interview customers",
     card: "about why they picked you",
-    example: "why they picked us",
-    sentence: "Interview {who} about",
+    sentence: "Interview {who}",
     report: "Why they chose you, in their words, with the patterns across everyone.",
     audience: "customers",
     outputs: ["sheet"],
@@ -101,8 +94,7 @@ export const SHAPES: Shape[] = [
     id: "checkin",
     label: "Regular check-in",
     card: "run a weekly standup",
-    example: "how the week went",
-    sentence: "Run a regular check-in with {who} on",
+    sentence: "Run a regular check-in with {who}",
     report: "Who's on track, what's blocked, and what needs you. Same shape every round, so weeks compare.",
     audience: "team",
     outputs: ["sheet"],
@@ -111,7 +103,6 @@ export const SHAPES: Shape[] = [
     id: "team",
     label: "Ask my team",
     card: "what's slowing us down",
-    example: "what's slowing us down",
     sentence: "Ask {who}",
     report: "What the team said, grouped, with what to fix first.",
     audience: "team",
@@ -122,8 +113,7 @@ export const SHAPES: Shape[] = [
     id: "references",
     label: "Check references",
     card: "for my next VP Sales",
-    example: "Sam, our next VP Sales",
-    sentence: "Check references for",
+    sentence: "Check references",
     report: "Where the references agree, where they differ, and any flags.",
     audience: "group",
     outputs: ["sheet"],
@@ -133,7 +123,6 @@ export const SHAPES: Shape[] = [
     id: "other",
     label: "Something else",
     card: "describe it in your own words",
-    example: "describe it in your own words",
     sentence: "",
     report: "A report on what they said.",
     audience: "group",

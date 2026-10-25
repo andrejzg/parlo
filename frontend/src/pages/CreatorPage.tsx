@@ -49,7 +49,7 @@ import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 /**
  * Creation flow (output-first, 2026-10-14):
  *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
- *           → topic (the sentence the card started, one blank; who + length chips)
+ *           → topic (the sentence the card started; who + length chips, taps only since 2026-10-25)
  *           → outputs ("Outputs?", eight cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
  *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
@@ -79,7 +79,6 @@ export default function CreatorPage() {
   const [shape, setShape] = useState<ShapeId | null>(null);
   const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
   const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
-  const [topic, setTopic] = useState("");
   const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
@@ -249,18 +248,9 @@ export default function CreatorPage() {
 
   /** The blank is filled: on to what the agent should make. */
   const handleTopicContinue = (result: TopicResult) => {
-    setTopic(result.topic);
     setAudience(result.audience);
     setLength(result.length);
-    setPreferredMode(result.mode);
-    trackEvent("create_blank_filled", {
-      shape,
-      audience: result.audience,
-      length: result.length,
-      mode: result.mode,
-      chars: result.topic.length,
-    });
-    forceReleaseSharedStream();
+    trackEvent("create_audience_picked", { shape, audience: result.audience, length: result.length });
     goForward("outputs");
   };
 
@@ -280,7 +270,6 @@ export default function CreatorPage() {
     setShape(null);
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
-    setTopic("");
     setOutputs(DEFAULT_OUTPUTS);
   };
 
@@ -453,7 +442,7 @@ export default function CreatorPage() {
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        ...(shape && shape !== "other" ? { shape, audience, length, topic, outputs } : { brief }),
+        ...(shape && shape !== "other" ? { shape, audience, length, outputs } : { brief }),
         clarifications,
       });
       // The backend composes the brief from the taps; keep it for follow-ups and the agent.
@@ -464,7 +453,7 @@ export default function CreatorPage() {
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, topic, outputs]);
+  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, outputs]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -908,7 +897,6 @@ export default function CreatorPage() {
             {stage === "topic" && surveyId && shape && shape !== "other" && (
               <TopicScreen
                 shape={shapeById(shape)}
-                initialTopic={topic}
                 initialAudience={audience}
                 initialLength={length}
                 onContinue={handleTopicContinue}

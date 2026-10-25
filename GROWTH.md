@@ -105,6 +105,8 @@ Newest first. Each entry: context, what was discussed, where we lean, what it fo
 
 **Also today, the deck.** Andrej dropped Validate an idea and added **Regular check-in** ("run a weekly standup") in the last slot; Get feedback moved up. First recurring shape on the deck: the agent runs the same short round every week, so the report compares weeks instead of summarising one. It is the shape that most naturally produces round 2, 3, 4 without the owner proposing anything (the loop in "North star"), which is why it earns a front-screen slot over idea validation, which is a one-off. `validate` stays accepted on the backend for old parlos.
 
+**And the blank.** Andrej then removed the typed blank from the sentence screen ("keep this screen clicky"): the sentence now ends at the audience chip ("Crowdsource a post from [my network]"), Continue is live at once, and the specifics come from the review screen and "Sharpen it". That makes the whole path to the share link taps only, which was the 2026-10-12 target; the cost is that the first draft of questions is generic to the shape and audience, so watch `review_swap`, `review_sharpen` and edit counts against the pre-change baseline: if people now fidget more on review than they typed before, the blank was cheaper than it looked. `topic` stays an optional field on `/generate` for the API.
+
 **Open.** What "the drawing board" is: Andrej has not said what the new direction is. S8/S10 keep running on the founder deck as live; the 2026-10-28 review stands.
 
 ### 2026-10-24 · Shipped the founder deck

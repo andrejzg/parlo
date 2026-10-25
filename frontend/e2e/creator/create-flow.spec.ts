@@ -7,11 +7,11 @@ const BASE_URL = "http://localhost:5173";
 const OUT_ROOT = process.env.PARLO_SHOTS_DIR ?? "/tmp";
 
 /**
- * Creator flow, output-first: shape cards (six + More) → the one-blank sentence → the outputs cards → building
+ * Creator flow, output-first: shape cards (six + More) → the sentence + who/length chips (taps only) → the outputs cards → building
  * → review (swap / shorter / sharpen) → intro. Plus the "Something else"
  * escape hatch into the free brief on one device.
  *
- * Playwright's Chromium has no speech engine, so the blank is typed and the
+ * Playwright's Chromium has no speech engine, so the
  * follow-ups are answered in text mode. The backend is stubbed: /generate
  * returns a voice/photo/video mix (and the composed brief), /questions/swap a
  * canned replacement, /clarify canned follow-ups, /brief/evaluate ticks
@@ -191,6 +191,9 @@ async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarif
 const question = (page: Page) => page.getByTestId("creation-question").last();
 
 async function answerFollowUp(page: Page, text: string) {
+  // Follow-ups open in voice mode (nothing before them is typed any more); take the escape hatch.
+  const typeInstead = page.getByRole("button", { name: /type instead/i }).last();
+  if (await typeInstead.isVisible({ timeout: 3000 }).catch(() => false)) await typeInstead.click();
   const ta = page.getByTestId("creation-textarea").last();
   await ta.waitFor({ timeout: 10_000 });
   await ta.fill(text);
@@ -238,12 +241,12 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/02-shapes.png`, fullPage: true });
     await page.locator('[data-testid="shape-card"][data-shape="feedback"]').click();
 
-    // ── The sentence with one blank ──
-    const ta = page.getByTestId("topic-textarea");
-    await ta.waitFor({ timeout: 10_000 });
+    // ── The sentence, taps only (the blank went on 2026-10-25): Continue is live at once ──
+    await page.getByTestId("topic-sentence").waitFor({ timeout: 10_000 });
+    await expect(page.getByTestId("topic-textarea")).toHaveCount(0);
     // The card pre-picks its audience: feedback goes to your network.
-    await expect(page.getByTestId("topic-sentence")).toContainText("Get honest feedback from my network on");
-    await expect(page.getByTestId("topic-continue")).toBeDisabled();
+    await expect(page.getByTestId("topic-sentence")).toHaveText("Get honest feedback from my network");
+    await expect(page.getByTestId("topic-continue")).toBeEnabled();
 
     // The who chip swaps the phrase in the sentence; tapping it again puts "the group" back.
     await page.locator('[data-testid="who-chip"][data-value="team"]').click();
@@ -254,8 +257,6 @@ for (const deviceName of DEVICES) {
     await page.locator('[data-testid="length-chip"][data-value="deep"]').click();
     await expect(page.locator('[data-testid="length-chip"][data-value="deep"]')).toHaveAttribute("data-selected", "true");
 
-    await ta.fill("the new offsite plan");
-    await expect(page.getByTestId("topic-continue")).toBeEnabled();
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
     await page.getByTestId("topic-continue").click();
@@ -285,7 +286,8 @@ for (const deviceName of DEVICES) {
 
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
-    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep", topic: "the new offsite plan" });
+    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep" });
+    expect(generateBodies[0].topic).toBeUndefined();
     // Canonical order, whatever order they were tapped in; the toggled-off TikTok is gone.
     expect(generateBodies[0].outputs).toEqual(["sheet", "instagram", "podcast"]);
     expect(generateBodies[0].brief).toBeUndefined();
