@@ -37,7 +37,9 @@ function phoneFromWa(from: string): string {
   return normalizePhone(from.startsWith("+") ? from : `+${from}`);
 }
 
-const OPENER_SESSION_TTL_SECONDS = 3600;
+// Ten minutes: long enough to record, short enough that a stale binding
+// cannot catch a voice note meant for another parlo (seen 2026-10-25).
+const OPENER_SESSION_TTL_SECONDS = 600;
 function openerSessionKey(from: string) {
   return `wa-opener:${from}`;
 }
