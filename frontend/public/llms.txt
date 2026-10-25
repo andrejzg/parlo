@@ -25,7 +25,7 @@ At least one of brief / opener_audio_url. No authentication is needed for the fi
      "briefSource":      "brief | opener_transcript | fallback",
      "opener":           {"durationMs", "transcript"} or null,
      "openerRequest":    {"why", "askThePerson", "thenCall"} when no opener was given, else null,
-     "next":             "what to do with the links, in a sentence"}
+     "next":             ["1. post shareLink", "2. ask the person for the voice note (the words are included)", "3. send claimLink", "4. keep apiKey"]}
 
 Errors are JSON `{error}`: 400 (nothing to build from, or a bad URL), 413 (audio over 12 MB), 415 (the URL was not audio), 429 (30 creations per hour per IP), 502 (the audio URL could not be fetched). Round 1 is written by a model from the brief, so the call takes a few seconds.
 

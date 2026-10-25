@@ -1162,14 +1162,19 @@ surveys.post("/api/agent/parlos", async (c) => {
       opener,
       openerError,
       openerRequest,
+      // Ordered: agents relay these as steps. The voice-note ask comes
+      // second on purpose, before the claim link, so it is not the bit
+      // that gets dropped from a short reply.
       next: [
-        `Post shareLink into the group chat; the parlo is live and anyone who opens it can answer by voice.`,
+        `1. Post shareLink into the group chat. The parlo is live; anyone who opens it answers by voice.`,
+        openerRequest
+          ? `2. Ask the person for the opener voice note now, in these words: "${OPENER_ASK}" When they send it, add it with openerRequest.thenCall. Do not skip this: the group hears it before they answer.`
+          : `2. The opener is in place; the group hears it before they answer.`,
         claimLink
-          ? `Send claimLink to the person you act for: one tap (and a phone code the first time) makes the parlo theirs, with the report and the dashboard.`
-          : `The parlo belongs to the API key's owner; the dashboard is at dashboardLink.`,
-        openerRequest ? `Then ask the person for the opener voice note (see openerRequest) and add it with the call it names.` : `The opener is in place; the group hears it first.`,
-        `Keep apiKey and send it as the X-Parlo-Api-Key header next time, so new parlos are theirs from the start and GET /api/my/surveys lists them.`,
-      ].join(" "),
+          ? `3. Send claimLink to the person: one tap (and a phone code the first time) makes the parlo theirs, with the report and the dashboard.`
+          : `3. The parlo belongs to the API key's owner; the dashboard is at dashboardLink.`,
+        `4. Keep apiKey and send it as the X-Parlo-Api-Key header next time, so new parlos are theirs from the start.`,
+      ],
     },
     201
   );

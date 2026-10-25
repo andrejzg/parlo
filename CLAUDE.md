@@ -152,7 +152,7 @@ Returns 201:
   "opener": {"durationMs": 0, "transcript": ""} ,
   "openerError": "string | null",
   "openerRequest": {"why": "…", "askThePerson": "the 30–60 s voice-note script", "thenCall": "POST …/intro/from-url with the ids filled in"} ,
-  "next": "what to do with the links, one sentence each"
+  "next": ["1. post shareLink", "2. ask for the voice note (script inline)", "3. send claimLink", "4. keep apiKey"]
 }
 ```
 `openerRequest` is `null` when an opener was saved; otherwise it tells the agent to ask its person for the voice note (the script `OPENER_ASK` repeats the web opener's three prompts) and how to add it. The same ask is in the `index.html` agent block and `/llms.txt`: create first so the link is never delayed, then ask.
