@@ -88,6 +88,38 @@ export async function transcribeResponseAnswers(
   });
 }
 
+/**
+ * Rows the background hand-off never reached (seen 2026-10-26: a response
+ * submitted from the WhatsApp webhook had three `pending` answers and no
+ * Whisper call ever ran). Picks up submitted responses with pending answers
+ * older than a couple of minutes and transcribes them now. Called after
+ * each WhatsApp webhook (awaited, small cap), when a dashboard is opened,
+ * and nightly from the agent.
+ */
+export async function sweepPendingTranscriptions(
+  env: Env,
+  opts: { surveyId?: string; olderThanMinutes?: number; limit?: number } = {}
+): Promise<number> {
+  const minutes = opts.olderThanMinutes ?? 2;
+  const limit = opts.limit ?? 2;
+  const stale = await env.DB
+    .prepare(
+      `SELECT DISTINCT r.id FROM responses r
+       JOIN response_answers a ON a.response_id = r.id
+       WHERE r.status IN ('submitted', 'notified') AND a.transcription_status = 'pending'
+         AND r.submitted_at < datetime('now', ?)
+         ${opts.surveyId ? "AND r.survey_id = ?" : ""}
+       ORDER BY r.submitted_at ASC LIMIT ?`
+    )
+    .bind(...(opts.surveyId ? [`-${minutes} minutes`, opts.surveyId, limit] : [`-${minutes} minutes`, limit]))
+    .all<{ id: string }>();
+  for (const row of stale.results) {
+    console.log(`[transcription] sweep: ${row.id}`);
+    await transcribeResponseAnswers(env, row.id);
+  }
+  return stale.results.length;
+}
+
 /** Hand every completed answer of a response to the parlo's agent. */
 export async function ingestIntoAgent(env: Env, responseId: string): Promise<void> {
   const db = env.DB;

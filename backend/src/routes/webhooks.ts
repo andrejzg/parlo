@@ -11,6 +11,8 @@ import { checkRateLimit } from "../services/ratelimit";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
 import { isWhatsAppPlayableAudio, type WhatsAppClient } from "../services/whatsapp";
 import { submitResponse } from "../services/responses";
+import { sweepPendingTranscriptions } from "../services/transcription";
+import { transcribeAudio } from "../services/ai";
 
 type InboundMedia = { url: string | null; id: string | null; contentType: string | null };
 type Inbound = { kind: "text" | "audio"; text: string; from: string; contactName: string | null; media: InboundMedia | null };
@@ -62,6 +64,8 @@ type AnswerSession = {
   questions: { id: string; text: string; hint: string | null }[];
   index: number;
   answered: number;
+  /** Transcripts by question id, made on receipt; also marks which slots are taken. */
+  transcripts?: Record<string, string>;
 };
 const ANSWER_SESSION_TTL_SECONDS = 24 * 3600;
 function answerSessionKey(from: string) {
@@ -177,7 +181,7 @@ async function finishAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<u
   }
   const phone = phoneFromWa(from);
   const user = await upsertUserByPhone(db, phone, { waName: contactName });
-  const result = await submitResponse(env, ctx, session.responseId, { userId: user.id }, "whatsapp");
+  const result = await submitResponse(env, ctx, session.responseId, { userId: user.id }, "whatsapp", session.transcripts ?? {});
   if (!result.ok) {
     await wa.sendText(from, `Something went wrong saving your answers (${result.error}). Send "answer ${session.code}" to try again.`);
     return;
@@ -331,19 +335,38 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
       const answerRaw = await c.env.KV.get(answerSessionKey(from));
       if (answerRaw) {
         const session = JSON.parse(answerRaw) as AnswerSession;
-        const q = session.questions[session.index];
+        session.transcripts ??= {};
+        // The slot is the first question without a transcript at or after the
+        // index, so two voice notes sent in quick succession do not both land
+        // on the same question when their webhooks overlap.
+        let slot = session.index;
+        while (slot < session.questions.length && session.transcripts[session.questions[slot].id] !== undefined) slot += 1;
+        if (slot >= session.questions.length) {
+          await finishAnswerSession(c.env, c.executionCtx, wa, from, contactName, session);
+          continue;
+        }
+        const q = session.questions[slot];
         try {
           const got = await downloadInboundMedia(c.env.KAPSO_API_KEY, c.env.WHATSAPP_PHONE_NUMBER_ID, media ?? {});
           const key = `responses/${session.responseId}/${q.id}.webm`;
           await c.env.AUDIO_BUCKET.put(key, got.bytes, { httpMetadata: { contentType: got.contentType || "audio/ogg" } });
-          trackServerEvent(from, "whatsapp_answer_saved", { surveyId: session.surveyId, responseId: session.responseId, questionId: q.id, bytes: got.bytes.byteLength });
+          // Whisper now (a few seconds): the row is inserted complete at submit
+          // and the agent gets the words in the same request, no background hop.
+          let text = "";
+          try {
+            text = (await transcribeAudio(c.env.AI, got.bytes, session.responseId)).trim();
+          } catch (err) {
+            console.error("[webhook] answer transcription failed", { from, err });
+          }
+          session.transcripts[q.id] = text;
+          trackServerEvent(from, "whatsapp_answer_saved", { surveyId: session.surveyId, responseId: session.responseId, questionId: q.id, bytes: got.bytes.byteLength, words: text.split(/\s+/).filter(Boolean).length });
         } catch (err) {
           console.error("[webhook] answer voice note failed", { from, err });
           await wa.sendText(from, "I couldn't take that voice note. Could you send it once more?");
           continue;
         }
         session.answered += 1;
-        session.index += 1;
+        session.index = slot + 1;
         if (session.index >= session.questions.length) {
           await finishAnswerSession(c.env, c.executionCtx, wa, from, contactName, session);
         } else {
@@ -526,6 +549,14 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
     } catch (err) {
       console.error(`[webhook] fallback send error:`, err);
     }
+  }
+
+  // Rows a background hand-off never reached: a couple per delivery, awaited,
+  // so the bot heals itself without anyone opening a dashboard.
+  try {
+    await sweepPendingTranscriptions(c.env, { limit: 1 });
+  } catch (err) {
+    console.error("[webhook] transcription sweep failed", err);
   }
 
   // Always return 200 to WhatsApp
