@@ -6,8 +6,11 @@
  * (`target_user_id` NULL, a poll) or at one member (a probe).
  */
 
-import type { Round, RoundKind, SurveyQuestion } from "../types";
+import type { Env, Round, RoundKind, SurveyQuestion } from "../types";
 import { generateId } from "./codes";
+import { notifyUsers } from "./notify";
+import { createWhatsAppClient } from "./whatsapp";
+import { closesAtFor } from "./shapes";
 
 export async function ensureRound1(db: D1Database, surveyId: string): Promise<Round> {
   const existing = await db
@@ -152,6 +155,81 @@ export async function setRoundStatus(db: D1Database, roundId: string, status: "s
     .prepare(`UPDATE rounds SET status = ?, sent_at = CASE WHEN ? = 'sent' THEN datetime('now') ELSE sent_at END WHERE id = ?`)
     .bind(status, status, roundId)
     .run();
+}
+
+export interface SendRoundResult {
+  round: Round;
+  recipients: { user_id: string; access_token: string; phone: string | null }[];
+  closesAt: Date | null;
+}
+
+/**
+ * Send a proposed round: status `sent`, the deadline from `surveys.timing`,
+ * an Inbox line and the `parlo_new_round` WhatsApp template (personal link)
+ * to every member for a poll (minus `exceptUserId`, the owner who approved
+ * it), only the targeted members for a probe. Shared by the approve route
+ * and the agent, which sends the next check-in round itself. The caller
+ * schedules the agent's close alarm (`scheduleClose`) from the returned
+ * `closesAt`; WhatsApp sends run inside `sendMessages` so the caller can
+ * `waitUntil` them.
+ */
+export async function sendRound(
+  env: Env,
+  survey: { id: string; code: string; title: string | null; timing?: string | null },
+  round: Round,
+  asks: SurveyQuestion[],
+  exceptUserId: string | null
+): Promise<SendRoundResult & { sendMessages: () => Promise<void> }> {
+  await setRoundStatus(env.DB, round.id, "sent");
+  const closesAt = closesAtFor(survey.timing);
+  await setRoundClosesAt(env.DB, round.id, closesAt);
+
+  const targets = round.kind === "probe" ? new Set(asks.map((a) => a.target_user_id).filter((x): x is string => !!x)) : null;
+  const members = await env.DB.prepare(
+    `SELECT gm.user_id, gm.access_token, u.phone FROM group_members gm JOIN users u ON u.id = gm.user_id
+     WHERE gm.survey_id = ? AND gm.removed_at IS NULL`
+  )
+    .bind(survey.id)
+    .all<{ user_id: string; access_token: string; phone: string | null }>();
+  const recipients = members.results.filter((m) => m.user_id !== exceptUserId && (!targets || targets.has(m.user_id)));
+
+  const title = survey.title ?? "your parlo";
+  await notifyUsers(
+    env.DB,
+    recipients.map((r) => r.user_id),
+    {
+      type: "new_round",
+      title: round.kind === "probe" ? `The agent has a follow-up question for you in ${title}` : `Round ${round.number} of ${title} is open`,
+      body: asks[0]?.text ?? null,
+      surveyId: survey.id,
+      surveyTitle: survey.title,
+    }
+  );
+
+  // WhatsApp: template `parlo_new_round` (body: survey_title, round_number;
+  // URL button suffix: "<code>?t=<token>"). Sends are fire-and-forget.
+  const wa = createWhatsAppClient(env.KAPSO_API_KEY, env.WHATSAPP_PHONE_NUMBER_ID);
+  const sendMessages = async () => {
+    for (const r of recipients) {
+      if (!r.phone) continue;
+      try {
+        await wa.sendTemplate(r.phone, "parlo_new_round", [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", parameter_name: "survey_title", text: title },
+              { type: "text", parameter_name: "round_number", text: String(round.number) },
+            ],
+          },
+          { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `${survey.code}?t=${r.access_token}` }] },
+        ]);
+      } catch (err) {
+        console.error("[rounds] WhatsApp send failed", err);
+      }
+    }
+  };
+
+  return { round: (await getRound(env.DB, round.id)) as Round, recipients, closesAt, sendMessages };
 }
 
 /** Set (or clear) when a sent round stops taking answers. */

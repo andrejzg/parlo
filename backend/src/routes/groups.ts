@@ -20,10 +20,8 @@ import {
   setMemberRole,
   transferOwnership,
 } from "../services/groups";
-import { getRound, listRounds, roundAsks, setRoundClosesAt, setRoundStatus, updateRoundAsks } from "../services/rounds";
-import { closesAtFor } from "../services/shapes";
+import { getRound, listRounds, roundAsks, sendRound, setRoundStatus, updateRoundAsks } from "../services/rounds";
 import { notifyUsers } from "../services/notify";
-import { createWhatsAppClient } from "../services/whatsapp";
 import { extractCode } from "../services/slug";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
 import { trackServerEvent } from "../services/analytics";
@@ -271,60 +269,18 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
 
   const asks = await roundAsks(c.env.DB, round.id);
   if (asks.length === 0) return c.json({ error: "This round has no asks" }, 400);
-  await setRoundStatus(c.env.DB, round.id, "sent");
+  const sent = await sendRound(c.env, gate.survey, round, asks, gate.membership.user_id);
+  c.executionCtx.waitUntil(sent.sendMessages());
   // A timed parlo closes this round `timing` from now; the agent holds the alarm.
-  const closesAt = closesAtFor(gate.survey.timing);
-  await setRoundClosesAt(c.env.DB, round.id, closesAt);
-  if (closesAt) {
+  if (sent.closesAt) {
+    const closesAt = sent.closesAt;
     c.executionCtx.waitUntil(
       getAgentByName(c.env.GROUP_AGENT, surveyId)
         .then((agent) => agent.scheduleClose(surveyId, round.id, closesAt.toISOString()))
         .catch((err) => console.error("[approve] scheduleClose failed", err))
     );
   }
-
-  const targets = round.kind === "probe" ? new Set(asks.map((a) => a.target_user_id).filter((x): x is string => !!x)) : null;
-  const members = await c.env.DB.prepare(
-    `SELECT gm.user_id, gm.access_token, u.phone FROM group_members gm JOIN users u ON u.id = gm.user_id
-     WHERE gm.survey_id = ? AND gm.removed_at IS NULL`
-  )
-    .bind(surveyId)
-    .all<{ user_id: string; access_token: string; phone: string | null }>();
-  const recipients = members.results.filter((m) => m.user_id !== gate.membership.user_id && (!targets || targets.has(m.user_id)));
-
-  const title = gate.survey.title ?? "your parlo";
-  await notifyUsers(
-    c.env.DB,
-    recipients.map((r) => r.user_id),
-    {
-      type: "new_round",
-      title: round.kind === "probe" ? `The agent has a follow-up question for you in ${title}` : `Round ${round.number} of ${title} is open`,
-      body: asks[0]?.text ?? null,
-      surveyId,
-      surveyTitle: gate.survey.title,
-    }
-  );
-
-  // WhatsApp: template `parlo_new_round` (body: survey_title, round_number;
-  // URL button suffix: "<code>?t=<token>"). Sends are fire-and-forget.
-  const wa = createWhatsAppClient(c.env.KAPSO_API_KEY, c.env.WHATSAPP_PHONE_NUMBER_ID);
-  c.executionCtx.waitUntil(
-    (async () => {
-      for (const r of recipients) {
-        if (!r.phone) continue;
-        await wa.sendTemplate(r.phone, "parlo_new_round", [
-          {
-            type: "body",
-            parameters: [
-              { type: "text", parameter_name: "survey_title", text: title },
-              { type: "text", parameter_name: "round_number", text: String(round.number) },
-            ],
-          },
-          { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `${gate.survey.code}?t=${r.access_token}` }] },
-        ]);
-      }
-    })()
-  );
+  const recipients = sent.recipients;
 
   trackServerEvent(gate.membership.user_id, "round_approved", { surveyId, round: round.number, kind: round.kind, recipients: recipients.length });
   return c.json({ ok: true, round: { ...(await getRound(c.env.DB, round.id)), asks: await roundAsksWithNames(c.env.DB, round.id) }, notified: recipients.length });
