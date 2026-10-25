@@ -49,42 +49,42 @@ interface ShapeSpec {
 export const SHAPES: ShapeSpec[] = [
   {
     id: "post",
-    sentence: "Crowdsource a post from {who} on",
+    sentence: "Crowdsource a post from {who}",
     report: "A LinkedIn post built from everyone's best lines, ready to copy, then the themes behind it.",
     questions:
       "The answers become a LinkedIn post the creator publishes. Ask for one sharp opinion or concrete lesson, a specific example from their own experience, and a line they would be happy to be quoted on. Every answer should stand alone as a quote.",
   },
   {
     id: "testimonials",
-    sentence: "Collect testimonials from {who} for",
+    sentence: "Collect testimonials from {who}",
     report: "The strongest quotes, ready for a post or your site, with who said them.",
     questions:
       "Ask what working together changed for them, one specific result or moment, and how they would describe it to a peer. Aim for warm, specific, quotable lines, and never lead them into praise.",
   },
   {
     id: "milestone",
-    sentence: "Celebrate a milestone with {who}:",
+    sentence: "Celebrate a milestone with {who}",
     report: "A post celebrating it in their words, with the lines that stuck.",
     questions:
       "The answers become a post celebrating the milestone. Ask for a memory or moment along the way, what it meant to them, and one line for the post. Warm and specific.",
   },
   {
     id: "checkin",
-    sentence: "Run a regular check-in with {who} on",
+    sentence: "Run a regular check-in with {who}",
     report: "Who's on track, what's blocked, and what needs you. Same shape every round, so weeks compare.",
     questions:
       "A recurring check-in, a standup by voice. Keep it short and the same shape every round so answers compare week to week: what moved since last time, what is blocked, what they need from the creator. Answerable in a minute; no retrospectives.",
   },
   {
     id: "customers",
-    sentence: "Interview {who} about",
+    sentence: "Interview {who}",
     report: "Why they chose you, in their words, with the patterns across everyone.",
     questions:
       "Ask why they chose you over the alternatives, what nearly stopped them, and what they would tell a peer. Specific moments over opinions.",
   },
   {
     id: "feedback",
-    sentence: "Get honest feedback from {who} on",
+    sentence: "Get honest feedback from {who}",
     report: "What works and what to fix, in order of how often it came up.",
     questions:
       "Start with the gut reaction, then what works, what to fix and what is missing, as concretely as possible. Make it safe to be blunt.",
@@ -98,7 +98,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "references",
-    sentence: "Check references for",
+    sentence: "Check references",
     who: "people who have worked with the candidate",
     report: "Where the references agree, where they differ, and any flags.",
     questions:
@@ -220,7 +220,8 @@ export interface ShapeInput {
   shape: Exclude<ShapeId, "other">;
   audience: AudienceId;
   length: LengthId;
-  topic: string;
+  /** Optional since 2026-10-25: the creation screen has no blank any more. Old parlos and API callers may still send one. */
+  topic?: string;
   /** What the agent should make beyond the report; shapes the asks (services/outputs.ts). */
   outputs?: OutputId[];
 }
@@ -230,7 +231,7 @@ export function composeBrief(input: ShapeInput): string {
   const shape = SHAPES.find((s) => s.id === input.shape)!;
   const audience = AUDIENCES[input.audience];
   const length = LENGTHS[input.length];
-  const sentence = `${shape.sentence.replace("{who}", audience.phrase)} ${input.topic.trim()}`.replace(/\s+/g, " ").trim();
+  const sentence = `${shape.sentence.replace("{who}", audience.phrase)} ${(input.topic ?? "").trim()}`.replace(/\s+/g, " ").trim();
   const who = shape.who ? `${shape.who}. Tone: Polite and clear; assume no shared context.` : `${audience.phrase}. Tone: ${audience.tone}`;
   return [
     /[.?!]$/.test(sentence) ? sentence : `${sentence}.`,

@@ -119,8 +119,8 @@ export function useGenerateQuestions() {
   return useMutation({
     mutationFn: ({ surveyId, shape, audience, length, topic, outputs, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
-      if (shape && shape !== "other" && topic?.trim()) {
-        body = JSON.stringify({ shape, audience, length, topic: topic.trim(), outputs: outputs ?? [], clarifications: clarifications ?? [] });
+      if (shape && shape !== "other") {
+        body = JSON.stringify({ shape, audience, length, ...(topic?.trim() ? { topic: topic.trim() } : {}), outputs: outputs ?? [], clarifications: clarifications ?? [] });
       } else if (brief?.trim()) {
         body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
       } else if (textAnswers?.length) {

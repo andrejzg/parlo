@@ -430,8 +430,8 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
   const outputs = sanitizeOutputs(body.outputs);
   if (typeof body.shape === "string" && body.shape !== "other") {
     if (!isShapeId(body.shape) || body.shape === "other") return c.json({ error: "unknown shape" }, 400);
+    // Optional since 2026-10-25 (the screen is taps only); kept for older clients and the API.
     const topic = typeof body.topic === "string" ? body.topic.trim().slice(0, TOPIC_MAX_CHARS) : "";
-    if (!topic) return c.json({ error: "topic is required" }, 400);
     const audience = isAudienceId(body.audience) ? body.audience : "group";
     const length = isLengthId(body.length) ? body.length : "few";
     brief = composeBrief({ shape: body.shape, audience, length, topic, outputs });

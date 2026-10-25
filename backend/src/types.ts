@@ -185,6 +185,7 @@ export interface GenerateSurveyRequest {
   shape?: string;
   audience?: string;
   length?: string;
+  /** Optional since 2026-10-25; the creation screen no longer has a blank. */
   topic?: string;
   /** Free-form brief ("Something else") — when present without `shape`, used as is. */
   brief?: string;

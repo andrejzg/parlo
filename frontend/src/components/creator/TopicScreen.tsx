@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -15,25 +15,21 @@ import {
 import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
 /**
- * The second screen of creation: the sentence the chosen shape started, with
- * one blank to fill ("Crowdsource a post from [my network] on ___"). The blank
- * is typed (the mic beside the CTA was removed on 2026-10-15: a few words is
- * a typing job, and the next screen is where the picks happen). The audience
- * chips swap the phrase in the sentence and set the tone; the length chips
- * set how many questions the agent writes. Every tap changes the screen at
- * once; nothing here calls a model. "Continue" goes to the outputs cards.
+ * The second screen of creation: the sentence the chosen shape started
+ * ("Crowdsource a post from [my network]"), the audience chips that swap the
+ * phrase in it and set the tone, and the length chips that set how many
+ * questions the agent writes. Taps only: the typed blank the sentence used to
+ * end in went on 2026-10-25 (the mic before it on 2026-10-15), so "Continue"
+ * is live from the first frame and the specifics come from the review screen
+ * and "Sharpen it". Nothing here calls a model.
  */
 export interface TopicResult {
-  topic: string;
   audience: AudienceId;
   length: LengthId;
-  /** Always "text" since the mic went; kept for the `create_blank_filled` event. */
-  mode: "voice" | "text";
 }
 
 interface TopicScreenProps {
   shape: Shape;
-  initialTopic?: string;
   initialAudience?: AudienceId;
   initialLength?: LengthId;
   /** Parent is moving on — lock the CTA. */
@@ -74,36 +70,20 @@ function Chip({
 
 export default function TopicScreen({
   shape,
-  initialTopic = "",
   initialAudience = DEFAULT_AUDIENCE,
   initialLength = DEFAULT_LENGTH,
   busy = false,
   onContinue,
   onBack,
 }: TopicScreenProps) {
-  const [topic, setTopic] = useState(initialTopic);
   const [audience, setAudience] = useState<AudienceId>(initialAudience);
   const [length, setLength] = useState<LengthId>(initialLength);
   const [leaving, setLeaving] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // The blank grows with its text and starts focused, so typing is one tap away.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [topic]);
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
 
   const handleContinue = () => {
     if (leaving || busy) return;
-    const text = topic.trim();
-    if (!text) return;
     setLeaving(true);
-    onContinue({ topic: text, audience, length, mode: "text" });
+    onContinue({ audience, length });
   };
 
   const handleBack = () => {
@@ -113,10 +93,9 @@ export default function TopicScreen({
   };
 
   const [before, who, after] = sentenceParts(shape, audience);
-  const canContinue = topic.trim().length > 0 && !leaving && !busy;
+  const canContinue = !leaving && !busy;
 
   return (
-    // The column scrolls when the keyboard shrinks the viewport rather than clipping the CTA.
     <div className="flex flex-col h-full overflow-y-auto bg-background">
       <motion.div
         className="flex items-center px-l pt-xxl pb-xxs shrink-0"
@@ -139,24 +118,6 @@ export default function TopicScreen({
           )}
           {after}
         </motion.p>
-        <motion.div variants={fadeUp}>
-          <textarea
-            ref={textareaRef}
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleContinue();
-              }
-            }}
-            placeholder={shape.example}
-            rows={1}
-            aria-label="What it's about"
-            data-testid="topic-textarea"
-            className="w-full mt-xs resize-none bg-transparent font-editorial text-l sm:text-xl font-medium text-foreground placeholder:text-neutral-6 caret-color-1 outline-none"
-          />
-        </motion.div>
       </motion.div>
 
       <motion.div className="px-l pt-l flex flex-col gap-l shrink-0" variants={stagger} initial="initial" animate="animate">
