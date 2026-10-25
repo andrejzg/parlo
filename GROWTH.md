@@ -93,6 +93,18 @@ Newest first. Each entry: context, what was discussed, where we lean, what it fo
 
 **Open, for Andrej.** What was wanted instead: was the problem the interview, the deck, the amount of tapping, or treating creation as a separate tool at all?
 
+### 2026-10-25 · What else belongs on the sentence screen
+
+**Context.** With the blank gone, the sentence screen is the shape sentence, the who chips and the length chips, and a lot of empty canvas. Andrej asked what else would be useful there. Discussion only, nothing changed.
+
+**The test.** Same one that removed the blank: a tap, not typing; it must change what the agent produces; ideally it feeds the loop (report → next round → own parlo).
+
+**Leaning.** One addition earns its place: **"When do you need it?"** chips (Today / This week / Keep it open), which for Regular check-in become the cadence (Every day / Every week). It is the gate mechanic from 2026-10-11 (count, countdown, nudge, reveal), it tells the agent when to close a round and report instead of waiting on a debounce, and for the check-in shape it is the product: rounds 2, 3, 4 go out on a schedule with no proposal to approve. Behind the chip: `closes_at` on `rounds`, a scheduled close + digest in the agent, the WhatsApp nudge. Don't ship the chip without at least the close. Second, cheap and on-principle: a **live example of the first ask** under the chips, templated per shape × audience × length at 0 ms, so the chips visibly do something and the creator sees the generic draft before building (softens the blank's removal; review is where it sharpens). Third, only on evidence: **language**, auto-detected from the phone and shown as a flippable chip, for non-English WhatsApp groups.
+
+**Not here.** Private / open (stays with consent, two states only); tone or formality (already derived from the audience); anything typed (just removed; "Sharpen it" is the side door that is allowed); report format (the outputs screen's job).
+
+**Open.** Whether to build the deadline as a chip here or as the default on the ready screen with the chip later; whether the cadence implies the agent auto-sends check-in rounds without approval (it should, for that shape, or the card is a lie).
+
 ### 2026-10-25 · Voice-first opening built, then parked
 
 **Context.** Andrej asked what can clone a voice from one short recording and say typed text in it (today: every vendor, from a few seconds), picked Inworld, and asked for creation to open with the creator reading a fixed passage ("Halt, traveler!…") and then recording an opener (voice by default, typed or filmed). It was built end to end the same day: Inworld clones in about six seconds and a typed opener comes back in under two, said in the creator's voice.
