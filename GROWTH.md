@@ -78,7 +78,6 @@ Statuses: `idea` → `planned` → `running` → `kept` / `killed`.
 | S31 | Send from the first frame, server-side: "Send to the group" is pinned over a code skeleton at 0 ms, `/send` writes round 1 before it returns, and the ready screen shows the link with the hello and the phone claim as cards, not gates | `review_shown` → `create_share_reached` seconds; intros recorded and parlos claimed per send, before and after | idea | The simulation measured the wrong finish line until a skeptic pointed out that review → intro → phone → otp → linkedin → ready is the real tired path. Moving the hello and the claim after the link is a product decision, not a UI one: it is the "phone after the first answer" question from S15 in another coat. Needs Andrej's call before anything is built |
 | S32 | Group splits: the interview proposes "Split them?" when it hears two groups, the deck shows forked rows, and the round opens with one tap routing ask; each group hears only its own asks. Raises completion and report sharpness against one shared ask set | completion per started response; report shares per round; share of splits the creator undoes | idea | Needs a tap question type (routing), `survey_questions.segment`, and per-group report sections. Cap at 2 or 3 groups; propose only when enough members per group are likely |
 | S33 | One answer-triggered follow-up per ask, decided by Jev on the live transcript ("mentioned switching → what made you switch?"), beats fixed asks on answer depth without hurting the toilet test | words per answer on asks with a follow-up; median seconds per response; drop-off after a follow-up | idea | Needs the live transcript during answering (Web Speech, Whisper fallback). Last of the three: round-2 probes already do answer-dependent branching reliably |
-| S34 | Shape cards that show the report: a static miniature of what each shape returns (a tally, a ranked list, a split bar, tags, a pull quote, works / fix, in / out / maybe) replaces the generic icon, and the subline reads as the full sentence ("Collect ideas for the Christmas party"). Beats the icon deck on card → blank filled | `create_shape_picked` → `create_blank_filled`; guardrail: share of `shape = other` (S10) | idea | The 2026-10-12 proposal had the miniature, the shipped deck has icons. No model call; the `report` strings already exist in `shapes.ts` |
 
 ## Decision log
 
@@ -94,35 +93,29 @@ Newest first. Each entry: context, what was discussed, where we lean, what it fo
 
 **Open, for Andrej.** What was wanted instead: was the problem the interview, the deck, the amount of tapping, or treating creation as a separate tool at all?
 
+### 2026-10-25 · Voice-first opening built, then parked
+
+**Context.** Andrej asked what can clone a voice from one short recording and say typed text in it (today: every vendor, from a few seconds), picked Inworld, and asked for creation to open with the creator reading a fixed passage ("Halt, traveler!…") and then recording an opener (voice by default, typed or filmed). It was built end to end the same day: Inworld clones in about six seconds and a typed opener comes back in under two, said in the creator's voice.
+
+**Decided.** Parked, not shipped. Andrej stopped at the PR ("back to the drawing board") and chose to continue from the founder deck as it is live on parlo.me. The work sits on `feature/voice-first-opening` (commit `0d387a3`) with no PR; `feature/founder-shape-deck` was reset to the live commit. Two things were kept: CORS for Pages preview origins (so a branch can be tried on a phone) and migration 0015, which had already been applied to production D1. The Inworld key stays provisioned.
+
+**Why, in growth terms.** The read-out adds a mandatory screen before any value, against the 60 s "+" → link target (2026-10-12), and nothing else in the product speaks in the clone yet, so the creator pays for the voice before anything uses it. The clone becomes worth its screen when the agent's follow-up rounds, the report or the WhatsApp nudges are said as the creator; until then it is a demo. If it comes back, it comes back behind the first thing that needs it, not in front of the shape cards.
+
+**Also today.** The outputs screen copy: "Outputs?" / "Make content for your socials or just store the results in a sheet.", and the Sheet card reads "store answers in a sheet". Small, live.
+
+**Open.** What "the drawing board" is: Andrej has not said what the new direction is. S8/S10 keep running on the founder deck as live; the 2026-10-28 review stands.
+
 ### 2026-10-24 · Shipped the founder deck
 
-**Context.** Andrej picked the six-card version of the 2026-10-23 sketches and said "I want it live".
+**Context.** On 2026-10-23 Andrej named the wedge as founders and tech operators who post on LinkedIn, and the shape deck was rewritten for them in a sketch session the same day. He picked the six-card version and said "I want it live".
 
 **Shipped.** "What do you want to find out?" / "Pick one. The agent does the rest." Six cards, self-promotion first: Crowdsource a post, Collect testimonials, Celebrate a milestone, Validate an idea, Interview customers, Get feedback. A full-width More card swaps in Ask my team, Check references and Something else. Each card pre-picks its audience chip (a new "My network" audience) and its outputs (LinkedIn on for the three self-promotion cards). For post shapes the agent's report now opens with a LinkedIn post ready to copy, which is the cheap stand-in for the S18 producer. The retired shapes stay valid on the backend for parlos made before today.
 
-**What it does to the experiments.** S8 is a before/after, and the deck changed mid-measurement: read the 2026-10-28 review as two periods (eight shapes 2026-10-14 → 10-23, founder deck from 10-24). S10's "other" rate now sits behind an extra tap, so compare it with `create_more_opened` rather than with the old rate. S34 (report miniatures) was written for the old eight shapes and is parked. New: `create_shape_picked {from: deck|more}` and `create_more_opened`.
+**What it does to the experiments.** S8 is a before/after, and the deck changed mid-measurement: read the 2026-10-28 review as two periods (eight shapes 2026-10-14 → 10-23, founder deck from 10-24). S10's "other" rate now sits behind an extra tap, so compare it with `create_more_opened` rather than with the old rate. New: `create_shape_picked {from: deck|more}` and `create_more_opened`.
 
 **Watch.** Which of the six gets picked, and whether More is opened more than any single card (that would mean the deck missed the main job). Whether the post that opens the report is good enough to publish as is; that is the S18 question in its cheapest form.
 
-### 2026-10-23 · The shape screen: how to improve it
-
-**Context.** Andrej shared a screenshot of the eight shape cards and asked how to improve it. Discussion only, nothing changed in the app.
-
-**Discussed.** In order of how much each is worth:
-1. *The sublines don't compose.* The subline is the blank's placeholder, so it only reads as a continuation of the verb on two cards ("Decide where to go for the offsite", "Rank our priorities…"). The rest break: "Take the temperature the new offsite plan", "Collect ideas the Christmas party", "Hear stories their first week here", "Get feedback my pitch deck", "Head count the ski trip". Fix: give each shape a lead word (of / for / about / on) and show it on the card, strip it for the placeholder. Minutes of work, no risk.
-2. *An output-first screen that doesn't show the output.* The 2026-10-12 proposal had each card carry a miniature of its report; the shipped deck has eight same-weight beige icons. A static miniature per shape (S34) makes the cards distinguishable at a glance and sells the artefact that leaves the app, at 0 ms, with no model call.
-3. *"What do you want back?" never names the group.* "Back" from whom is clear to us, not to a cold visitor on the landing (S11). Test "What do you want to hear from the group?" against it, with a quiet "Pick one, the agent does the rest" under it.
-4. *Small.* Sublines are `text-xs` muted on neutral-2, the card's whole selling moment, so bump the contrast or size; order the deck by pick rate once there is data (today it is six internal testers); "Something else" can carry a mic instead of the ellipsis, since it is the voice door.
-
-**Leaning.** 1 now, 2 as S34, 3 as a copy test. Reordering waits for data.
-
-**Not decided.** Nothing shipped.
-
-**Later the same day: the deck itself, and the wedge.** Andrej questioned Rank and Head count: answers are qualitative voice notes, and a voice note saying "I'm in" fails the toilet test while WhatsApp polls already do it. Both dropped. A MECE pass then cut the shapes by what exists now (nothing yet → Collect ideas, options → Decide, a thing → Get reactions, something that happened → Hear their side), with Check in moved off the deck because it is a cadence (a round setting), not a shape. Through Nikita Bier's lens that taxonomy is still ours, not the user's: he would ship a hand-written prompt deck for one community. Andrej named the community: **founders and tech operators who post on LinkedIn a lot.** Sketched the first screen for them: "What do you want to find out?" with Crowdsource a post (on how founders hire engineer #1), Interview customers (about why they picked you), Get feedback (on my pitch deck), Ask my team (what's slowing us down), and Something else full width. Each card sets the audience and a default output, so the who chips and the outputs step can mostly pre-fill. The shapes stay underneath as the report format.
-
-**What the wedge forces.** The LinkedIn-post producer (S18) is the artefact that matters most: "I asked 30 founders X, here's what they said" is the post that brings the next creator, and LinkedIn is the exposure-on-other-networks channel. Examples across the creation flow should move from offsites and ski trips to their world. The share path is LinkedIn, DMs and Slack as much as WhatsApp.
-
-**Open.** Whether to ship the four-shape cleanup first or go straight to the prompt deck. Whether the four prompts are the right four (paper-test with five founders who post weekly).
+**Withdrawn, later the same day.** Andrej went back to the drawing board and asked for every decision from the 2026-10-23/24 sketch thread to be removed from this file: the shape-screen critique, the four-shape MECE cut, the "everything is a post" positioning, the party train (S37) and its app map, the forced hello, and S34–S36. They are gone from the table and the log at his request; the deck above is still what production runs, so this entry stays as the record of that. The wedge (founders and operators on LinkedIn) is no longer recorded here as decided.
 
 ### 2026-10-19 · How conditionals should work
 

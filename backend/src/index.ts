@@ -23,8 +23,13 @@ export { GroupAgent } from "./agent/GroupAgent";
 const app = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 // ── Middleware ──
+// Production, local previews, and Cloudflare Pages branch previews
+// (`https://<branch-or-hash>.parlo-d04.pages.dev`, pitfall 18) so a feature
+// branch can be tried on a phone before it ships to parlo.me.
+const ALLOWED_ORIGINS = new Set(["https://parlo.me", "http://localhost:5173", "http://localhost:4173"]);
+const PAGES_PREVIEW_ORIGIN = /^https:\/\/[a-z0-9-]+\.parlo-d04\.pages\.dev$/;
 app.use("*", cors({
-  origin: ["https://parlo.me", "http://localhost:5173", "http://localhost:4173"],
+  origin: (origin) => (ALLOWED_ORIGINS.has(origin) || PAGES_PREVIEW_ORIGIN.test(origin) ? origin : null),
 }));
 
 // Initialise PostHog analytics on every request (idempotent, pulls key from env)
