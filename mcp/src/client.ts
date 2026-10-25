@@ -34,6 +34,24 @@ export interface GenerateQuestionsResponse {
   brief: string;
 }
 
+export interface AgentParloResponse {
+  parloId: string;
+  code: string;
+  title: string;
+  shareLink: string;
+  whatsappShareLink: string;
+  dashboardLink: string;
+  claimLink: string | null;
+  openerLink: string;
+  apiKey: string;
+  questions: Question[];
+  briefSource: "brief" | "opener_transcript" | "fallback";
+  opener: { durationMs: number; transcript: string } | null;
+  openerError: string | null;
+  openerRequest: { why: string; link: string; askThePerson: string; alternatively: string } | null;
+  next: string[];
+}
+
 export interface IntroFromUrlResponse {
   success: true;
   durationMs: number;
@@ -189,6 +207,11 @@ export class ParloClient {
       brief,
       clarifications: [],
     });
+  }
+
+  /** The one-call agent endpoint; with the API key the caller's user owns the parlo. */
+  async createParlo(params: { brief?: string; opener_audio_url?: string; title?: string }): Promise<AgentParloResponse> {
+    return this.request("POST", "/api/agent/parlos", params);
   }
 
   /** Fetch the creator's voice note from a URL into the parlo's opener slot. */

@@ -146,16 +146,17 @@ Returns 201:
   "whatsappShareLink": "https://wa.me/?text=…",
   "dashboardLink": "https://parlo.me/d/<dashboardCode>",
   "claimLink": "https://parlo.me/claim/<token> | null",
+  "openerLink": "https://wa.me/12015789837?text=opener%20<code>%20<token>",
   "apiKey": "pk_…",
   "questions": [{"text", "hint", "type"}],
   "briefSource": "brief | opener_transcript | fallback",
   "opener": {"durationMs": 0, "transcript": ""} ,
   "openerError": "string | null",
-  "openerRequest": {"why": "…", "askThePerson": "the 30–60 s voice-note script", "thenCall": "POST …/intro/from-url with the ids filled in"} ,
+  "openerRequest": {"why": "…", "link": "<openerLink>", "askThePerson": "the 30–60 s voice-note script + the link", "alternatively": "POST …/intro/from-url with the ids filled in"} ,
   "next": ["1. post shareLink", "2. ask for the voice note (script inline)", "3. send claimLink", "4. keep apiKey"]
 }
 ```
-`openerRequest` is `null` when an opener was saved; otherwise it tells the agent to ask its person for the voice note (the script `OPENER_ASK` repeats the web opener's three prompts) and how to add it. The same ask is in the `index.html` agent block and `/llms.txt`: create first so the link is never delayed, then ask.
+`openerLink` (since 2026-10-25, later that night) is a `wa.me` deep link into Parlo's own WhatsApp number with `opener <code> <token>` prefilled (`buildBotChatUrl` in `services/whatsapp.ts`; KV `opener:{token}` → surveyId, 7 days, minted on every agent create). **Agents relay links and drop asks** (two Instinct runs ignored a worded request for a voice note, every link reached the chat), so the voice note travels by link: the person taps it, the webhook binds their number to the parlo, their next voice note becomes the opener and, the number being proof, an anonymous owner seat becomes theirs (`claimOwnership`), no OTP. `openerRequest` is `null` when an opener was saved; otherwise it carries the link, the words to forward (`OPENER_ASK`) and the `intro/from-url` alternative for an agent that holds the file. `next` step 2 says to send `openerLink`. The MCP `create_parlo` tool calls this endpoint (authed, so no `claimLink`) and formats the reply.
 400 when there is nothing to build from (the error names what to send), 429 over the limit; opener problems are reported in `openerError`, not as a status.
 
 ### GET /api/claim/:token, POST /api/claim/:token
@@ -252,10 +253,13 @@ Each answer includes `transcription` (string | null) and `transcriptionStatus` (
 Public results (open surveys only). Returns first names + audio.
 
 ### POST /api/webhooks/whatsapp
-Kapso webhook receiver. Handles:
-- `parlo <code>` / `notify me about parlo <code>` (the prefilled message from the ready screen; `survey <code>` still accepted) → creator notification opt-in
+Kapso webhook receiver. Parses Kapso v2 (single and buffered) and raw Meta payloads into `{kind: text|audio, text, from, contactName, media}` (`toInbound`). Handles, in this order:
+- `opener <code> <token>` (the `openerLink` deep link; since 2026-10-25) → looks up KV `opener:{token}`, checks the code and that the parlo's owner is anonymous or this number (`from` is digits, normalised with a leading `+`), writes KV `wa-opener:{from}` = `{surveyId, token}` for an hour, replies with the voice-note ask. Expired token → "ask your agent for a fresh one"; someone else's parlo → refused.
+- a **voice note** (`type: audio`) → with a `wa-opener:{from}` session: `downloadInboundMedia` (Kapso's `message.kapso.media_url` with the API key, else `GET /{media_id}` for a 5-minute URL), `storeIntroBytes` (R2 intro key, Whisper now, the three `intro_*` columns), `claimOwnership` for the number when the owner was anonymous, both KV keys deleted, reply with the transcript's first line, the share link and the dashboard link. Without a session → "tap the opener link first". Events `whatsapp_opener_link_opened`, `whatsapp_opener_saved {claimed}`, `whatsapp_opener_failed`.
 - `response <code>` → participant confirmation + creator notification
+- `parlo <code>` / `notify me about parlo <code>` (the prefilled message from the ready screen; `survey <code>` still accepted) → creator notification opt-in
 - Unknown → fallback message
+Free-form replies are allowed because the person messaged first (24 h service window). `services/intro.ts` holds `introKey`, `storeIntroBytes`, `saveIntroFromUrl`, the opener-token key and TTL.
 
 Requests must carry a valid `X-Webhook-Signature` (hex HMAC-SHA256 of the raw body with `KAPSO_WEBHOOK_SECRET`); otherwise 401. If the secret isn't set the endpoint returns 500 rather than accepting unsigned calls.
 
