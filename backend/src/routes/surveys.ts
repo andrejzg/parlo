@@ -458,6 +458,9 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, JSON.stringify(outputs), timing, surveyId)
       .run();
     await replaceQuestions(db, surveyId, generated);
+    // The build is go-live since 2026-10-25 (no review screen): a timed
+    // parlo's round 1 closes `timing` from now and the agent holds the alarms.
+    await scheduleRound1Close(c, surveyId);
 
     trackServerEvent(surveyId, "survey_questions_generated", {
       surveyId,
@@ -569,6 +572,25 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
 });
 
 /**
+ * Go-live for a timed parlo: round 1 closes `surveys.timing` from now and the
+ * agent holds the alarms (a nudge before, the close at it); the row holds the
+ * date. A parlo with no deadline clears it.
+ */
+async function scheduleRound1Close(c: { env: Env; executionCtx: { waitUntil(promise: Promise<unknown>): void } }, surveyId: string) {
+  const db = c.env.DB;
+  const round1 = await ensureRound1(db, surveyId);
+  const timed = await db.prepare("SELECT timing FROM surveys WHERE id = ?").bind(surveyId).first<{ timing: string | null }>();
+  const closesAt = closesAtFor(timed?.timing);
+  await setRoundClosesAt(db, round1.id, closesAt);
+  if (!closesAt) return;
+  c.executionCtx.waitUntil(
+    getAgentByName(c.env.GROUP_AGENT, surveyId)
+      .then((agent) => agent.scheduleClose(surveyId, round1.id, closesAt.toISOString()))
+      .catch((err) => console.error("[generate] scheduleClose failed", err))
+  );
+}
+
+/**
  * Replace a survey's questions with a freshly generated set, atomically.
  * Deleting first means "Regenerate" doesn't pile duplicates into the table.
  */
@@ -626,19 +648,8 @@ surveys.put("/api/surveys/:id/questions", async (c) => {
       .bind(qId, surveyId, i + 1, q.text, q.hint ?? null, qType, round1.id);
   });
   await db.batch([deleteStmt, ...insertStmts]);
-
-  // Going live: a deadline shape's round 1 closes `timing` from now. The agent
-  // holds the alarm (a nudge before, the close at it); the row holds the date.
-  const timed = await db.prepare("SELECT timing FROM surveys WHERE id = ?").bind(surveyId).first<{ timing: string | null }>();
-  const closesAt = closesAtFor(timed?.timing);
-  await setRoundClosesAt(db, round1.id, closesAt);
-  if (closesAt) {
-    c.executionCtx.waitUntil(
-      getAgentByName(c.env.GROUP_AGENT, surveyId)
-        .then((agent) => agent.scheduleClose(surveyId, round1.id, closesAt.toISOString()))
-        .catch((err) => console.error("[questions] scheduleClose failed", err))
-    );
-  }
+  // An API caller editing round 1 after the build: the deadline restarts from now.
+  await scheduleRound1Close(c, surveyId);
 
   // Fetch the inserted questions to return them
   const updated = await db

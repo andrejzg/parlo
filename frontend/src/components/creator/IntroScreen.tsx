@@ -10,10 +10,11 @@ import { trackEvent } from "@/lib/posthog";
 import { finalizeRecording } from "@/lib/audioTrim";
 
 /**
- * Last creative step: the creator records a short hello that participants
- * hear on the welcome screen before the first question. A real voice is the
- * thing that gets busy people to actually answer, so we ask for it right
- * after they've agreed on the questions — while they're still in the mood.
+ * The opener: right after the build, the creator records the short hello the
+ * group hears on the welcome screen before the first question. A real voice
+ * is the thing that gets busy people to actually answer. Since 2026-10-25
+ * this is the step after building (the review screen is gone), so the
+ * questions are already live when they get here.
  *
  * Tap to record (unlike the brief, this one is a small performance and people
  * want a beat to think), 60 s cap, playback + re-record, and a skip link so
@@ -160,7 +161,7 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
           </Button>
         )}
         <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
-          Last step · Say hello
+          Your opener
         </span>
         <div className="flex-1" />
         {phase === "recording" && (
@@ -183,10 +184,10 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
       {/* Heading + prompts */}
       <motion.div className="px-l pt-xxs shrink-0" variants={stagger} initial="initial" animate="animate">
         <motion.h2 variants={fadeUp} className="font-editorial text-l sm:text-xl font-medium text-foreground">
-          Say hi to the people you're about to ask
+          Record an opener for the group
         </motion.h2>
         <motion.p variants={fadeUp} className="mt-xs text-s text-muted-foreground">
-          They'll hear this before the first question. A real voice is what gets busy people to answer. Under a minute.
+          Your questions are ready. They'll hear this before the first one; a real voice is what gets busy people to answer. Under a minute.
         </motion.p>
 
         <motion.ul className="flex flex-col gap-xs mt-s list-none" aria-label="What to mention">
@@ -222,7 +223,7 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
             variants={fadeUp}
             className="w-full rounded-s bg-card px-m py-xs text-center text-xs text-muted-foreground"
           >
-            Mic unavailable — you can add a hello later from the dashboard
+            Mic unavailable — you can add an opener later from the dashboard
           </motion.div>
         )}
 
@@ -270,7 +271,7 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
               disabled={isTransitioning}
               data-testid="intro-use"
             >
-              Use this hello
+              Use this opener
             </Button>
           </motion.div>
         ) : (
@@ -298,7 +299,7 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
                 onClick={startRecording}
                 disabled={micDenied || isTransitioning}
                 data-testid="intro-record"
-                aria-label="Record a hello"
+                aria-label="Record an opener"
                 className={recordControlClass}
                 whileTap={press}
               >
