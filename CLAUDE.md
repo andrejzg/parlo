@@ -48,7 +48,7 @@ parlo/
 IMPORTANT: When building frontend features that call the backend, always verify the actual response shape by reading the backend route handler. Do NOT guess field names.
 
 ### POST /api/surveys
-Creates a parlo: a `users` row for the owner (anonymous until a phone is claimed), the survey with `visibility = 'private'`, an `owner` row in `group_members`, and round 1 in `rounds`. Accepts empty body or `{creatorPhone?, creatorName?, title?}`.
+Creates a parlo: a `users` row for the owner (anonymous until a phone is claimed), the survey with `visibility = 'private'`, an `owner` row in `group_members`, and round 1 in `rounds`. Accepts empty body or `{creatorPhone?, creatorName?, title?}`. **With an API key (since 2026-10-25) the authenticated user is the owner outright** (the MCP server, an owner's personal agent, a verified device): no claim step, the parlo is in their home list at once, and the returned `apiKey` is theirs. Without a key the owner is a fresh anonymous user as before.
 Returns:
 ```json
 {
@@ -135,6 +135,33 @@ Returns: `{uploadUrl: "string"}`
 ### PUT /api/surveys/:id/intro
 Mark the intro as uploaded. Body: `{durationMs: number}`. Checks the object exists in R2 (409 if not), writes `intro_r2_key` + `intro_duration_ms` on the `surveys` row, and transcribes it with Whisper via `waitUntil()` into `intro_transcript`.
 Returns: `{success: true, durationMs: number}`
+
+### POST /api/agent/parlos
+**The one-call path for agents** (2026-10-25): what `parlo.me` tells an AI agent to do instead of driving the UI. Body `{brief?, opener_audio_url?, title?}`, at least one of the first two (brief ≤ 20k chars). No auth needed: without a key the owner is a fresh anonymous user and the answer carries a **`claimLink`** (`parlo.me/claim/<token>`, KV `claim:{token}` → surveyId, 7-day TTL, burned on use) for the person the agent acts for, plus the owner's **`apiKey`** to send as `X-Parlo-Api-Key` next time (then the key's user owns the parlo and `claimLink` is `null`). Chains create → `saveIntroFromUrl` (when a URL is given; a failure sets `openerError` and does not stop a build that has a brief) → `generateQuestionsFromBrief` (brief = typed brief, else the opener's transcript, else `FALLBACK_BRIEF`) → go-live (`scheduleRound1Close`). Rate limited 30/hr per IP (`agent-create`) on top of `survey-create` 100/hr. Server events `survey_created {via: "agent"}` and `survey_questions_generated {via: "agent", briefSource, hasOpener, userAgent}`. ~2 s end to end.
+Returns 201:
+```json
+{
+  "parloId": "string", "code": "string", "title": "string",
+  "shareLink": "https://parlo.me/s/<slug>-<code>",
+  "whatsappShareLink": "https://wa.me/?text=…",
+  "dashboardLink": "https://parlo.me/d/<dashboardCode>",
+  "claimLink": "https://parlo.me/claim/<token> | null",
+  "apiKey": "pk_…",
+  "questions": [{"text", "hint", "type"}],
+  "briefSource": "brief | opener_transcript | fallback",
+  "opener": {"durationMs": 0, "transcript": ""} ,
+  "openerError": "string | null",
+  "next": "what to do with the links, one sentence each"
+}
+```
+400 when there is nothing to build from (the error names what to send), 429 over the limit; opener problems are reported in `openerError`, not as a status.
+
+### GET /api/claim/:token, POST /api/claim/:token
+The claim link. GET → `{title, code, alreadyClaimed}` (404 `This claim link has expired` when the token is unknown or used). POST takes the same proof as `/claim` (API-key header, `{idToken}` or `{proof}`), runs the shared `claimSurveyAs()` (owner seat moves to the verified user; 403 if the parlo already belongs to someone else) and deletes the token on success. Returns `{ok, apiKey, userId, phone, dashboardCode}`. The page is `frontend/src/pages/ClaimPage.tsx` (`/claim/:token`): a device with an API key claims silently and lands on `/d/:dashboardCode?tab=agent`; otherwise `PhoneScreen` → `OtpScreen` → claim. Events `claim_link_opened`, `claim_completed {method}`.
+
+### POST /api/surveys/:id/intro/from-url
+The opener from a URL, for agents that hold the creator's voice note as a link rather than as bytes in a browser (the MCP `create_parlo` tool). **API key required, owner only** (the Worker fetches whatever it is given). Body `{url}`: absolute https; the Worker fetches it with redirects (20 s timeout, `User-Agent: Parlo/1.0`), accepts `audio/*`, `video/*`, `application/ogg`, `application/octet-stream` or no content type (415 otherwise; an HTML page is refused), caps it at 12 MB (413), stores it under `surveys/{id}/intro.webm` with the upstream content type, and transcribes it **synchronously** with Whisper so the caller can use the words as the brief. `durationMs` comes from Whisper's last word timing (`transcribeAudioDetailed` in `services/ai.ts`; 0 when Whisper gave none). Rate limited 60/hr per IP. Upstream failures are 502 (`Audio URL answered <status>`). A URL on `api.parlo.me` itself fails with 522: a Worker cannot fetch its own zone (pitfall 33).
+Returns: `{success: true, durationMs, transcript, bytes, contentType}`
 
 ### DELETE /api/surveys/:id/intro
 Removes the R2 object and nulls the three `intro_*` columns. Returns `{success: true}`.
@@ -328,7 +355,9 @@ Cut down to this on 2026-10-25 ("make this dumb af", GROWTH.md). The shape cards
 - **Ready**: unchanged. Reaching it fires `create_share_reached {surveyId, shape: "opener"}` once per parlo.
 - Analytics on the way: `survey_creation_started {mode: "opener"}`, `intro_recorded` / `intro_skipped` (the latter can no longer fire), `survey_questions_generated`, `create_share_reached`; server-side `survey_questions_generated {source: brief}`. `create_shape_picked`, `create_audience_picked`, `create_outputs_picked`, `review_*` and `clarify_*` stopped on 2026-10-25.
 - Drafts (a parlo with no questions yet) resume at the opener from the home list.
-- The legacy two-question flow (`CREATION_QUESTIONS`, audience/gather) is no longer reachable from the UI; the MCP server still uses the legacy generate mode.
+- The legacy two-question flow (`CREATION_QUESTIONS`, audience/gather) is no longer reachable from the UI; the MCP server's legacy `create_survey` tool still uses the legacy generate mode.
+- **parlo.me tells agents not to tap (2026-10-25).** A plain fetch of `parlo.me` used to return the empty SPA shell. Now `frontend/index.html` carries a `<section id="for-agents">` outside `#root` (clipped off-screen for people, read by curl, crawlers and DOM-reading agents) with the one-call `POST /api/agent/parlos` curl, what the answer holds and the MCP URL; `CreateLanding` shows a one-line footer ("AI agent? Read parlo.me/llms.txt instead of tapping"); `frontend/public/llms.txt` is the full agent guide (API, MCP, what participants see, vocabulary); `public/robots.txt` points at it; `public/.well-known/mcp/server-card.json` is a draft-SEP-1649-shaped card for the MCP server (experimental, no consumer yet). The `<title>` is "Parlo — Group chats, run by an agent" (the April "Voice Surveys" copy is gone from `index.html`; the OG route and the `/s/*` Pages Function keep their own fallbacks). Static files beat the `/*  /index.html  200` redirect on Pages, which is why `/llms.txt` is a real file now and not HTML (pitfall 19). Keep the three copies of the agent instructions (index.html, llms.txt, the API's `next` field) saying the same thing.
+- **Agents create the same way (2026-10-25).** The MCP server (`mcp/`, `mcp.parlo.me/mcp`, OAuth → the user's API key) has `create_parlo {brief?, opener_audio_url?, title?}`: `POST /api/surveys` (the key's user owns it), `POST …/intro/from-url` when a voice-note URL is given (the recording becomes the opener and its transcript stands in for a missing brief), then `POST …/generate {brief}`; the parlo is live and the tool returns the slugged `shareLink`, a `whatsappShareLink`, the dashboard link, the questions, `briefSource` (`brief | opener_transcript | fallback`) and `opener {durationMs, transcript}`. The fallback brief mirrors `OPENER_FALLBACK_BRIEF`. An opener that cannot be fetched does not stop the build when a brief was given (`openerError` in the result). `create_survey` (audience + gather) stays for old clients, marked legacy. This is the first entry point of the agent-as-creator direction (GROWTH.md, 2026-10-25); WebMCP and the REST API are the other two.
 - **Consequences to know.** Nothing on a new parlo carries a shape, an audience, a length, a deadline or an output pick: `surveys.output_shape` is `other`, `timing` is NULL (so no round closes and no nudge fires), `outputs` is `[]`. The agent's report shape comes from the brief alone. The deadline, cadence and outputs machinery stays live for API callers and older parlos.
 
 ## Creator voice intro (participant side)
@@ -595,4 +624,5 @@ For the Claude desktop app's browser pane, a local (gitignored) `.claude/launch.
 29. **Output vocabulary** (since 2026-10-25 backend only: `frontend/src/lib/outputs.ts`, `OutputsScreen`, `BrandIcons` and `useFitLines` went with the outputs screen): `backend/src/services/outputs.ts` holds the ids, the brief lines that shape the asks, the agent's "Also make" section and `LEGACY_OUTPUTS` for the 2026-10-15 channel ids. The backend maps legacy ids to their content type and drops unknown ids silently.
 30. **(Historical since 2026-10-25, the review screen and `useDragAutoScroll` are gone; kept for the next drag list.) Framer Motion drag knows nothing about a scrolling container**: the drag offset is the raw pointer delta, so a list that scrolls under a held finger makes the card drift and `Reorder` compare the wrong boxes. `hooks/useDragAutoScroll.ts` scrolls the review list near its edges and, while a drag is on, intercepts `pointermove` on `window` (capture) and re-dispatches it with `clientY` shifted by the distance scrolled, so Framer only ever sees consistent viewport coordinates. Do **not** add `layoutScroll` to that container: Framer caches a `layoutScroll` ancestor's offset between layout updates and a continuously scrolling list then throws the other cards off by the stale amount at every reorder (seen 2026-10-15). Reorder slides need their own undelayed `layout` transition, or the staggered entrance delay leaves an empty slot behind a dragged card.
 31. **Workers AI's response field is not always a string**: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` has returned `response` as a parsed object, and OpenAI-style `choices` have been seen. On 2026-10-15 a Cerebras 429 (`queue_exceeded`, high traffic) fell back to Llama, `result.response.trim()` threw, `/clarify` returned 500 and the creator was bounced to the build screen. `runJsonCompletion` now reads the text through `textFromWorkersAi()` (string, `response`, `text`, `choices`, object → JSON) and `runCerebras` retries a 429 once after 700 ms. The frontend never leaves the screen when a follow-up fails: it toasts and stays (`fetchNextQuestion` in `CreatorPage`).
+33. **A Worker cannot fetch its own custom domain**: `fetch("https://api.parlo.me/…")` from inside `parlo-backend` answers 522 (seen 2026-10-25 testing `intro/from-url` with a signed `/api/audio/…` URL). Read R2 directly for anything already ours; the same rule is why the MCP worker talks to the backend over a Service Binding.
 32. **Migration 0015 is applied in production but nothing reads it**: `users.voice_id` / `voice_sample_r2_key` / `voice_cloned_at` and `surveys.intro_kind` came with the voice-first opening (Inworld voice clone → opener screen), built on 2026-10-24 and parked on 2026-10-25 (GROWTH.md). The code lives on `feature/voice-first-opening` (`0d387a3`: `routes/voice.ts`, `services/inworld.ts`, `VoiceSampleScreen`, `OpenerScreen`). The migration file is kept so `d1_migrations` matches the folder; 0016 (`timing`) followed it on 2026-10-25, so number the next one 0017. The `INWORLD_API_KEY` secret is still on the Worker, in GitHub Actions and in `backend/.dev.vars`, unused.

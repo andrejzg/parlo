@@ -1,0 +1,29 @@
+{
+  "$comment": "MCP server card (draft SEP-1649 shape; experimental). The MCP server itself is at the url below.",
+  "name": "parlo",
+  "title": "Parlo",
+  "description": "Group chats, run by an agent. Create a parlo from a person's brief or voice note, read the answers and the agent's report, approve follow-up rounds.",
+  "url": "https://mcp.parlo.me/mcp",
+  "transport": "streamable-http",
+  "authorization": {
+    "type": "oauth2",
+    "resource_metadata": "https://mcp.parlo.me/.well-known/oauth-protected-resource/mcp",
+    "authorization_server": "https://mcp.parlo.me/.well-known/oauth-authorization-server",
+    "dynamic_client_registration": true
+  },
+  "tools": [
+    "create_parlo",
+    "list_my_surveys",
+    "get_dashboard",
+    "get_transcriptions",
+    "get_survey_stats",
+    "get_survey",
+    "get_share_links",
+    "update_questions"
+  ],
+  "alternatives": {
+    "http_api_no_auth": "POST https://api.parlo.me/api/agent/parlos",
+    "llms_txt": "https://parlo.me/llms.txt"
+  },
+  "homepage": "https://parlo.me"
+}

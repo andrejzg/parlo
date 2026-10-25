@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { ParloClient } from "./client.js";
+import { registerCreateParlo } from "./tools/create-parlo.js";
 import { registerCreateSurvey } from "./tools/create-survey.js";
 import { registerGetDashboard } from "./tools/get-dashboard.js";
 import { registerGetSurveyStats } from "./tools/get-survey-stats.js";
@@ -24,7 +25,7 @@ interface Env {
 function createServer(env: Env, apiKey?: string): McpServer {
   const server = new McpServer({
     name: "parlo-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
   const client = new ParloClient(
@@ -33,6 +34,7 @@ function createServer(env: Env, apiKey?: string): McpServer {
     env.PARLO_BACKEND,
   );
 
+  registerCreateParlo(server, client);
   registerCreateSurvey(server, client);
   registerGetDashboard(server, client);
   registerGetSurveyStats(server, client);
