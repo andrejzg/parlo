@@ -1,0 +1,29 @@
+name: Create WhatsApp template
+
+# Submits a message template to Meta through Kapso with the key CI holds.
+# Run by hand: gh workflow run whatsapp-template.yml -f file=backend/whatsapp-templates/<name>.json
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: Template JSON under backend/whatsapp-templates/
+        required: true
+        default: backend/whatsapp-templates/parlo_report_ready.json
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Submit the template
+        env:
+          KAPSO_API_KEY: ${{ secrets.KAPSO_API_KEY }}
+          WABA_ID: "1134962085529075"
+        run: |
+          test -n "$KAPSO_API_KEY" || { echo "KAPSO_API_KEY missing"; exit 1; }
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X POST \
+            "https://api.kapso.ai/meta/whatsapp/v24.0/${WABA_ID}/message_templates" \
+            -H "X-API-Key: ${KAPSO_API_KEY}" -H 'Content-Type: application/json' \
+            --data-binary @"${{ github.event.inputs.file }}")
+          echo "HTTP $code"; cat /tmp/out.json; echo
+          test "$code" -lt 300

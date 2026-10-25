@@ -45,17 +45,17 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
   const asset = await ctx.env.ASSETS.fetch(shellUrl.toString());
 
   // Default meta values (used if survey lookup fails)
-  let title = "Parlo — Voice surveys answered by speaking";
+  let title = "Parlo — Group chats, run by an agent";
   let description =
-    "A new kind of survey. Tap the link, hit record, and answer in your own voice. No typing, no signup, takes under two minutes.";
+    "Your agent gathers everyone's answers by voice, follows up, and reports back. Tap, speak, done.";
 
   try {
     const r = await fetch(`${BACKEND_URL}/api/s/${code}`);
     if (r.ok) {
       const survey = (await r.json()) as { title?: string | null };
       if (survey.title) {
-        title = `${survey.title} — Voice Survey on Parlo`;
-        description = `You're invited to "${survey.title}". Answer with your voice in under two minutes — no typing, no signup. Just tap, speak, and you're done.`;
+        title = `${survey.title} — a parlo`;
+        description = `You're invited to "${survey.title}". Answer with your voice in under two minutes. No typing, no signup. Everyone gets the agent's report.`;
       }
     }
   } catch {

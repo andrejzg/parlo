@@ -21,6 +21,7 @@ At least one of brief / opener_audio_url. No authentication is needed for the fi
      "dashboardLink":    "answers and the agent's report",
      "claimLink":        "send this to the person you act for; one tap (and a phone code the first time) makes the parlo theirs. null when the call was authenticated",
      "openerLink":       "WhatsApp link to Parlo's number; the person taps it and sends the opener as a voice note (see below)",
+     "answerLink":       "WhatsApp link to Parlo's number with 'answer <code>' prefilled: Parlo asks the questions in the chat and takes voice notes; post it into a WhatsApp group instead of (or next to) shareLink",
      "apiKey":           "send it as the X-Parlo-Api-Key header on later calls so new parlos belong to the same person and GET /api/my/surveys lists them",
      "questions":        [{"text", "hint", "type": "voice|photo|video"}],
      "briefSource":      "brief | opener_transcript | fallback",
@@ -59,7 +60,7 @@ https://mcp.parlo.me/mcp — Streamable HTTP, OAuth 2.1 with dynamic client regi
 
 ## What participants see
 
-shareLink opens a page that plays the opener (if there is one), shows the round's questions one at a time, and records a voice answer for each (photo and video questions use the phone's camera). Answering joins the group; members get the agent's report once they have answered. Nothing is anonymous to the agent; by default only the owner, admins and the agent hear raw answers.
+shareLink opens a page that plays the opener (if there is one), shows the round's questions one at a time, and records a voice answer for each (photo and video questions use the phone's camera). answerLink does the same inside WhatsApp: Parlo's number plays the opener, asks one question per message, each reply is a voice note, and the person joins the group with their number as identity (no sign-up). The report reaches them in that same chat. Answering joins the group; members get the agent's report once they have answered. Nothing is anonymous to the agent; by default only the owner, admins and the agent hear raw answers.
 
 ## Vocabulary
 

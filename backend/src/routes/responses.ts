@@ -6,7 +6,8 @@ import { generatePresignedUploadUrl, generateUploadToken } from "../services/r2"
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
 import { transcribeResponseAnswers } from "../services/transcription";
-import { ensureMember, getMemberByToken, updateUserNames, upsertUserByPhone } from "../services/groups";
+import { getMemberByToken, updateUserNames, upsertUserByPhone } from "../services/groups";
+import { submitResponse } from "../services/responses";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import type { AuthVariables } from "../middleware/auth";
 import { latestSentRound, pendingAsksFor } from "../services/rounds";
@@ -102,27 +103,10 @@ responses.post("/api/responses/:id/submit", async (c) => {
   const db = c.env.DB;
   const body = await c.req.json<SubmitResponseRequest>().catch(() => ({} as SubmitResponseRequest));
 
-  const existing = await db
-    .prepare("SELECT id, survey_id, status, user_id FROM responses WHERE id = ?")
-    .bind(responseId)
-    .first<{ id: string; survey_id: string; status: string; user_id: string | null }>();
-
-  if (!existing) {
-    return c.json({ error: "Response not found" }, 404);
-  }
-
-  if (existing.status !== "in_progress") {
-    return c.json({ error: "Response already submitted" }, 400);
-  }
-
-  const survey = await db.prepare("SELECT * FROM surveys WHERE id = ?").bind(existing.survey_id).first<Survey>();
-  if (!survey) return c.json({ error: "Survey not found" }, 404);
-  const visibility: GroupVisibility = survey.visibility === "open" ? "open" : "private";
-
   // Identity, in order of trust: the caller's API key (a device that passed
   // OTP before), a phone proof from this session's OTP, then the member token
-  // the session was started with. A bare phone in the body proves nothing and
-  // is ignored — without proof the answer stays anonymous.
+  // the session was started with (the service falls back to it). A bare phone
+  // in the body proves nothing and is ignored.
   let userId: string | null = c.get("userId") ?? null;
   if (!userId && (body.idToken || body.proof)) {
     try {
@@ -136,139 +120,12 @@ responses.post("/api/responses/:id/submit", async (c) => {
   } else if (userId) {
     await updateUserNames(db, userId, body.firstName ?? null, body.lastName ?? null);
   }
-  if (!userId) userId = existing.user_id;
-  const identity = userId
-    ? await db.prepare("SELECT phone FROM users WHERE id = ?").bind(userId).first<{ phone: string | null }>()
-    : null;
-  const phone = identity?.phone ?? null;
-  let memberToken: string | null = null;
-  if (userId) {
-    const membership = await ensureMember(db, existing.survey_id, userId, "member");
-    memberToken = membership.removed_at ? null : membership.access_token;
-  }
 
-  await db
-    .prepare(
-      `UPDATE responses
-       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?,
-           status = 'submitted', submitted_at = datetime('now')
-       WHERE id = ?`
-    )
-    .bind(phone, body.firstName ?? null, body.lastName ?? null, userId, visibility, responseId)
-    .run();
-
-  // Create response_answers rows for each uploaded file
-  const questions = await db
-    .prepare("SELECT * FROM survey_questions WHERE survey_id = ? ORDER BY sort_order")
-    .bind(existing.survey_id)
-    .all<SurveyQuestion>();
-
-  const insertStatements = [];
-  for (const q of questions.results) {
-    // Probes aimed at someone else can't have been answered here.
-    if (q.target_user_id && q.target_user_id !== userId) continue;
-
-    if (q.question_type === "photo") {
-      const jpgKey = `responses/${responseId}/${q.id}.jpg`;
-      const jpgObj = await c.env.AUDIO_BUCKET.head(jpgKey);
-      if (jpgObj) {
-        insertStatements.push(
-          db
-            .prepare(
-              // audio_r2_key is NOT NULL on the schema, so store an empty
-              // string for photo answers; the real key lives in image_r2_key.
-              "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, image_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, '', ?, 0, 'completed')"
-            )
-            .bind(generateId(), responseId, q.id, jpgKey)
-        );
-      }
-      continue;
-    }
-
-    if (q.question_type === "video") {
-      const mp4Key = `responses/${responseId}/${q.id}.mp4`;
-      const mp4Obj = await c.env.AUDIO_BUCKET.head(mp4Key);
-      if (mp4Obj) {
-        insertStatements.push(
-          db
-            .prepare(
-              "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, video_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, '', ?, 0, 'pending')"
-            )
-            .bind(generateId(), responseId, q.id, mp4Key)
-        );
-      }
-      continue;
-    }
-
-    // Voice answer (default) — check .webm then .wav fallback
-    const webmKey = `responses/${responseId}/${q.id}.webm`;
-    const wavKey = `responses/${responseId}/${q.id}.wav`;
-
-    const webmObj = await c.env.AUDIO_BUCKET.head(webmKey);
-    const audioKey = webmObj ? webmKey : null;
-
-    if (!audioKey) {
-      const wavObj = await c.env.AUDIO_BUCKET.head(wavKey);
-      if (wavObj) {
-        insertStatements.push(
-          db
-            .prepare(
-              "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, ?, 0, 'pending')"
-            )
-            .bind(generateId(), responseId, q.id, wavKey)
-        );
-      }
-    } else {
-      insertStatements.push(
-        db
-          .prepare(
-            "INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, ?, 0, 'pending')"
-          )
-          .bind(generateId(), responseId, q.id, webmKey)
-      );
-    }
-  }
-
-  if (insertStatements.length > 0) {
-    await db.batch(insertStatements);
-  }
-
-  trackServerEvent(phone ?? responseId, "response_submitted", {
-    responseId,
-    surveyId: existing.survey_id,
-    hasPhone: !!phone,
-    joined: !!memberToken,
-    visibility,
-  });
-
-  if (phone) {
-    trackServerEvent(phone, "$identify", {
-      $set: {
-        phone,
-        first_name: body.firstName,
-        last_name: body.lastName,
-        role: "participant",
-      },
-    });
-  }
-
-  // Tell the owner and admins (Inbox).
-  const firstName = body.firstName ?? "Someone";
-  const surveyTitle = survey.title ?? "Untitled";
-  await notifyManagers(c.env, existing.survey_id, {
-    type: "new_response",
-    title: `${firstName} responded to ${surveyTitle}`,
-    surveyId: existing.survey_id,
-    surveyTitle,
-  });
-
-  // Transcribe in the background; the agent ingests once that lands.
-  c.executionCtx.waitUntil(transcribeResponseAnswers(c.env, responseId));
-
-  return c.json({ success: true, id: responseId, memberToken, visibility });
+  const result = await submitResponse(c.env, c.executionCtx, responseId, { userId, firstName: body.firstName ?? null, lastName: body.lastName ?? null }, "web");
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json({ success: true, id: responseId, memberToken: result.memberToken, visibility: result.visibility });
 });
 
-// ── POST /api/responses/:id/refresh-urls ── Fresh upload URLs for an in-progress session
 responses.post("/api/responses/:id/refresh-urls", async (c) => {
   const responseId = c.req.param("id");
   const db = c.env.DB;

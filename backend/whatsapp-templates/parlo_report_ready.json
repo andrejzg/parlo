@@ -1,0 +1,33 @@
+{
+  "name": "parlo_report_ready",
+  "language": "en_US",
+  "category": "UTILITY",
+  "parameter_format": "NAMED",
+  "components": [
+    {
+      "type": "BODY",
+      "text": "The report for {{survey_title}} is ready: what the group said, in the agent's words. Tap below to read it.",
+      "example": {
+        "body_text_named_params": [
+          {
+            "param_name": "survey_title",
+            "example": "Climbing club: this season"
+          }
+        ]
+      }
+    },
+    {
+      "type": "BUTTONS",
+      "buttons": [
+        {
+          "type": "URL",
+          "text": "Read the report",
+          "url": "https://parlo.me/s/{{1}}",
+          "example": [
+            "https://parlo.me/s/abc12345?t=token"
+          ]
+        }
+      ]
+    }
+  ]
+}

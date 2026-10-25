@@ -23,6 +23,7 @@
  */
 
 import { Agent } from "agents";
+import { notifyReportReady } from "../services/reportReady";
 import { generateText, tool, stepCountIs } from "ai";
 import { z } from "zod";
 import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types";
@@ -957,6 +958,15 @@ export class GroupAgent extends Agent<Env, GroupState> {
       await this.env.DB.prepare("UPDATE surveys SET report_md = ?, report_updated_at = ? WHERE id = ?")
         .bind(report?.content ?? null, report?.updatedAt ?? null, surveyId)
         .run();
+      // Members who answered on WhatsApp (or verified a phone) get the report
+      // in their thread, once per round. Fails quietly until the template is approved.
+      if (report?.content) {
+        try {
+          await notifyReportReady(this.env, surveyId);
+        } catch (err) {
+          console.error("[agent] notifyReportReady failed", { surveyId, err });
+        }
+      }
 
       this.setState({
         ...this.state,

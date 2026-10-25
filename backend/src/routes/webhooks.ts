@@ -3,8 +3,14 @@ import type { Env, WhatsAppWebhookPayload, Survey } from "../types";
 import { createWhatsAppClient, downloadInboundMedia } from "../services/whatsapp";
 import { trackServerEvent } from "../services/analytics";
 import { openerTokenKey, storeIntroBytes } from "../services/intro";
-import { claimOwnership, normalizePhone } from "../services/groups";
+import { claimOwnership, findUserByPhone, getMembership, normalizePhone, upsertUserByPhone } from "../services/groups";
 import { buildShareUrl } from "../services/slug";
+import { latestSentRound, pendingAsksFor } from "../services/rounds";
+import { generateId, generateCode } from "../services/codes";
+import { checkRateLimit } from "../services/ratelimit";
+import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
+import { isWhatsAppPlayableAudio, type WhatsAppClient } from "../services/whatsapp";
+import { submitResponse } from "../services/responses";
 
 type InboundMedia = { url: string | null; id: string | null; contentType: string | null };
 type Inbound = { kind: "text" | "audio"; text: string; from: string; contactName: string | null; media: InboundMedia | null };
@@ -40,6 +46,150 @@ function phoneFromWa(from: string): string {
 // Ten minutes: long enough to record, short enough that a stale binding
 // cannot catch a voice note meant for another parlo (seen 2026-10-25).
 const OPENER_SESSION_TTL_SECONDS = 600;
+
+// ── Answering on WhatsApp ────────────────────────────────────────────────
+// "answer <code>" (the answerLink in the invitation) opens a session: the bot
+// plays the opener, asks one voice question at a time, each reply is a voice
+// note stored under the response like a web upload, and the last one submits
+// with the number as identity. The session lives in KV for a day (the
+// service window) and holds everything the next message needs.
+type AnswerSession = {
+  surveyId: string;
+  code: string;
+  title: string;
+  responseId: string;
+  userId: string | null;
+  questions: { id: string; text: string; hint: string | null }[];
+  index: number;
+  answered: number;
+};
+const ANSWER_SESSION_TTL_SECONDS = 24 * 3600;
+function answerSessionKey(from: string) {
+  return `wa-answer:${from}`;
+}
+
+function visibilityLine(visibility: string | null | undefined): string {
+  return visibility === "open"
+    ? "Everyone in the group hears everyone's answers, with names."
+    : "Only the person who set this up, their admins and the agent hear your voice. Everyone gets the agent's report.";
+}
+
+function questionText(session: AnswerSession, lead: string): string {
+  const q = session.questions[session.index];
+  const n = session.index + 1;
+  const hint = q.hint && !/^question\s+\d+\s+of\s+\d+$/i.test(q.hint.trim()) ? `\n${q.hint}` : "";
+  return `${lead}Question ${n} of ${session.questions.length}\n${q.text}${hint}`;
+}
+
+async function startAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }, wa: WhatsAppClient, from: string, contactName: string | null, code: string): Promise<void> {
+  const db = env.DB;
+  const survey = await db
+    .prepare("SELECT id, code, title, visibility, intro_r2_key, intro_transcript, report_md FROM surveys WHERE code = ? AND status = 'active'")
+    .bind(code)
+    .first<{ id: string; code: string; title: string | null; visibility: string | null; intro_r2_key: string | null; intro_transcript: string | null; report_md: string | null }>();
+  if (!survey) {
+    await wa.sendText(from, `No parlo found with code "${code}". Check the link and try again.`);
+    return;
+  }
+  const title = survey.title ?? "this parlo";
+  const phone = phoneFromWa(from);
+  const user = await findUserByPhone(db, phone);
+  const pending = await pendingAsksFor(db, survey.id, user?.id ?? null);
+  const voice = pending.filter((q) => q.question_type !== "photo" && q.question_type !== "video");
+  const nonVoice = pending.length - voice.length;
+
+  if (voice.length === 0) {
+    if (pending.length === 0) {
+      let link = `https://parlo.me/s/${survey.code}`;
+      if (user) {
+        const m = await getMembership(db, survey.id, user.id);
+        if (m?.access_token) link = `${link}?t=${m.access_token}`;
+      }
+      await wa.sendText(
+        from,
+        survey.report_md && user
+          ? `You've answered everything in "${title}" for now. The report so far: ${link}`
+          : `You've answered everything in "${title}" for now. The report lands here when the others have answered.`
+      );
+    } else {
+      await wa.sendText(from, `What's left in "${title}" needs a photo or a video, which I can't take here yet. Answer at https://parlo.me/s/${survey.code}`);
+    }
+    return;
+  }
+
+  const allowed = await checkRateLimit(env.KV, "response-create", survey.id, 50);
+  if (!allowed) {
+    await wa.sendText(from, "This parlo is getting a lot of answers right now. Try again in a little while.");
+    return;
+  }
+
+  const round = await latestSentRound(db, survey.id);
+  const responseId = generateId();
+  await db
+    .prepare("INSERT INTO responses (id, code, survey_id, user_id, round_id) VALUES (?, ?, ?, ?, ?)")
+    .bind(responseId, generateCode(10), survey.id, user?.id ?? null, round?.id ?? null)
+    .run();
+  trackServerEvent(responseId, "response_started", { surveyId: survey.id, surveyCode: survey.code, responseId, round: round?.number ?? 1, asMember: !!user, source: "whatsapp" });
+
+  const session: AnswerSession = {
+    surveyId: survey.id,
+    code: survey.code,
+    title,
+    responseId,
+    userId: user?.id ?? null,
+    questions: voice.map((q) => ({ id: q.id, text: q.text, hint: q.hint ?? null })),
+    index: 0,
+    answered: 0,
+  };
+  await Promise.all([
+    env.KV.put(answerSessionKey(from), JSON.stringify(session), { expirationTtl: ANSWER_SESSION_TTL_SECONDS }),
+    env.KV.delete(openerSessionKey(from)),
+  ]);
+
+  // The opener first: as audio when WhatsApp can play the file, else its words.
+  if (survey.intro_r2_key) {
+    let played = false;
+    const head = await env.AUDIO_BUCKET.head(survey.intro_r2_key);
+    if (head && isWhatsAppPlayableAudio(head.httpMetadata?.contentType)) {
+      const token = await generateReadToken(env.KV, survey.intro_r2_key);
+      played = await wa.sendAudio(from, generatePresignedReadUrl(env.API_ORIGIN ?? "https://api.parlo.me", survey.intro_r2_key, token));
+    }
+    if (!played && survey.intro_transcript) {
+      await wa.sendText(from, `A hello from the person asking: "${survey.intro_transcript.slice(0, 600)}"`);
+    }
+  }
+
+  const count = session.questions.length;
+  const lead =
+    `"${title}": ${count} question${count === 1 ? "" : "s"}. Answer each with a voice note (hold the mic). ${visibilityLine(survey.visibility)}` +
+    (nonVoice > 0 ? ` ${nonVoice} more need a photo or video; those are at https://parlo.me/s/${survey.code}.` : "") +
+    "\n\n";
+  await wa.sendText(from, questionText(session, lead));
+  void ctx;
+}
+
+async function finishAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }, wa: WhatsAppClient, from: string, contactName: string | null, session: AnswerSession): Promise<void> {
+  const db = env.DB;
+  await env.KV.delete(answerSessionKey(from));
+  if (session.answered === 0) {
+    await wa.sendText(from, `Nothing recorded for "${session.title}". Send "answer ${session.code}" whenever you want to start again.`);
+    return;
+  }
+  const phone = phoneFromWa(from);
+  const user = await upsertUserByPhone(db, phone, { waName: contactName });
+  const result = await submitResponse(env, ctx, session.responseId, { userId: user.id }, "whatsapp");
+  if (!result.ok) {
+    await wa.sendText(from, `Something went wrong saving your answers (${result.error}). Send "answer ${session.code}" to try again.`);
+    return;
+  }
+  const survey = await db.prepare("SELECT report_md FROM surveys WHERE id = ?").bind(session.surveyId).first<{ report_md: string | null }>();
+  const link = result.memberToken ? `https://parlo.me/s/${session.code}?t=${result.memberToken}` : `https://parlo.me/s/${session.code}`;
+  const tail = survey?.report_md
+    ? `The report so far, and your place in the group: ${link}`
+    : `The agent writes the report once the others have answered, and it lands here. Your place in the group: ${link}`;
+  await wa.sendText(from, `That's all of them, thank you! You're in "${session.title}" now. ${tail}`);
+}
+
 function openerSessionKey(from: string) {
   return `wa-opener:${from}`;
 }
@@ -142,11 +292,70 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
       continue;
     }
 
-    // ── A voice note: the opener, if this number asked to send one in the last hour.
+    // ── "answer <code>" (the answerLink in an invitation): start answering here.
+    const answerMatch = kind === "text" ? text.match(/^(?:answer|join)\s+([a-z0-9]{6,12})\s*$/i) : null;
+    if (answerMatch) {
+      trackServerEvent(from, "whatsapp_answer_link_opened", { code: answerMatch[1] });
+      await startAnswerSession(c.env, c.executionCtx, wa, from, contactName, answerMatch[1]);
+      continue;
+    }
+
+    // ── Text while answering: skip, stop, or a nudge back to the mic.
+    if (kind === "text") {
+      const answerRaw = await c.env.KV.get(answerSessionKey(from));
+      if (answerRaw) {
+        const session = JSON.parse(answerRaw) as AnswerSession;
+        const word = text.trim().toLowerCase();
+        if (word === "stop" || word === "cancel") {
+          await c.env.KV.delete(answerSessionKey(from));
+          await wa.sendText(from, `Okay, stopped. Send "answer ${session.code}" to pick it up again.`);
+          continue;
+        }
+        if (word === "skip" || word === "next") {
+          session.index += 1;
+          if (session.index >= session.questions.length) {
+            await finishAnswerSession(c.env, c.executionCtx, wa, from, contactName, session);
+          } else {
+            await c.env.KV.put(answerSessionKey(from), JSON.stringify(session), { expirationTtl: ANSWER_SESSION_TTL_SECONDS });
+            await wa.sendText(from, questionText(session, "Skipped. "));
+          }
+          continue;
+        }
+        await wa.sendText(from, `Answer with a voice note (hold the mic), or send "skip" to move on. ${questionText(session, "")}`);
+        continue;
+      }
+    }
+
+    // ── A voice note: an answer if this number is mid-parlo, else the opener if it asked to send one.
     if (kind === "audio") {
+      const answerRaw = await c.env.KV.get(answerSessionKey(from));
+      if (answerRaw) {
+        const session = JSON.parse(answerRaw) as AnswerSession;
+        const q = session.questions[session.index];
+        try {
+          const got = await downloadInboundMedia(c.env.KAPSO_API_KEY, c.env.WHATSAPP_PHONE_NUMBER_ID, media ?? {});
+          const key = `responses/${session.responseId}/${q.id}.webm`;
+          await c.env.AUDIO_BUCKET.put(key, got.bytes, { httpMetadata: { contentType: got.contentType || "audio/ogg" } });
+          trackServerEvent(from, "whatsapp_answer_saved", { surveyId: session.surveyId, responseId: session.responseId, questionId: q.id, bytes: got.bytes.byteLength });
+        } catch (err) {
+          console.error("[webhook] answer voice note failed", { from, err });
+          await wa.sendText(from, "I couldn't take that voice note. Could you send it once more?");
+          continue;
+        }
+        session.answered += 1;
+        session.index += 1;
+        if (session.index >= session.questions.length) {
+          await finishAnswerSession(c.env, c.executionCtx, wa, from, contactName, session);
+        } else {
+          await c.env.KV.put(answerSessionKey(from), JSON.stringify(session), { expirationTtl: ANSWER_SESSION_TTL_SECONDS });
+          await wa.sendText(from, questionText(session, "Got it. "));
+        }
+        continue;
+      }
+
       const sessionRaw = await c.env.KV.get(openerSessionKey(from));
       if (!sessionRaw) {
-        await wa.sendText(from, "Thanks for the voice note! To add it as a parlo's opener, tap the opener link your agent sent you first (it starts with \"opener\"), then send the voice note again.");
+        await wa.sendText(from, "Thanks for the voice note! If you meant to answer a parlo, tap the link in your group first (it sends me \"answer <code>\"); for an opener, tap the opener link your agent sent you. Then send the voice note again.");
         continue;
       }
       const session = JSON.parse(sessionRaw) as { surveyId: string; token: string };

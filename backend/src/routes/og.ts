@@ -132,7 +132,7 @@ og.get("/api/og/:code{.+\\.png}", async (c) => {
       .bind(code)
       .first<{ title: string | null }>();
 
-    const rawTitle = survey?.title ?? "Voice Survey";
+    const rawTitle = survey?.title ?? "A parlo";
     const { text, size } = fitTitle(rawTitle);
 
     const seed = hashSeed(code);
