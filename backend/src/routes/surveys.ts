@@ -1140,6 +1140,13 @@ surveys.post("/api/agent/parlos", async (c) => {
   });
 
   const whatsappText = encodeURIComponent(`Hey! I'd love to hear your thoughts. It takes 2 minutes, just tap and talk: ${shareLink}`);
+  const openerRequest = opener
+    ? null
+    : {
+        why: "The opener is the voice note the group hears before they answer: the person, in their own voice, saying why they are asking. Parlos with one get answered; a link with no voice is a form.",
+        askThePerson: OPENER_ASK,
+        thenCall: `POST https://api.parlo.me/api/surveys/${surveyId}/intro/from-url with header X-Parlo-Api-Key: ${apiKey} and body {"url": "<https URL of the voice note file>"}. The parlo is already live; people who open it before that simply hear no opener.`,
+      };
   return c.json(
     {
       parloId: surveyId,
@@ -1154,17 +1161,23 @@ surveys.post("/api/agent/parlos", async (c) => {
       briefSource,
       opener,
       openerError,
+      openerRequest,
       next: [
         `Post shareLink into the group chat; the parlo is live and anyone who opens it can answer by voice.`,
         claimLink
           ? `Send claimLink to the person you act for: one tap (and a phone code the first time) makes the parlo theirs, with the report and the dashboard.`
           : `The parlo belongs to the API key's owner; the dashboard is at dashboardLink.`,
+        openerRequest ? `Then ask the person for the opener voice note (see openerRequest) and add it with the call it names.` : `The opener is in place; the group hears it first.`,
         `Keep apiKey and send it as the X-Parlo-Api-Key header next time, so new parlos are theirs from the start and GET /api/my/surveys lists them.`,
       ].join(" "),
     },
     201
   );
 });
+
+/** What an agent should ask its person for; the three prompts are the web opener screen's. */
+const OPENER_ASK =
+  "Send me a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it. I will add it so they hear you before they answer.";
 
 /** What the web opener falls back to when the creator said nothing usable (mirrors CreatorPage). */
 const FALLBACK_BRIEF =

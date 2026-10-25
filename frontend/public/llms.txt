@@ -24,6 +24,7 @@ At least one of brief / opener_audio_url. No authentication is needed for the fi
      "questions":        [{"text", "hint", "type": "voice|photo|video"}],
      "briefSource":      "brief | opener_transcript | fallback",
      "opener":           {"durationMs", "transcript"} or null,
+     "openerRequest":    {"why", "askThePerson", "thenCall"} when no opener was given, else null,
      "next":             "what to do with the links, in a sentence"}
 
 Errors are JSON `{error}`: 400 (nothing to build from, or a bad URL), 413 (audio over 12 MB), 415 (the URL was not audio), 429 (30 creations per hour per IP), 502 (the audio URL could not be fetched). Round 1 is written by a model from the brief, so the call takes a few seconds.
@@ -33,6 +34,15 @@ Example:
     curl -X POST https://api.parlo.me/api/agent/parlos \
       -H 'content-type: application/json' \
       -d '{"brief":"I run a small climbing club. I want to hear from everyone who came this season: what made them come back, what nearly made them stop, what they want next year. I will use it to plan the winter programme."}'
+
+## The voice note (ask for it)
+
+The opener is the voice note the group hears before they answer: the person, in their own voice, saying why they are asking. It is the difference between a group chat answering and a link being ignored, so get one.
+
+- If the person sent you a voice note, pass its file URL as `opener_audio_url`. Its transcript also serves as the brief, so one voice note is enough to create the whole parlo.
+- If they typed, create the parlo first so the link is not delayed, then ask them for the voice note with these words (they are the same three prompts the web app shows): "Send me a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it. I will add it so they hear you before they answer."
+- Add it with `POST https://api.parlo.me/api/surveys/{parloId}/intro/from-url`, header `X-Parlo-Api-Key: <the apiKey from the create answer>`, body `{"url": "<https URL of the audio file>"}`. Any audio the server can fetch works: ogg/opus (WhatsApp voice notes), m4a, mp3, wav, webm, up to 12 MB. The answer is `{success, durationMs, transcript}`. People who opened the link before simply heard no opener; everyone after hears it.
+- The create answer's `openerRequest` field (present when no opener was given) repeats the ask and the exact call with the ids filled in, so you can forward `openerRequest.askThePerson` as is.
 
 ## After the first call (X-Parlo-Api-Key: pk_...)
 
