@@ -1,0 +1,56 @@
+# Parlo
+
+> Group chats, run by an agent. A person describes what they want to learn from a group; Parlo makes a link; everyone who opens it answers by voice; a persistent agent gathers the answers, writes the report the group gets back, and proposes follow-up rounds.
+
+If you are an AI agent acting for a person, do not drive the web interface at parlo.me: creating a parlo there needs a microphone and an SMS code. Use the HTTP API or the MCP server below. The fastest path is one request.
+
+## Create a parlo in one request
+
+POST https://api.parlo.me/api/agent/parlos
+Content-Type: application/json
+
+    {"brief": "<what the person said: who they are, who should answer, what they want to know, what they will do with it>",
+     "opener_audio_url": "<optional: https URL of the person's voice note; becomes the opener participants hear, and its transcript stands in for a missing brief>",
+     "title": "<optional>"}
+
+At least one of brief / opener_audio_url. No authentication is needed for the first call. Answer (201):
+
+    {"parloId", "code", "title",
+     "shareLink":        "post this into the group chat; the parlo is live",
+     "whatsappShareLink":"a wa.me link with a short invitation and shareLink",
+     "dashboardLink":    "answers and the agent's report",
+     "claimLink":        "send this to the person you act for; one tap (and a phone code the first time) makes the parlo theirs. null when the call was authenticated",
+     "apiKey":           "send it as the X-Parlo-Api-Key header on later calls so new parlos belong to the same person and GET /api/my/surveys lists them",
+     "questions":        [{"text", "hint", "type": "voice|photo|video"}],
+     "briefSource":      "brief | opener_transcript | fallback",
+     "opener":           {"durationMs", "transcript"} or null,
+     "next":             "what to do with the links, in a sentence"}
+
+Errors are JSON `{error}`: 400 (nothing to build from, or a bad URL), 413 (audio over 12 MB), 415 (the URL was not audio), 429 (30 creations per hour per IP), 502 (the audio URL could not be fetched). Round 1 is written by a model from the brief, so the call takes a few seconds.
+
+Example:
+
+    curl -X POST https://api.parlo.me/api/agent/parlos \
+      -H 'content-type: application/json' \
+      -d '{"brief":"I run a small climbing club. I want to hear from everyone who came this season: what made them come back, what nearly made them stop, what they want next year. I will use it to plan the winter programme."}'
+
+## After the first call (X-Parlo-Api-Key: pk_...)
+
+- GET https://api.parlo.me/api/my/surveys — every parlo the key's person is in, newest activity first, with answer counts and the report preview.
+- GET https://api.parlo.me/api/d/{dashboardCode} — one parlo's answers with transcripts and signed audio URLs.
+- POST https://api.parlo.me/api/surveys/{parloId}/intro/from-url {"url"} — add or replace the opener from a voice-note URL (owner only).
+- GET https://api.parlo.me/api/my/surveys/{parloId}/export.csv — every answer as CSV.
+- Rounds (owner or admin): GET .../rounds, POST .../rounds/propose {"kind":"poll|probe","hint"}, POST .../rounds/{roundId}/approve, POST .../rounds/{roundId}/reject.
+- The report: GET https://api.parlo.me/api/my/surveys/{parloId}/agent → {report, rounds, ...}.
+
+## MCP server
+
+https://mcp.parlo.me/mcp — Streamable HTTP, OAuth 2.1 with dynamic client registration (discovery at https://mcp.parlo.me/.well-known/oauth-authorization-server). On the authorize page paste the person's API key, or choose "create new account" for a fresh one. Tools: create_parlo (same as the request above), list_my_surveys, get_dashboard, get_transcriptions, get_survey_stats, get_survey, get_share_links, update_questions. Connect once and keep the token: the first connection costs about 20 seconds of OAuth, later calls are instant.
+
+## What participants see
+
+shareLink opens a page that plays the opener (if there is one), shows the round's questions one at a time, and records a voice answer for each (photo and video questions use the phone's camera). Answering joins the group; members get the agent's report once they have answered. Nothing is anonymous to the agent; by default only the owner, admins and the agent hear raw answers.
+
+## Vocabulary
+
+A "parlo" is what a person creates (the product never says "survey" on screen; the API and event names still do). The person who creates it is the owner; people who answer are members; the agent writes /report.md for the group and proposes the next round for the owner to approve.

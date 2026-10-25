@@ -7,6 +7,7 @@ import CreatorPage from "@/pages/CreatorPage";
 import ParticipantPage from "@/pages/ParticipantPage";
 import PublicResultsPage from "@/pages/PublicResultsPage";
 import DashboardPage from "@/pages/DashboardPage";
+import ClaimPage from "@/pages/ClaimPage";
 import AdminPage from "@/pages/AdminPage";
 import NotFound from "@/pages/NotFound";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -60,6 +61,9 @@ const App = () => (
 
           {/* Creator dashboard */}
           <Route path="/d/:dashboardCode" element={<DashboardPage />} />
+
+          {/* The claim link an agent hands the person it created a parlo for */}
+          <Route path="/claim/:token" element={<ClaimPage />} />
 
           {/* Admin (protected by Cloudflare Access) */}
           <Route path="/admin" element={<AdminPage />} />

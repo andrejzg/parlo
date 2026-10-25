@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# AI agents: https://parlo.me/llms.txt (one request creates a parlo; MCP at https://mcp.parlo.me/mcp)

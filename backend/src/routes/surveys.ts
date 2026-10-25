@@ -17,7 +17,7 @@ import type {
   SurveyPublicView,
 } from "../types";
 import { generateId, generateCode } from "../services/codes";
-import { extractCode } from "../services/slug";
+import { buildShareUrl, extractCode } from "../services/slug";
 import {
   generatePresignedUploadUrl,
   generateUploadToken,
@@ -838,8 +838,7 @@ surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
   if (!userId) return c.json({ error: "Authentication required" }, 401);
 
   const surveyId = c.req.param("id");
-  const db = c.env.DB;
-  const survey = await db
+  const survey = await c.env.DB
     .prepare("SELECT id FROM surveys WHERE id = ? AND creator_id = ?")
     .bind(surveyId, userId)
     .first<{ id: string }>();
@@ -850,13 +849,28 @@ surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
   if (!allowed) return c.json({ error: "Rate limit exceeded" }, 429);
 
   const body = await c.req.json<{ url?: unknown }>().catch(() => ({} as { url?: unknown }));
+  const result = await saveIntroFromUrl(c.env, surveyId, body.url);
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json({ success: true, ...result.saved });
+});
+
+type IntroFromUrlOutcome =
+  | { ok: true; saved: { durationMs: number; transcript: string; bytes: number; contentType: string } }
+  | { ok: false; status: 400 | 413 | 415 | 502; error: string };
+
+/**
+ * Fetch a creator's voice note from a URL into the opener slot and transcribe
+ * it before returning (the caller usually wants the words as the brief).
+ * Shared by `POST /intro/from-url` and `POST /api/agent/parlos`.
+ */
+async function saveIntroFromUrl(env: Env, surveyId: string, rawUrl: unknown): Promise<IntroFromUrlOutcome> {
   let source: URL;
   try {
-    source = new URL(typeof body.url === "string" ? body.url : "");
+    source = new URL(typeof rawUrl === "string" ? rawUrl : "");
   } catch {
-    return c.json({ error: "url must be an absolute https URL" }, 400);
+    return { ok: false, status: 400, error: "url must be an absolute https URL" };
   }
-  if (source.protocol !== "https:") return c.json({ error: "url must use https" }, 400);
+  if (source.protocol !== "https:") return { ok: false, status: 400, error: "url must use https" };
 
   let upstream: Response;
   try {
@@ -867,23 +881,23 @@ surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
     });
   } catch (err) {
     console.error("[intro/from-url] fetch failed", { surveyId, err });
-    return c.json({ error: "Could not fetch the audio URL" }, 502);
+    return { ok: false, status: 502, error: "Could not fetch the audio URL" };
   }
-  if (!upstream.ok) return c.json({ error: `Audio URL answered ${upstream.status}` }, 502);
+  if (!upstream.ok) return { ok: false, status: 502, error: `Audio URL answered ${upstream.status}` };
 
   const declared = Number(upstream.headers.get("content-length") ?? "0");
-  if (declared > MAX_TRANSCRIBE_BYTES) return c.json({ error: "Audio too large" }, 413);
+  if (declared > MAX_TRANSCRIBE_BYTES) return { ok: false, status: 413, error: "Audio too large" };
   const contentType = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (!isIntroContentType(contentType)) {
-    return c.json({ error: `Not an audio file (content-type ${contentType || "unknown"})` }, 415);
+    return { ok: false, status: 415, error: `Not an audio file (content-type ${contentType || "unknown"})` };
   }
 
   const buf = await upstream.arrayBuffer();
-  if (buf.byteLength === 0) return c.json({ error: "Empty audio" }, 400);
-  if (buf.byteLength > MAX_TRANSCRIBE_BYTES) return c.json({ error: "Audio too large" }, 413);
+  if (buf.byteLength === 0) return { ok: false, status: 400, error: "Empty audio" };
+  if (buf.byteLength > MAX_TRANSCRIBE_BYTES) return { ok: false, status: 413, error: "Audio too large" };
 
   const key = introKey(surveyId);
-  await c.env.AUDIO_BUCKET.put(key, buf, {
+  await env.AUDIO_BUCKET.put(key, buf, {
     httpMetadata: { contentType: contentType || "audio/ogg" },
   });
 
@@ -891,22 +905,22 @@ surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
   let transcript = "";
   let durationMs = 0;
   try {
-    const detailed = await transcribeAudioDetailed(c.env.AI, buf, `survey-${surveyId}`);
+    const detailed = await transcribeAudioDetailed(env.AI, buf, `survey-${surveyId}`);
     transcript = detailed.text.trim();
     durationMs = detailed.durationMs ?? 0;
   } catch (err) {
     console.error("[intro/from-url] transcription failed", { surveyId, err });
   }
 
-  await db
+  await env.DB
     .prepare("UPDATE surveys SET intro_r2_key = ?, intro_duration_ms = ?, intro_transcript = ? WHERE id = ?")
     .bind(key, durationMs, transcript || null, surveyId)
     .run();
 
   trackServerEvent(surveyId, "survey_intro_saved", { surveyId, durationMs, source: "url", bytes: buf.byteLength, contentType });
 
-  return c.json({ success: true, durationMs, transcript, bytes: buf.byteLength, contentType });
-});
+  return { ok: true, saved: { durationMs, transcript, bytes: buf.byteLength, contentType } };
+}
 
 const INTRO_FETCH_TIMEOUT_MS = 20_000;
 
@@ -942,15 +956,57 @@ function introKey(surveyId: string) {
 // number in the body proves nothing and is not read. A parlo whose owner is
 // already a verified user can only be re-claimed by that same user.
 surveys.post("/api/surveys/:id/claim", async (c) => {
-  const surveyId = c.req.param("id");
+  return claimSurveyAs(c, c.req.param("id"));
+});
+
+// ── GET/POST /api/claim/:token ── The claim link an agent hands its person
+//
+// `POST /api/agent/parlos` mints `claim:{token}` → surveyId in KV (7 days)
+// when the owner is anonymous. GET shows what is being claimed; POST takes
+// the same proof as `/claim` (API key, Firebase ID token or WhatsApp proof),
+// attaches the parlo to that person and burns the token.
+surveys.get("/api/claim/:token", async (c) => {
+  const surveyId = await c.env.KV.get(claimKey(c.req.param("token")));
+  if (!surveyId) return c.json({ error: "This claim link has expired" }, 404);
+  const survey = await c.env.DB
+    .prepare("SELECT s.title, s.code, u.phone FROM surveys s JOIN users u ON u.id = s.creator_id WHERE s.id = ?")
+    .bind(surveyId)
+    .first<{ title: string | null; code: string; phone: string | null }>();
+  if (!survey) return c.json({ error: "This claim link has expired" }, 404);
+  return c.json({ title: survey.title, code: survey.code, alreadyClaimed: !!survey.phone });
+});
+
+surveys.post("/api/claim/:token", async (c) => {
+  const token = c.req.param("token");
+  const surveyId = await c.env.KV.get(claimKey(token));
+  if (!surveyId) return c.json({ error: "This claim link has expired" }, 404);
+  const res = await claimSurveyAs(c, surveyId);
+  if (res.status === 200) await c.env.KV.delete(claimKey(token));
+  return res;
+});
+
+function claimKey(token: string) {
+  return `claim:${token}`;
+}
+
+const CLAIM_TOKEN_TTL_SECONDS = 7 * 24 * 3600;
+
+type ClaimContext = {
+  env: Env;
+  req: { json<T>(): Promise<T> };
+  get(key: "userId"): string | null;
+  json: (body: unknown, status?: 200 | 403 | 404 | 400 | 401 | 409 | 429 | 500) => Response;
+};
+
+async function claimSurveyAs(c: ClaimContext, surveyId: string): Promise<Response> {
   const db = c.env.DB;
   type ClaimBody = { idToken?: string; proof?: string; name?: string };
   const body = await c.req.json<ClaimBody>().catch((): ClaimBody => ({}));
 
   const survey = await db
-    .prepare("SELECT id, creator_id FROM surveys WHERE id = ?")
+    .prepare("SELECT id, creator_id, dashboard_code FROM surveys WHERE id = ?")
     .bind(surveyId)
-    .first<{ id: string; creator_id: string }>();
+    .first<{ id: string; creator_id: string; dashboard_code: string }>();
   if (!survey) {
     return c.json({ error: "Survey not found" }, 404);
   }
@@ -970,7 +1026,7 @@ surveys.post("/api/surveys/:id/claim", async (c) => {
       phone = verified.phone;
       method = verified.method;
     } catch (err) {
-      if (err instanceof PhoneProofError) return c.json({ error: err.message, code: err.code }, err.status);
+      if (err instanceof PhoneProofError) return c.json({ error: err.message, code: err.code }, err.status as 400 | 401);
       throw err;
     }
     if (owner?.phone && owner.phone !== phone) return c.json({ error: "This parlo already belongs to someone else" }, 403);
@@ -981,8 +1037,138 @@ surveys.post("/api/surveys/:id/claim", async (c) => {
   const user = await db.prepare("SELECT phone FROM users WHERE id = ?").bind(finalCreatorId).first<{ phone: string | null }>();
   trackServerEvent(finalCreatorId, "creator_phone_claimed", { surveyId, method });
 
-  return c.json({ ok: true, apiKey, userId: finalCreatorId, phone: user?.phone ?? null });
+  return c.json({ ok: true, apiKey, userId: finalCreatorId, phone: user?.phone ?? null, dashboardCode: survey.dashboard_code });
+}
+
+// ── POST /api/agent/parlos ── One call, for agents: brief in, live link out
+//
+// What parlo.me tells an AI agent to do instead of driving the UI (the static
+// block in frontend/index.html and /llms.txt). Body `{brief?, opener_audio_url?,
+// title?}`, at least one of the first two. With an API key the caller's user
+// owns the parlo; without one the owner is a fresh anonymous user and the
+// answer carries a `claimLink` the agent hands to its person, plus the
+// `apiKey` to send next time. Rate limited 30/hr per IP on top of the
+// creation limit, because every call pays for a model run.
+surveys.post("/api/agent/parlos", async (c) => {
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  const [createAllowed, agentAllowed] = await Promise.all([
+    checkRateLimit(c.env.KV, "survey-create", ip, 100),
+    checkRateLimit(c.env.KV, "agent-create", ip, 30),
+  ]);
+  if (!createAllowed || !agentAllowed) return c.json({ error: "Rate limit exceeded. Try again in an hour." }, 429);
+
+  type AgentBody = { brief?: unknown; opener_audio_url?: unknown; title?: unknown };
+  const body = await c.req.json<AgentBody>().catch((): AgentBody => ({}));
+  const typedBrief = typeof body.brief === "string" ? body.brief.trim().slice(0, BRIEF_MAX_CHARS) : "";
+  const openerUrl = typeof body.opener_audio_url === "string" ? body.opener_audio_url.trim() : "";
+  const title = typeof body.title === "string" ? body.title.trim().slice(0, 120) || null : null;
+  if (!typedBrief && !openerUrl) {
+    return c.json({ error: "Send a brief (what to ask the group and why, in the person's own words) or an opener_audio_url, or both." }, 400);
+  }
+
+  const db = c.env.DB;
+  const authedUserId = c.get("userId");
+  let ownerId = authedUserId;
+  if (!ownerId) {
+    ownerId = generateId();
+    await db.prepare("INSERT INTO users (id) VALUES (?)").bind(ownerId).run();
+  }
+  const apiKey = await ensureApiKey(db, ownerId);
+
+  const surveyId = generateId();
+  const code = generateCode(8);
+  const dashboardCode = generateCode(12);
+  await db
+    .prepare("INSERT INTO surveys (id, code, dashboard_code, creator_id, title, visibility) VALUES (?, ?, ?, ?, ?, 'private')")
+    .bind(surveyId, code, dashboardCode, ownerId, title)
+    .run();
+  await ensureMember(db, surveyId, ownerId, "owner");
+  await ensureRound1(db, surveyId);
+  trackServerEvent(ownerId, "survey_created", { surveyId, code, dashboardCode, viaApiKey: !!authedUserId, via: "agent" });
+
+  let opener: { durationMs: number; transcript: string } | null = null;
+  let openerError: string | null = null;
+  if (openerUrl) {
+    const result = await saveIntroFromUrl(c.env, surveyId, openerUrl);
+    if (result.ok) opener = { durationMs: result.saved.durationMs, transcript: result.saved.transcript };
+    else openerError = result.error;
+  }
+
+  const transcript = opener?.transcript.trim() ?? "";
+  if (!typedBrief && !transcript) {
+    return c.json(
+      {
+        error: openerError
+          ? `Could not use the voice note (${openerError}) and no brief was given. Send the brief as text, or a URL this server can fetch.`
+          : "The voice note had no usable words and no brief was given. Send the brief as text.",
+        parloId: surveyId,
+      },
+      400
+    );
+  }
+  const brief = typedBrief || transcript || FALLBACK_BRIEF;
+  const briefSource = typedBrief ? "brief" : transcript ? "opener_transcript" : "fallback";
+
+  const generated = await generateQuestionsFromBrief(c.env.AI, c.env.KV, { brief, clarifications: [] }, c.env.CEREBRAS_API_KEY);
+  await db
+    .prepare("UPDATE surveys SET title = ?, brief = ?, brief_clarifications = '[]', output_shape = 'other', outputs = '[]' WHERE id = ?")
+    .bind(title ?? generated.title, brief, surveyId)
+    .run();
+  await replaceQuestions(db, surveyId, generated);
+  await scheduleRound1Close(c, surveyId);
+
+  const finalTitle = title ?? generated.title;
+  const origin = c.env.FRONTEND_ORIGIN || "https://parlo.me";
+  const shareLink = buildShareUrl(finalTitle, code, origin);
+
+  let claimLink: string | null = null;
+  if (!authedUserId) {
+    const token = generateCode(24);
+    await c.env.KV.put(claimKey(token), surveyId, { expirationTtl: CLAIM_TOKEN_TTL_SECONDS });
+    claimLink = `${origin}/claim/${token}`;
+  }
+
+  trackServerEvent(surveyId, "survey_questions_generated", {
+    surveyId,
+    title: finalTitle,
+    questionCount: generated.questions.length,
+    source: "brief",
+    via: "agent",
+    briefSource,
+    hasOpener: !!opener,
+    userAgent: (c.req.header("user-agent") ?? "").slice(0, 120),
+  });
+
+  const whatsappText = encodeURIComponent(`Hey! I'd love to hear your thoughts. It takes 2 minutes, just tap and talk: ${shareLink}`);
+  return c.json(
+    {
+      parloId: surveyId,
+      code,
+      title: finalTitle,
+      shareLink,
+      whatsappShareLink: `https://wa.me/?text=${whatsappText}`,
+      dashboardLink: `${origin}/d/${dashboardCode}`,
+      claimLink,
+      apiKey,
+      questions: generated.questions,
+      briefSource,
+      opener,
+      openerError,
+      next: [
+        `Post shareLink into the group chat; the parlo is live and anyone who opens it can answer by voice.`,
+        claimLink
+          ? `Send claimLink to the person you act for: one tap (and a phone code the first time) makes the parlo theirs, with the report and the dashboard.`
+          : `The parlo belongs to the API key's owner; the dashboard is at dashboardLink.`,
+        `Keep apiKey and send it as the X-Parlo-Api-Key header next time, so new parlos are theirs from the start and GET /api/my/surveys lists them.`,
+      ].join(" "),
+    },
+    201
+  );
 });
+
+/** What the web opener falls back to when the creator said nothing usable (mirrors CreatorPage). */
+const FALLBACK_BRIEF =
+  "A short voice conversation with my group. Ask them, in a warm and direct way, what is on their mind about the thing I opened with, what they would change, and what they need from me. Four questions.";
 
 // ── POST /api/auth/login ── Prove a phone, get the user's API key
 //

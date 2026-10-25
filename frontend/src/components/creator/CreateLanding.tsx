@@ -42,6 +42,13 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
             Create a parlo
           </Button>
           <p className="text-xs text-muted-foreground text-center">Free to start · No account required</p>
+          <p className="text-xxs text-muted-foreground text-center">
+            AI agent?{" "}
+            <a href="/llms.txt" className="underline underline-offset-2">
+              Read parlo.me/llms.txt
+            </a>{" "}
+            instead of tapping.
+          </p>
         </motion.div>
       </motion.div>
     </div>

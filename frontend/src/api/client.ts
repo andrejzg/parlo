@@ -188,6 +188,30 @@ export function claimSurvey(surveyId: string, auth: PhoneProof | { apiKey: strin
   });
 }
 
+export interface ClaimInfo {
+  title: string | null;
+  code: string;
+  alreadyClaimed: boolean;
+}
+
+/** What a claim link (`/claim/:token`, minted by `POST /api/agent/parlos`) points at. 404 when expired. */
+export function fetchClaimInfo(token: string) {
+  return apiFetch<ClaimInfo>(`/claim/${encodeURIComponent(token)}`);
+}
+
+export interface ClaimByTokenResult extends ClaimResult {
+  dashboardCode: string;
+}
+
+/** Attach the parlo behind a claim token to a verified identity; burns the token. */
+export function claimByToken(token: string, auth: PhoneProof | { apiKey: string }) {
+  const path = `/claim/${encodeURIComponent(token)}`;
+  if ("apiKey" in auth) {
+    return apiFetch<ClaimByTokenResult>(path, authed(auth.apiKey, { method: "POST", body: JSON.stringify({}) }));
+  }
+  return apiFetch<ClaimByTokenResult>(path, { method: "POST", body: JSON.stringify(auth) });
+}
+
 export type GroupRole = "owner" | "admin" | "member";
 export type GroupVisibility = "open" | "private";
 
