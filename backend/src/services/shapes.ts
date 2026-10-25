@@ -31,6 +31,10 @@ export type ShapeId =
   | "other";
 export type AudienceId = "group" | "network" | "friends" | "team" | "customers" | "community" | "strangers";
 export type LengthId = "one" | "few" | "deep";
+/** The third chip row's kind: which question the shape asks (none for a one-shot shape). */
+export type TimingRowId = "deadline" | "cadence" | "followup";
+/** A chip on that row. `today | week | open` on the deadline row, `daily | weekly` on cadence, `once | probe` on follow-up. */
+export type TimingId = "today" | "week" | "open" | "daily" | "weekly" | "once" | "probe";
 
 interface ShapeSpec {
   id: ShapeId;
@@ -42,6 +46,8 @@ interface ShapeSpec {
   report: string;
   /** How the questions should work for this shape. */
   questions: string;
+  /** The third chip row on the sentence screen, when the shape has one (services/shapes.ts TIMINGS). */
+  timing?: TimingRowId;
   /** No longer on the deck; kept for parlos that already use it. */
   retired?: boolean;
 }
@@ -49,6 +55,7 @@ interface ShapeSpec {
 export const SHAPES: ShapeSpec[] = [
   {
     id: "post",
+    timing: "deadline",
     sentence: "Crowdsource a post from {who}",
     report: "A LinkedIn post built from everyone's best lines, ready to copy, then the themes behind it.",
     questions:
@@ -56,6 +63,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "testimonials",
+    timing: "deadline",
     sentence: "Collect testimonials from {who}",
     report: "The strongest quotes, ready for a post or your site, with who said them.",
     questions:
@@ -63,6 +71,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "milestone",
+    timing: "deadline",
     sentence: "Celebrate a milestone with {who}",
     report: "A post celebrating it in their words, with the lines that stuck.",
     questions:
@@ -70,6 +79,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "checkin",
+    timing: "cadence",
     sentence: "Run a regular check-in with {who}",
     report: "Who's on track, what's blocked, and what needs you. Same shape every round, so weeks compare.",
     questions:
@@ -77,6 +87,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "customers",
+    timing: "followup",
     sentence: "Interview {who}",
     report: "Why they chose you, in their words, with the patterns across everyone.",
     questions:
@@ -84,6 +95,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "feedback",
+    timing: "deadline",
     sentence: "Get honest feedback from {who}",
     report: "What works and what to fix, in order of how often it came up.",
     questions:
@@ -91,6 +103,7 @@ export const SHAPES: ShapeSpec[] = [
   },
   {
     id: "team",
+    timing: "deadline",
     sentence: "Ask {who}",
     report: "What the team said, grouped, with what to fix first.",
     questions:
@@ -196,6 +209,72 @@ const LENGTHS: Record<LengthId, { questions: number; note: string }> = {
   deep: { questions: 8, note: "exactly 8 questions, a proper conversation of ten minutes or so" },
 };
 
+/**
+ * The third chip row (2026-10-25): one question per shape, only where the chip
+ * changes what the agent does. `delayMs` is how long a sent round stays open
+ * (null = no close); `nudgeLeadMs` is how long before the close the members
+ * who have not answered are reminded; `brief` goes into the composed brief.
+ */
+export interface TimingSpec {
+  id: TimingId;
+  row: TimingRowId;
+  delayMs: number | null;
+  nudgeLeadMs: number | null;
+  brief: string;
+}
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+export const TIMINGS: TimingSpec[] = [
+  { id: "today", row: "deadline", delayMs: DAY, nudgeLeadMs: 4 * HOUR, brief: "Answers close in 24 hours and the report lands then; keep the asks quick to answer." },
+  { id: "week", row: "deadline", delayMs: 7 * DAY, nudgeLeadMs: DAY, brief: "Answers close in a week and the report lands then." },
+  { id: "open", row: "deadline", delayMs: null, nudgeLeadMs: null, brief: "There is no deadline; the report updates as answers come in." },
+  { id: "daily", row: "cadence", delayMs: DAY, nudgeLeadMs: 4 * HOUR, brief: "This is a daily check-in: the round closes after a day, the report lands, and the next round goes out with the same asks so days compare." },
+  { id: "weekly", row: "cadence", delayMs: 7 * DAY, nudgeLeadMs: DAY, brief: "This is a weekly check-in: the round closes after a week, the report lands, and the next round goes out with the same asks so weeks compare." },
+  { id: "once", row: "followup", delayMs: null, nudgeLeadMs: null, brief: "One round only: there will be no follow-up, so cover everything in these asks." },
+  { id: "probe", row: "followup", delayMs: null, nudgeLeadMs: null, brief: "After this round the agent may follow up with individual members, so these asks can stay broad; the probes go deep." },
+];
+
+export const TIMING_ROWS: Record<TimingRowId, { defaultId: TimingId }> = {
+  deadline: { defaultId: "week" },
+  cadence: { defaultId: "weekly" },
+  followup: { defaultId: "once" },
+};
+
+export function isTimingId(v: unknown): v is TimingId {
+  return typeof v === "string" && TIMINGS.some((t) => t.id === v);
+}
+
+export function timingSpec(id: string | null | undefined): TimingSpec | null {
+  return TIMINGS.find((t) => t.id === id) ?? null;
+}
+
+/** The chip a request sent, if it belongs to the shape's row; the row's default when it sent nothing; null when the shape has no row. */
+export function resolveTiming(shape: ShapeId, v: unknown): TimingId | null {
+  const row = SHAPES.find((s) => s.id === shape)?.timing;
+  if (!row) return null;
+  if (isTimingId(v) && timingSpec(v)?.row === row) return v;
+  return TIMING_ROWS[row].defaultId;
+}
+
+/** When a round sent now should close, or null when it stays open. */
+export function closesAtFor(timing: string | null | undefined, from: Date = new Date()): Date | null {
+  const spec = timingSpec(timing);
+  if (!spec?.delayMs) return null;
+  return new Date(from.getTime() + spec.delayMs);
+}
+
+/** Whether the agent should propose the next round itself when this one closes (the check-in cadence). */
+export function repeatsOnClose(timing: string | null | undefined): boolean {
+  return timingSpec(timing)?.row === "cadence";
+}
+
+/** Whether the agent may propose probe rounds without being asked. */
+export function allowsProbes(timing: string | null | undefined): boolean {
+  return timing === "probe";
+}
+
 export const SHAPE_IDS = SHAPES.map((s) => s.id);
 export const AUDIENCE_IDS = Object.keys(AUDIENCES) as AudienceId[];
 export const LENGTH_IDS = Object.keys(LENGTHS) as LengthId[];
@@ -224,6 +303,8 @@ export interface ShapeInput {
   topic?: string;
   /** What the agent should make beyond the report; shapes the asks (services/outputs.ts). */
   outputs?: OutputId[];
+  /** The third chip row's pick, when the shape has one. */
+  timing?: TimingId | null;
 }
 
 /** The prose brief the pipeline works from, assembled from the creator's taps and the one blank they filled. */
@@ -240,6 +321,7 @@ export function composeBrief(input: ShapeInput): string {
     `Who they are: ${who}`,
     `How the questions should work: ${shape.questions}`,
     `Length: ${length.note}.`,
+    ...(timingSpec(input.timing) ? [`Timing: ${timingSpec(input.timing)!.brief}`] : []),
     ...outputsBriefLines(input.outputs ?? []),
   ].join("\n");
 }

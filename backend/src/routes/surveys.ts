@@ -36,13 +36,14 @@ import {
   type GeneratedSurvey,
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
-import { composeBrief, isAudienceId, isLengthId, isShapeId, TOPIC_MAX_CHARS } from "../services/shapes";
+import { closesAtFor, composeBrief, isAudienceId, isLengthId, isShapeId, resolveTiming, TOPIC_MAX_CHARS, type TimingId } from "../services/shapes";
 import { sanitizeOutputs } from "../services/outputs";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
-import { ensureRound1, latestSentRound, pendingAsksFor } from "../services/rounds";
+import { ensureRound1, latestSentRound, pendingAsksFor, setRoundClosesAt } from "../services/rounds";
+import { getAgentByName } from "agents";
 import {
   batchAll,
   facesStmt,
@@ -427,6 +428,7 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
   let outputShape: string | null = null;
   let audienceKind: string | null = null;
   let lengthKind: string | null = null;
+  let timing: TimingId | null = null;
   const outputs = sanitizeOutputs(body.outputs);
   if (typeof body.shape === "string" && body.shape !== "other") {
     if (!isShapeId(body.shape) || body.shape === "other") return c.json({ error: "unknown shape" }, 400);
@@ -434,7 +436,8 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
     const topic = typeof body.topic === "string" ? body.topic.trim().slice(0, TOPIC_MAX_CHARS) : "";
     const audience = isAudienceId(body.audience) ? body.audience : "group";
     const length = isLengthId(body.length) ? body.length : "few";
-    brief = composeBrief({ shape: body.shape, audience, length, topic, outputs });
+    timing = resolveTiming(body.shape, body.timing);
+    brief = composeBrief({ shape: body.shape, audience, length, topic, outputs, timing });
     outputShape = body.shape;
     audienceKind = audience;
     lengthKind = length;
@@ -450,9 +453,9 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
 
     await db
       .prepare(
-        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, output_shape = ?, audience_kind = ?, outputs = ? WHERE id = ?"
+        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, output_shape = ?, audience_kind = ?, outputs = ?, timing = ? WHERE id = ?"
       )
-      .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, JSON.stringify(outputs), surveyId)
+      .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, JSON.stringify(outputs), timing, surveyId)
       .run();
     await replaceQuestions(db, surveyId, generated);
 
@@ -466,6 +469,7 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       length: lengthKind,
       outputs,
       outputCount: outputs.length,
+      timing,
       clarificationCount: clarifications.length,
     });
 
@@ -623,6 +627,19 @@ surveys.put("/api/surveys/:id/questions", async (c) => {
   });
   await db.batch([deleteStmt, ...insertStmts]);
 
+  // Going live: a deadline shape's round 1 closes `timing` from now. The agent
+  // holds the alarm (a nudge before, the close at it); the row holds the date.
+  const timed = await db.prepare("SELECT timing FROM surveys WHERE id = ?").bind(surveyId).first<{ timing: string | null }>();
+  const closesAt = closesAtFor(timed?.timing);
+  await setRoundClosesAt(db, round1.id, closesAt);
+  if (closesAt) {
+    c.executionCtx.waitUntil(
+      getAgentByName(c.env.GROUP_AGENT, surveyId)
+        .then((agent) => agent.scheduleClose(surveyId, round1.id, closesAt.toISOString()))
+        .catch((err) => console.error("[questions] scheduleClose failed", err))
+    );
+  }
+
   // Fetch the inserted questions to return them
   const updated = await db
     .prepare(
@@ -699,7 +716,7 @@ surveys.get("/api/s/:code", async (c) => {
     audioKeys: [],
     intro,
     visibility: survey.visibility === "open" ? "open" : "private",
-    round: round ? { number: round.number, kind: round.kind } : null,
+    round: round ? { number: round.number, kind: round.kind, closesAt: round.closes_at ?? null } : null,
     member: memberView,
     report: {
       available: !!survey.report_md,
@@ -981,6 +998,7 @@ surveys.get("/api/my/surveys", async (c) => {
             number: open.number,
             kind: open.kind,
             sentAt: toIso(open.sent_at),
+            closesAt: open.closes_at ?? null,
             answered: open.answered,
             // A poll reaches every member but the owner, who asked it; a probe
             // reaches the members it was aimed at.

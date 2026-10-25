@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import type { AudienceId, LengthId, ShapeId } from "@/lib/shapes";
+import type { AudienceId, LengthId, ShapeId, TimingId } from "@/lib/shapes";
 import type { OutputId } from "@/lib/outputs";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
@@ -108,6 +108,8 @@ export interface GenerateQuestionsInput {
   topic?: string;
   /** What the agent should make beyond the report. */
   outputs?: OutputId[];
+  /** The third chip row's pick (deadline / cadence / follow-up), when the shape has one. */
+  timing?: TimingId;
   /** Free brief ("Something else"): the creator's own words. */
   brief?: string;
   clarifications?: Clarification[];
@@ -117,10 +119,10 @@ export interface GenerateQuestionsInput {
 
 export function useGenerateQuestions() {
   return useMutation({
-    mutationFn: ({ surveyId, shape, audience, length, topic, outputs, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
+    mutationFn: ({ surveyId, shape, audience, length, topic, outputs, timing, brief, clarifications, textAnswers }: GenerateQuestionsInput) => {
       let body: string | undefined;
       if (shape && shape !== "other") {
-        body = JSON.stringify({ shape, audience, length, ...(topic?.trim() ? { topic: topic.trim() } : {}), outputs: outputs ?? [], clarifications: clarifications ?? [] });
+        body = JSON.stringify({ shape, audience, length, ...(topic?.trim() ? { topic: topic.trim() } : {}), outputs: outputs ?? [], ...(timing ? { timing } : {}), clarifications: clarifications ?? [] });
       } else if (brief?.trim()) {
         body = JSON.stringify({ brief: brief.trim(), clarifications: clarifications ?? [] });
       } else if (textAnswers?.length) {
@@ -283,7 +285,7 @@ export interface MySurvey {
   /** Newest of: created, last answer, report, a later round sent, a proposal. The list sorts by it. */
   lastActivityAt?: string;
   /** The latest sent round and how it is going. `targets` is 0 when there is no fixed audience (round 1). */
-  round?: { number: number; kind: ParloRoundKind; sentAt: string | null; answered: number; targets: number } | null;
+  round?: { number: number; kind: ParloRoundKind; sentAt: string | null; closesAt?: string | null; answered: number; targets: number } | null;
   /** A round the agent planned that still needs approval. Owner/admin only. */
   proposedRound?: { number: number; kind: ParloRoundKind; createdAt: string } | null;
   /** Asks waiting for this viewer. Members only; always 0 for owner/admin. */
@@ -374,6 +376,8 @@ export interface GroupRound {
   proposed_by: string;
   created_at: string;
   sent_at: string | null;
+  closes_at?: string | null;
+  closed_at?: string | null;
   asks: RoundAsk[];
 }
 
@@ -638,7 +642,7 @@ interface APISurveyResponse {
   audioKeys: { questionKey: string; audioR2Key: string }[];
   intro: { audioUrl: string; durationMs: number; transcript: string | null } | null;
   visibility?: GroupVisibility;
-  round?: { number: number; kind: RoundKind } | null;
+  round?: { number: number; kind: RoundKind; closesAt?: string | null } | null;
   member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
   report?: { available: boolean; unlocked: boolean; markdown: string | null; updatedAt: string | null };
   memberCount?: number;

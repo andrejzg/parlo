@@ -1,3 +1,4 @@
+import { describeDeadline } from "@/lib/deadline";
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bot, Check, Download, ExternalLink, FileText, LoaderCircle, Plug, Plus, RefreshCw, Send, Sparkles, Trash2, Upload, X } from "lucide-react";
@@ -142,7 +143,9 @@ function RoundCard({
             {round.status === "proposed"
               ? "Waiting for your approval"
               : round.status === "sent"
-              ? `Sent ${formatWhen(round.sent_at)}`
+              ? `Sent ${formatWhen(round.sent_at)}${describeDeadline(round.closes_at) ? ` · ${describeDeadline(round.closes_at)}` : ""}`
+              : round.status === "closed"
+              ? `Closed ${formatWhen(round.closed_at ?? round.closes_at)}`
               : round.status}
           </p>
         </div>

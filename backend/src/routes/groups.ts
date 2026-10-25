@@ -20,7 +20,8 @@ import {
   setMemberRole,
   transferOwnership,
 } from "../services/groups";
-import { getRound, listRounds, roundAsks, setRoundStatus, updateRoundAsks } from "../services/rounds";
+import { getRound, listRounds, roundAsks, setRoundClosesAt, setRoundStatus, updateRoundAsks } from "../services/rounds";
+import { closesAtFor } from "../services/shapes";
 import { notifyUsers } from "../services/notify";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { extractCode } from "../services/slug";
@@ -271,6 +272,16 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
   const asks = await roundAsks(c.env.DB, round.id);
   if (asks.length === 0) return c.json({ error: "This round has no asks" }, 400);
   await setRoundStatus(c.env.DB, round.id, "sent");
+  // A timed parlo closes this round `timing` from now; the agent holds the alarm.
+  const closesAt = closesAtFor(gate.survey.timing);
+  await setRoundClosesAt(c.env.DB, round.id, closesAt);
+  if (closesAt) {
+    c.executionCtx.waitUntil(
+      getAgentByName(c.env.GROUP_AGENT, surveyId)
+        .then((agent) => agent.scheduleClose(surveyId, round.id, closesAt.toISOString()))
+        .catch((err) => console.error("[approve] scheduleClose failed", err))
+    );
+  }
 
   const targets = round.kind === "probe" ? new Set(asks.map((a) => a.target_user_id).filter((x): x is string => !!x)) : null;
   const members = await c.env.DB.prepare(

@@ -43,13 +43,13 @@ import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
 import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
-import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, type AudienceId, type LengthId, type ShapeId } from "@/lib/shapes";
+import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, timingRowFor, type AudienceId, type LengthId, type ShapeId, type TimingId } from "@/lib/shapes";
 import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
  * Creation flow (output-first, 2026-10-14):
  *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
- *           → topic (the sentence the card started; who + length chips, taps only since 2026-10-25)
+ *           → topic (the sentence the card started; who + length chips, and the shape's own third row: deadline / cadence / follow-up)
  *           → outputs ("What should it make?", six content-type cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
  *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
@@ -79,6 +79,7 @@ export default function CreatorPage() {
   const [shape, setShape] = useState<ShapeId | null>(null);
   const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
   const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
+  const [timing, setTiming] = useState<TimingId | null>(null);
   const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
@@ -237,6 +238,7 @@ export default function CreatorPage() {
     trackEvent("create_shape_picked", { shape: id, from: picked.more ? "more" : "deck" });
     setShape(id);
     setAudience(picked.audience);
+    setTiming(timingRowFor(picked)?.defaultId ?? null);
     setOutputs(picked.outputs);
     if (id === "other") {
       trackEvent("create_free_brief_opened", {});
@@ -250,7 +252,8 @@ export default function CreatorPage() {
   const handleTopicContinue = (result: TopicResult) => {
     setAudience(result.audience);
     setLength(result.length);
-    trackEvent("create_audience_picked", { shape, audience: result.audience, length: result.length });
+    setTiming(result.timing);
+    trackEvent("create_audience_picked", { shape, audience: result.audience, length: result.length, timing: result.timing });
     goForward("outputs");
   };
 
@@ -270,6 +273,7 @@ export default function CreatorPage() {
     setShape(null);
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
+    setTiming(null);
     setOutputs(DEFAULT_OUTPUTS);
   };
 
@@ -442,7 +446,7 @@ export default function CreatorPage() {
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        ...(shape && shape !== "other" ? { shape, audience, length, outputs } : { brief }),
+        ...(shape && shape !== "other" ? { shape, audience, length, outputs, timing: timing ?? undefined } : { brief }),
         clarifications,
       });
       // The backend composes the brief from the taps; keep it for follow-ups and the agent.
@@ -453,7 +457,7 @@ export default function CreatorPage() {
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, outputs]);
+  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, outputs, timing]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -899,6 +903,7 @@ export default function CreatorPage() {
                 shape={shapeById(shape)}
                 initialAudience={audience}
                 initialLength={length}
+                initialTiming={timing}
                 onContinue={handleTopicContinue}
                 onBack={() => {
                   setDirection(-1);

@@ -7,10 +7,13 @@ import {
   DEFAULT_AUDIENCE,
   DEFAULT_LENGTH,
   LENGTHS,
+  TIMING_ROWS,
   sentenceParts,
+  timingRowFor,
   type AudienceId,
   type LengthId,
   type Shape,
+  type TimingId,
 } from "@/lib/shapes";
 import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
@@ -21,17 +24,23 @@ import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
  * questions the agent writes. Taps only: the typed blank the sentence used to
  * end in went on 2026-10-25 (the mic before it on 2026-10-15), so "Continue"
  * is live from the first frame and the specifics come from the review screen
- * and "Sharpen it". Nothing here calls a model.
+ * and "Sharpen it". The third row is the shape's own question (a deadline,
+ * the check-in cadence, whether the agent may follow up), only where the
+ * chip changes what the agent does (GROWTH.md, 2026-10-25). Nothing here
+ * calls a model.
  */
 export interface TopicResult {
   audience: AudienceId;
   length: LengthId;
+  /** The third row's pick; null when the shape has no row. */
+  timing: TimingId | null;
 }
 
 interface TopicScreenProps {
   shape: Shape;
   initialAudience?: AudienceId;
   initialLength?: LengthId;
+  initialTiming?: TimingId | null;
   /** Parent is moving on — lock the CTA. */
   busy?: boolean;
   onContinue: (result: TopicResult) => void;
@@ -72,18 +81,21 @@ export default function TopicScreen({
   shape,
   initialAudience = DEFAULT_AUDIENCE,
   initialLength = DEFAULT_LENGTH,
+  initialTiming,
   busy = false,
   onContinue,
   onBack,
 }: TopicScreenProps) {
+  const timingRow = timingRowFor(shape);
   const [audience, setAudience] = useState<AudienceId>(initialAudience);
   const [length, setLength] = useState<LengthId>(initialLength);
+  const [timing, setTiming] = useState<TimingId | null>(initialTiming ?? timingRow?.defaultId ?? null);
   const [leaving, setLeaving] = useState(false);
 
   const handleContinue = () => {
     if (leaving || busy) return;
     setLeaving(true);
-    onContinue({ audience, length });
+    onContinue({ audience, length, timing: timingRow ? timing : null });
   };
 
   const handleBack = () => {
@@ -148,6 +160,19 @@ export default function TopicScreen({
             ))}
           </div>
         </motion.div>
+
+        {timingRow && (
+          <motion.div variants={fadeUp} className="flex flex-col gap-s" data-testid="topic-timing" data-row={timingRow.row}>
+            <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">{TIMING_ROWS[timingRow.row].label}</span>
+            <div className="flex flex-wrap gap-xs">
+              {TIMING_ROWS[timingRow.row].chips.map((t) => (
+                <Chip key={t.id} selected={timing === t.id} onClick={() => setTiming(t.id)} testId="timing-chip" data={t.id}>
+                  {t.label}
+                </Chip>
+              ))}
+            </div>
+          </motion.div>
+        )}
       </motion.div>
 
       <div className="flex-1 min-h-6" />

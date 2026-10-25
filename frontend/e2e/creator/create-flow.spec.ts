@@ -36,6 +36,7 @@ type GenerateBody = {
   length?: string;
   topic?: string;
   outputs?: string[];
+  timing?: string;
   brief?: string;
   clarifications?: unknown[];
 };
@@ -257,6 +258,13 @@ for (const deviceName of DEVICES) {
     await page.locator('[data-testid="length-chip"][data-value="deep"]').click();
     await expect(page.locator('[data-testid="length-chip"][data-value="deep"]')).toHaveAttribute("data-selected", "true");
 
+    // The third row is the shape's own question (2026-10-25): feedback asks when you need it, "This week" on by default.
+    await expect(page.getByTestId("topic-timing")).toHaveAttribute("data-row", "deadline");
+    await expect(page.getByTestId("timing-chip")).toHaveCount(3);
+    await expect(page.locator('[data-testid="timing-chip"][data-value="week"]')).toHaveAttribute("data-selected", "true");
+    await page.locator('[data-testid="timing-chip"][data-value="today"]').click();
+    await expect(page.locator('[data-testid="timing-chip"][data-value="today"]')).toHaveAttribute("data-selected", "true");
+
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
     await page.getByTestId("topic-continue").click();
@@ -286,7 +294,7 @@ for (const deviceName of DEVICES) {
 
     await page.getByText("Review your").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
-    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep" });
+    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep", timing: "today" });
     expect(generateBodies[0].topic).toBeUndefined();
     // Canonical order, whatever order they were tapped in; the toggled-off Clips is gone.
     expect(generateBodies[0].outputs).toEqual(["sheet", "carousel", "episode"]);

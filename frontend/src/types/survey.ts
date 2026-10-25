@@ -38,7 +38,7 @@ export interface Survey {
   /** private (default): only the owner, admins and the agent hear raw answers. open: everyone hears everyone, with names. */
   visibility?: GroupVisibility;
   /** Latest sent round. */
-  round?: { number: number; kind: "poll" | "probe" } | null;
+  round?: { number: number; kind: "poll" | "probe"; closesAt?: string | null } | null;
   /** Set when the visitor arrived with a valid member token. */
   member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
   report?: GroupReportSummary;

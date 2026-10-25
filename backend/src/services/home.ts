@@ -77,6 +77,7 @@ export interface OpenRoundRow {
   number: number;
   kind: "poll" | "probe";
   sent_at: string | null;
+  closes_at: string | null;
   /** Distinct members a probe round is aimed at (0 for a poll). */
   targeted: number;
   /** Distinct people who answered at least one ask in this round. */
@@ -87,7 +88,7 @@ export interface OpenRoundRow {
 export function openRoundStmt(db: D1Database, surveyId: string): D1PreparedStatement {
   return db
     .prepare(
-      `SELECT r.id, r.number, r.kind, r.sent_at,
+      `SELECT r.id, r.number, r.kind, r.sent_at, r.closes_at,
         (SELECT COUNT(DISTINCT sq.target_user_id) FROM survey_questions sq
           WHERE sq.round_id = r.id AND sq.target_user_id IS NOT NULL) AS targeted,
         (SELECT COUNT(DISTINCT COALESCE(resp.user_id, resp.id)) FROM response_answers ra

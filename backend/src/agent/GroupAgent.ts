@@ -28,10 +28,11 @@ import { z } from "zod";
 import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types";
 import { pickAgentModel } from "./model";
 import { initAnalytics, trackServerEvent } from "../services/analytics";
-import { shapeReport } from "../services/shapes";
+import { closesAtFor, repeatsOnClose, shapeReport, timingSpec } from "../services/shapes";
 import { outputsAgentSection, parseOutputs } from "../services/outputs";
-import { createProposedRound, type ProposedAsk } from "../services/rounds";
-import { notifyManagers } from "../services/notify";
+import { closeRound, createProposedRound, getRound, membersPendingFor, overdueRounds, setRoundClosesAt, type ProposedAsk } from "../services/rounds";
+import { notifyManagers, notifyUsers } from "../services/notify";
+import { createWhatsAppClient } from "../services/whatsapp";
 import { displayNameFor } from "../services/groups";
 import { buildAnswersCsv } from "../services/exportCsv";
 
@@ -300,9 +301,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
   private async syncFromD1(surveyId: string): Promise<{ answerFiles: number; newAnswers: number }> {
     const db = this.env.DB;
     const survey = await db
-      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape, outputs FROM surveys WHERE id = ?")
+      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape, outputs, timing FROM surveys WHERE id = ?")
       .bind(surveyId)
-      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null; outputs: string | null }>();
+      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null; outputs: string | null; timing: string | null }>();
     if (!survey) throw new Error("Parlo not found");
 
     // /brief.md
@@ -328,6 +329,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "",
         "## Also make, after every round",
         outputsAgentSection(parseOutputs(survey.outputs)),
+        "",
+        "## Timing",
+        timingSpec(survey.timing)?.brief ?? "(no deadline; the report updates as answers come in)",
         "",
         "## Clarifications",
         clarifications || "(none)",
@@ -500,10 +504,124 @@ export class GroupAgent extends Agent<Env, GroupState> {
     return { filed };
   }
 
-  /** Nightly safety net: digest if anything arrived that the debounce missed. */
+  /** Nightly safety net: digest if anything arrived that the debounce missed; close any round whose alarm was lost. */
   async runNightly() {
-    if (!this.state.surveyId) return;
+    const surveyId = this.state.surveyId;
+    if (!surveyId) return;
+    for (const r of await overdueRounds(this.env.DB, surveyId)) await this.closeRound({ roundId: r.id });
     if (this.state.ingestedSinceDigest > 0) await this.runDigest();
+  }
+
+  // ── Round deadlines ────────────────────────────────────────────────
+  //
+  // A timed parlo (the third chip row on the sentence screen: a deadline, or
+  // the check-in cadence) closes each sent round at `rounds.closes_at`. The
+  // Worker sets the date when a round goes out (go-live, approve) and asks
+  // the agent to hold the alarm: one nudge to whoever has not answered a
+  // little before, then the close, which files the report and, for a
+  // cadence, proposes the next round straight away.
+
+  /** Hold the alarms for a sent round: replaces any earlier ones for the same round. */
+  async scheduleClose(surveyId: string, roundId: string, closesAtIso: string): Promise<{ closesAt: string; nudgeAt: string | null }> {
+    this.bind(surveyId);
+    await this.cancelRoundAlarms(roundId);
+    const closesAt = new Date(closesAtIso);
+    const survey = await this.env.DB.prepare("SELECT timing FROM surveys WHERE id = ?").bind(surveyId).first<{ timing: string | null }>();
+    const lead = timingSpec(survey?.timing)?.nudgeLeadMs ?? null;
+    const nudgeAt = lead ? new Date(closesAt.getTime() - lead) : null;
+    const now = Date.now();
+    if (nudgeAt && nudgeAt.getTime() > now + 60_000) await this.schedule(nudgeAt, "nudgeRound", { roundId });
+    await this.schedule(closesAt.getTime() > now ? closesAt : new Date(now + 1000), "closeRound", { roundId });
+    return { closesAt: closesAt.toISOString(), nudgeAt: nudgeAt?.toISOString() ?? null };
+  }
+
+  private async cancelRoundAlarms(roundId: string) {
+    const all = (await this.listSchedules()) as { id: string; callback: string; payload?: unknown }[];
+    for (const s of all) {
+      if (s.callback !== "closeRound" && s.callback !== "nudgeRound") continue;
+      if ((s.payload as { roundId?: string } | undefined)?.roundId !== roundId) continue;
+      await this.cancelSchedule(s.id);
+    }
+  }
+
+  /** A little before the close: remind the members the round is still waiting on. */
+  async nudgeRound(payload: { roundId: string }) {
+    const surveyId = this.requireSurveyId();
+    const round = await getRound(this.env.DB, payload.roundId);
+    if (!round || round.status !== "sent") return;
+    const survey = await this.env.DB
+      .prepare("SELECT code, title FROM surveys WHERE id = ?")
+      .bind(surveyId)
+      .first<{ code: string; title: string | null }>();
+    if (!survey) return;
+    const pending = await membersPendingFor(this.env.DB, surveyId, round);
+    if (pending.length === 0) return;
+    const title = survey.title ?? "your parlo";
+    await notifyUsers(
+      this.env.DB,
+      pending.map((m) => m.user_id),
+      {
+        type: "new_round",
+        title: `Round ${round.number} of ${title} closes soon`,
+        body: "Tap to answer by voice before the agent writes the report.",
+        surveyId,
+        surveyTitle: survey.title,
+      }
+    );
+    // The same template that opened the round: it is the one Meta has seen,
+    // and its call to action ("Answer now", the personal link) is the nudge.
+    const wa = createWhatsAppClient(this.env.KAPSO_API_KEY, this.env.WHATSAPP_PHONE_NUMBER_ID);
+    for (const m of pending) {
+      if (!m.phone) continue;
+      try {
+        await wa.sendTemplate(m.phone, "parlo_new_round", [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", parameter_name: "survey_title", text: title },
+              { type: "text", parameter_name: "round_number", text: String(round.number) },
+            ],
+          },
+          { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `${survey.code}?t=${m.access_token}` }] },
+        ]);
+      } catch (err) {
+        console.error("[GroupAgent] nudge send failed", err);
+      }
+    }
+    trackServerEvent(surveyId, "round_nudged", { surveyId, round: round.number, pending: pending.length });
+  }
+
+  /** The deadline: no more answers, the report lands, and a check-in proposes its next round. */
+  async closeRound(payload: { roundId: string }) {
+    const surveyId = this.requireSurveyId();
+    const round = await getRound(this.env.DB, payload.roundId);
+    if (!round || round.survey_id !== surveyId) return;
+    const pending = round.status === "sent" ? await membersPendingFor(this.env.DB, surveyId, round) : [];
+    if (!(await closeRound(this.env.DB, round.id))) return;
+    trackServerEvent(surveyId, "round_closed", { surveyId, round: round.number, kind: round.kind, pending: pending.length });
+
+    const digest = await this.runDigest();
+    const survey = await this.env.DB.prepare("SELECT timing FROM surveys WHERE id = ?").bind(surveyId).first<{ timing: string | null }>();
+    const repeats = repeatsOnClose(survey?.timing);
+    await notifyManagers(this.env, surveyId, {
+      type: "report_ready",
+      title: `Round ${round.number} of ${this.state.title ?? "your parlo"} closed`,
+      body: pending.length
+        ? `${pending.length} ${pending.length === 1 ? "person" : "people"} did not answer. ${digest.ok && digest.report ? "The report is in." : "No report yet."}`
+        : digest.ok && digest.report
+          ? "Everyone answered. The report is in."
+          : "No answers came in.",
+      surveyId,
+      surveyTitle: this.state.title,
+    });
+
+    if (repeats) {
+      // The check-in: the next round, same asks, for the owner to approve.
+      await this.proposeRound(surveyId, {
+        preferKind: "poll",
+        hint: `This is a recurring check-in (${survey?.timing}). Propose the next round with the same asks as round ${round.number}, word for word, so the rounds compare.`,
+      });
+    }
   }
 
   /** What the owner's dashboard shows. */

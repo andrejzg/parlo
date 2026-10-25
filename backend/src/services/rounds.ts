@@ -154,6 +154,60 @@ export async function setRoundStatus(db: D1Database, roundId: string, status: "s
     .run();
 }
 
+/** Set (or clear) when a sent round stops taking answers. */
+export async function setRoundClosesAt(db: D1Database, roundId: string, closesAt: Date | null): Promise<void> {
+  await db.prepare("UPDATE rounds SET closes_at = ? WHERE id = ?").bind(closesAt ? closesAt.toISOString() : null, roundId).run();
+}
+
+/** Close a sent round: no more answers; the report lands. Returns false when it was not open. */
+export async function closeRound(db: D1Database, roundId: string): Promise<boolean> {
+  const r = await db
+    .prepare("UPDATE rounds SET status = 'closed', closed_at = ? WHERE id = ? AND status = 'sent'")
+    .bind(new Date().toISOString(), roundId)
+    .run();
+  return (r.meta?.changes ?? 0) > 0;
+}
+
+/** Sent rounds whose deadline has passed and that never closed (a lost alarm). */
+export async function overdueRounds(db: D1Database, surveyId: string): Promise<Round[]> {
+  const r = await db
+    .prepare("SELECT * FROM rounds WHERE survey_id = ? AND status = 'sent' AND closes_at IS NOT NULL AND closes_at < ?")
+    .bind(surveyId, new Date().toISOString())
+    .all<Round>();
+  return r.results;
+}
+
+export interface PendingMember {
+  user_id: string;
+  access_token: string;
+  phone: string | null;
+}
+
+/**
+ * The members a sent round is still waiting on: for a poll every active
+ * member but the owner (who asked), for a probe the members it was aimed at,
+ * minus anyone with a submitted answer to one of the round's asks.
+ */
+export async function membersPendingFor(db: D1Database, surveyId: string, round: Round): Promise<PendingMember[]> {
+  const r = await db
+    .prepare(
+      `SELECT gm.user_id, gm.access_token, u.phone FROM group_members gm
+       JOIN users u ON u.id = gm.user_id
+       WHERE gm.survey_id = ? AND gm.removed_at IS NULL
+         AND (? = 'probe' OR gm.role != 'owner')
+         AND (? = 'poll' OR EXISTS (SELECT 1 FROM survey_questions q WHERE q.round_id = ? AND q.target_user_id = gm.user_id))
+         AND NOT EXISTS (
+           SELECT 1 FROM response_answers ra
+           JOIN responses resp ON resp.id = ra.response_id
+           JOIN survey_questions q ON q.id = ra.question_id
+           WHERE q.round_id = ? AND resp.user_id = gm.user_id AND resp.status != 'in_progress'
+         )`
+    )
+    .bind(surveyId, round.kind, round.kind, round.id, round.id)
+    .all<PendingMember>();
+  return r.results;
+}
+
 /** Owner edits to a proposed round's ask texts before approving. */
 export async function updateRoundAsks(db: D1Database, roundId: string, edits: { id: string; text: string; hint?: string | null }[]): Promise<void> {
   const statements = edits
