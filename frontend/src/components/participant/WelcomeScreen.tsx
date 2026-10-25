@@ -58,13 +58,19 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
             : "You've answered everything in this round."}
         </motion.p>
 
-        {/* The creator's voice hello — a real person asking beats any copy. */}
+        {/* The creator's opener — a real person asking beats any copy. */}
         {survey.intro && (
-          <motion.div variants={fadeUp} className="w-full flex flex-col gap-xs text-left" data-testid="welcome-intro">
+          <motion.div variants={fadeUp} className="w-full flex flex-col gap-xs text-left" data-testid="welcome-intro" data-kind={survey.intro.kind ?? "voice"}>
             <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground px-xxs">
               A hello from the person asking
             </span>
-            <VoiceNotePill url={survey.intro.audioUrl} durationMs={survey.intro.durationMs} />
+            {survey.intro.kind === "video" ? (
+              <div className="rounded-m overflow-hidden bg-card">
+                <video src={survey.intro.audioUrl} controls playsInline preload="metadata" className="w-full h-auto block max-h-[60svh]" />
+              </div>
+            ) : (
+              <VoiceNotePill url={survey.intro.audioUrl} durationMs={survey.intro.durationMs} />
+            )}
           </motion.div>
         )}
 

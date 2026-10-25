@@ -35,7 +35,7 @@ const GATE_FLOOR_DB = -55;
 /** …nor above this (quiet talkers in a noisy room). */
 const GATE_CEIL_DB = -30;
 
-export type TrimContext = "answer" | "intro" | "brief";
+export type TrimContext = "answer" | "intro" | "brief" | "sample";
 
 export interface TrimPlan {
   /** Sample ranges to keep, in order: [start, end). */
@@ -158,7 +158,7 @@ function getOfflineCtor(): typeof OfflineAudioContext | null {
 }
 
 /** Decode any browser-recorded blob to mono PCM at OUTPUT_RATE. */
-async function decodeMono(blob: Blob): Promise<{ pcm: Float32Array; sampleRate: number }> {
+export async function decodeMono(blob: Blob): Promise<{ pcm: Float32Array; sampleRate: number }> {
   const Offline = getOfflineCtor();
   if (!Offline) throw new Error("OfflineAudioContext unavailable");
   const ab = await blob.arrayBuffer();

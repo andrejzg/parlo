@@ -7,8 +7,9 @@ const BASE_URL = "http://localhost:5173";
 const OUT_ROOT = process.env.PARLO_SHOTS_DIR ?? "/tmp";
 
 /**
- * Creator flow, output-first: shape cards (six + More) → the one-blank sentence → the outputs cards → building
- * → review (swap / shorter / sharpen) → intro. Plus the "Something else"
+ * Creator flow, voice-first then output-first: the read-out (voice clone) → the opener (typed, said in the clone)
+ * → shape cards (six + More) → the one-blank sentence → the outputs cards → building
+ * → review (swap / shorter / sharpen) → phone. Plus the "Something else"
  * escape hatch into the free brief on one device.
  *
  * Playwright's Chromium has no speech engine, so the blank is typed and the
@@ -41,6 +42,9 @@ type GenerateBody = {
 };
 
 type AdjustBody = { kind: string; questions: { text: string; type?: string }[] };
+/** What the stubbed /voice/clone and /intro/synthesize saw. */
+const cloneUploads: { contentType: string; bytes: number }[] = [];
+const synthesizeBodies: { text: string }[] = [];
 type ReviseBody = { questions: { text: string; type?: string }[]; clarifications: { question: string; answer: string }[] };
 /** What the stubbed /questions/revise hands back: q1 reworded, the swapped q2 kept, q3 dropped, one added. */
 const REVISED = [
@@ -68,6 +72,7 @@ async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarif
         code: "crtest",
         dashboardCode: "crtestdash",
         apiKey: "pk_test_key",
+        voiceCloned: false,
         uploadUrls: {
           brief: "https://fake-r2.example.com/upload/brief?token=b",
           audience: "https://fake-r2.example.com/upload/audience?token=a",
@@ -169,7 +174,32 @@ async function mockCreatorApi(page: Page, generateBodies: GenerateBody[], clarif
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ questions: [] }) });
   });
 
-  // Voice intro: fresh upload URL, then the save call once the blob landed.
+  // The read-out: the WAV goes up, a voice id and a preview line come back.
+  await page.route("**/api/surveys/*/voice/clone", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    cloneUploads.push({
+      contentType: route.request().headers()["content-type"] ?? "",
+      bytes: route.request().postDataBuffer()?.length ?? 0,
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ voiceId: "ws__creator-test", preview: { audioUrl: "https://fake-r2.example.com/audio/voice-preview.mp3", durationMs: 4200 } }),
+    });
+  });
+  // The typed opener, said in the clone and saved server-side.
+  await page.route("**/api/surveys/*/intro/synthesize", async (route: Route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    synthesizeBodies.push(route.request().postDataJSON() as { text: string });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ audioUrl: "https://fake-r2.example.com/audio/intro.mp3", durationMs: 6100 }),
+    });
+  });
+
+  // Recorded / filmed opener: fresh upload URL, then the save call once the blob landed.
   await page.route("**/api/surveys/*/intro/upload-url", async (route: Route) => {
     if (route.request().method() !== "POST") return route.fallback();
     await route.fulfill({
@@ -195,6 +225,42 @@ async function answerFollowUp(page: Page, text: string) {
   await ta.waitFor({ timeout: 10_000 });
   await ta.fill(text);
   await page.getByTestId("creation-next").last().click();
+}
+
+/** The two screens every parlo now opens with: read the passage, then the opener. */
+async function readPassageAndTypeOpener(page: Page, OUT: string, opener: string) {
+  await page.getByTestId("voice-passage").waitFor({ timeout: 10_000 });
+  await expect(page.getByTestId("voice-passage")).toContainText("Halt, traveler!");
+  await expect(page.getByTestId("voice-skip")).toHaveCount(0);
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/01b-read-out.png`, fullPage: true });
+  await page.getByTestId("voice-record").click();
+  await page.getByTestId("voice-stop").waitFor({ timeout: 5000 });
+  await page.waitForTimeout(3300); // the passage must take at least 3 s
+  await page.getByTestId("voice-stop").click();
+  await page.getByTestId("voice-cloning").waitFor({ timeout: 5000 });
+  await page.getByTestId("voice-preview").waitFor({ timeout: 10_000 });
+  await expect(page.getByText("Here's your voice")).toBeVisible();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/01c-cloned.png`, fullPage: true });
+  await page.getByTestId("voice-continue").click();
+
+  await page.getByTestId("opener").waitFor({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="opener-mode"][data-value="voice"]')).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("opener-record")).toBeVisible();
+  await page.locator('[data-testid="opener-mode"][data-value="video"]').click();
+  await expect(page.getByTestId("opener-camera")).toBeVisible();
+  await page.locator('[data-testid="opener-mode"][data-value="text"]').click();
+  const ta = page.getByTestId("opener-textarea");
+  await ta.waitFor({ timeout: 5000 });
+  await expect(page.getByTestId("opener-synthesize")).toBeDisabled();
+  await ta.fill(opener);
+  await expect(page.getByTestId("opener-synthesize")).toBeEnabled();
+  await page.getByTestId("opener-synthesize").click();
+  await page.getByTestId("opener-spoken").waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/01d-opener.png`, fullPage: true });
+  await page.getByTestId("opener-use").click();
 }
 
 async function openCreator(
@@ -226,6 +292,16 @@ for (const deviceName of DEVICES) {
 
     await page.screenshot({ path: `${OUT}/01-landing.png` });
     await page.getByRole("button", { name: /create a parlo/i }).click();
+
+    // ── Read the passage (voice clone), then type the opener and hear it in the clone ──
+    cloneUploads.length = 0;
+    synthesizeBodies.length = 0;
+    await readPassageAndTypeOpener(page, OUT, "Hey team, it's me. Two minutes on the offsite, I'll share what everyone said on Friday.");
+    expect(cloneUploads.length).toBe(1);
+    // A real browser re-encodes the take as WAV; Playwright's fake OfflineAudioContext can't decode, so the raw take goes up.
+    expect(cloneUploads[0].contentType).toMatch(/audio\/(wav|webm)/);
+    expect(cloneUploads[0].bytes).toBeGreaterThan(0);
+    expect(synthesizeBodies).toEqual([{ text: "Hey team, it's me. Two minutes on the offsite, I'll share what everyone said on Friday." }]);
 
     // ── Shape cards ──
     await page.getByText("What do you want to find out?").waitFor({ timeout: 10_000 });
@@ -394,18 +470,10 @@ for (const deviceName of DEVICES) {
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/09-review-revised.png`, fullPage: true });
 
-    // ── Intro: record a hello, use it → phone ──
-    const introSaved = page.waitForRequest((r) => r.method() === "PUT" && /\/api\/surveys\/[^/]+\/intro$/.test(r.url()));
+    // ── Confirm → straight to the phone (the opener moved to the start) ──
     await page.getByRole("button", { name: /confirm & go live/i }).click();
-    await page.getByTestId("intro-record").waitFor({ timeout: 10_000 });
-    await page.getByTestId("intro-record").click();
-    await page.getByTestId("intro-stop").waitFor({ timeout: 5000 });
-    await page.waitForTimeout(1200);
-    await page.getByTestId("intro-stop").click();
-    await page.getByTestId("intro-use").waitFor({ timeout: 5000 });
-    await page.getByTestId("intro-use").click();
     await page.getByText("What's your phone number?").first().waitFor({ timeout: 10_000 });
-    await introSaved;
+    await expect(page.getByTestId("opener")).toHaveCount(0);
 
     await context.close();
     await browser.close();
@@ -421,6 +489,16 @@ test("More → \"Something else\" opens the free brief and builds from it (iPhon
   const { browser, context, page } = await openCreator("iPhone SE", generateBodies, clarifyBriefs);
 
   await page.getByRole("button", { name: /create a parlo/i }).click();
+  // Read the passage, then skip the opener this time.
+  await page.getByTestId("voice-record").waitFor({ timeout: 10_000 });
+  await page.getByTestId("voice-record").click();
+  await page.getByTestId("voice-stop").waitFor({ timeout: 5000 });
+  await page.waitForTimeout(3300);
+  await page.getByTestId("voice-stop").click();
+  await page.getByTestId("voice-continue").waitFor({ timeout: 10_000 });
+  await page.getByTestId("voice-continue").click();
+  await page.getByTestId("opener-skip").waitFor({ timeout: 10_000 });
+  await page.getByTestId("opener-skip").click();
   await page.getByText("What do you want to find out?").waitFor({ timeout: 10_000 });
   // "Something else" waits behind More, with the team and references cards; back returns to the deck.
   await page.getByTestId("shape-more").click();

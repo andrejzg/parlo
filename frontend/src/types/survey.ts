@@ -6,11 +6,14 @@ export interface SurveyQuestion {
   type?: "voice" | "photo" | "video"; // defaults to voice
 }
 
-/** The creator's voice hello, played on the welcome screen. */
+/** The creator's opener, played on the welcome screen. */
 export interface SurveyIntro {
+  /** Signed URL: audio for `voice` and `text`, the video file for `video`. */
   audioUrl: string;
   durationMs: number;
   transcript?: string;
+  /** voice = recorded, text = typed and said in the creator's cloned voice, video = filmed. */
+  kind?: "voice" | "text" | "video";
 }
 
 export type GroupVisibility = "open" | "private";

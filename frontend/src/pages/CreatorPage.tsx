@@ -11,7 +11,8 @@ import OutputsScreen from "@/components/creator/OutputsScreen";
 import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import ReviewQuestionsScreen, { type ReviewQuestion } from "@/components/creator/ReviewQuestionsScreen";
-import IntroScreen, { type IntroResult } from "@/components/creator/IntroScreen";
+import VoiceSampleScreen from "@/components/creator/VoiceSampleScreen";
+import OpenerScreen, { type OpenerResult } from "@/components/creator/OpenerScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
 import PhoneScreen from "@/components/participant/PhoneScreen";
 import OtpScreen from "@/components/participant/OtpScreen";
@@ -47,17 +48,19 @@ import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, type AudienceId, type Leng
 import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
- * Creation flow (output-first, 2026-10-14):
- *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
+ * Creation flow (output-first, 2026-10-14; voice-first opening, 2026-10-24):
+ *   welcome → voice-sample (read the passage; Inworld clones the voice. Skipped when the device's owner already has one)
+ *           → opener (what the group hears first: record it, type it and hear it in the clone, or film it; skippable)
+ *           → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
  *           → topic (the sentence the card started, one blank; who + length chips)
  *           → outputs ("What should the agent make?", eight cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
  *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
- *           → intro (voice hello, skippable) → phone/otp → linkedin → ready
+ *           → phone/otp → linkedin → ready
  *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
  *   and then builds straight away; follow-ups are the same review-screen option.
  */
-type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "voice-sample" | "opener" | "shape" | "topic" | "outputs" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -103,8 +106,9 @@ export default function CreatorPage() {
   // Sidebar
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // "+" creates the parlo and opens the shape cards; one at a time.
+  // "+" creates the parlo and opens the read-out (or the opener, for a device whose owner already has a voice); one at a time.
   const creatingRef = useRef(false);
+  const [voiceCloned, setVoiceCloned] = useState(false);
 
   // Home screen state
   const [mySurveys, setMySurveys] = useState<MySurvey[]>([]);
@@ -207,7 +211,7 @@ export default function CreatorPage() {
     trackEvent("create_share_reached", { surveyId, shape });
   }, [stage, surveyId, shape]);
 
-  /** Create a parlo and open the shape cards ("What do you want back?"). */
+  /** Create a parlo and open the read-out, or the opener when this device's owner already cloned their voice. */
   const handleStart = async () => {
     if (creatingRef.current) return false;
     creatingRef.current = true;
@@ -215,13 +219,14 @@ export default function CreatorPage() {
     trackEvent("consent_accepted", { role: "creator" });
 
     try {
-      const result = await createSurvey.mutateAsync();
+      const result = await createSurvey.mutateAsync(apiKey);
       setSurveyId(result.id);
       setSurveyCode(result.code);
       setDashboardCode(result.dashboardCode);
       setUploadUrls(result.uploadUrls);
       resetBriefFlow();
-      goForward("shape");
+      setVoiceCloned(!!result.voiceCloned);
+      goForward(result.voiceCloned ? "opener" : "voice-sample");
       return true;
     } catch (err) {
       captureException(err, { location: "CreatorPage.handleStart" });
@@ -518,25 +523,37 @@ export default function CreatorPage() {
       );
     }
 
-    goForward("intro");
+    continueToAuth();
+  };
+
+  /** The read-out is done (or skipped): on to the opener. */
+  const handleVoiceSampleDone = (cloned: boolean) => {
+    setVoiceCloned(cloned);
+    goForward("opener");
   };
 
   /**
-   * The creator recorded (or skipped) their voice hello. Upload it in the
-   * background — the share link works either way — then move on to auth.
+   * The creator made (or skipped) their opener. Voice and video takes upload
+   * in the background — the share link works either way; a typed one was
+   * already saved by the synthesis call. Then on to the shape cards.
    */
-  const handleIntroContinue = (intro: IntroResult | null) => {
-    if (intro && surveyId) {
+  const handleOpenerContinue = (opener: OpenerResult | null) => {
+    if (opener && opener.kind !== "text" && surveyId) {
       const id = surveyId;
-      fetchIntroUploadUrl(id)
-        .then((url) => uploadAudioBlob(url, intro.blob))
-        .then(() => saveIntro(id, intro.durationMs))
+      const kind = opener.kind;
+      fetchIntroUploadUrl(id, kind)
+        .then((url) => uploadAudioBlob(url, opener.blob))
+        .then(() => saveIntro(id, opener.durationMs, kind))
         .catch((err) => {
-          captureException(err, { location: "CreatorPage.uploadIntro" });
-          toast.error("Couldn't save your hello. Your link still works.");
+          captureException(err, { location: "CreatorPage.uploadOpener", kind });
+          toast.error("Couldn't save your opener. Your link still works.");
         });
     }
+    goForward("shape");
+  };
 
+  /** After "Confirm & go live": a returning device skips phone/OTP, everyone still gets the LinkedIn check. */
+  const continueToAuth = () => {
     // If returning device, skip phone/OTP — but still check LinkedIn
     if (devicePhone) {
       setPhone(devicePhone);
@@ -738,8 +755,10 @@ export default function CreatorPage() {
       ? "building"
       : stage === "review"
       ? "review"
-      : stage === "intro"
-      ? "intro"
+      : stage === "voice-sample"
+      ? "voice-sample"
+      : stage === "opener"
+      ? "opener"
       : stage === "ready"
       ? "ready"
       : stage === "phone"
@@ -894,13 +913,36 @@ export default function CreatorPage() {
             {stage === "welcome" && (
               <CreateLanding onCreateAgent={() => void handleStart()} />
             )}
+            {stage === "voice-sample" && surveyId && (
+              <VoiceSampleScreen
+                surveyId={surveyId}
+                onDone={handleVoiceSampleDone}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage(apiKey ? "home" : "welcome");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
+            {stage === "opener" && surveyId && (
+              <OpenerScreen
+                surveyId={surveyId}
+                voiceCloned={voiceCloned}
+                onContinue={handleOpenerContinue}
+                onBack={() => {
+                  setDirection(-1);
+                  setStage(voiceCloned && apiKey ? "home" : "voice-sample");
+                  setScreenKey((k) => k + 1);
+                }}
+              />
+            )}
             {stage === "shape" && (
               <ShapeScreen
                 onPick={handleShapePick}
                 onMore={() => trackEvent("create_more_opened", {})}
                 onBack={() => {
                   setDirection(-1);
-                  setStage(apiKey ? "home" : "welcome");
+                  setStage(surveyId ? "opener" : apiKey ? "home" : "welcome");
                   setScreenKey((k) => k + 1);
                 }}
               />
@@ -1018,16 +1060,6 @@ export default function CreatorPage() {
                 busy={nextLoading}
               />
             )}
-            {stage === "intro" && (
-              <IntroScreen
-                onContinue={handleIntroContinue}
-                onBack={() => {
-                  setDirection(-1);
-                  setStage("review");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
             {stage === "ready" && (
               <AgentReadyScreen
                 surveyCode={surveyCode}
@@ -1043,7 +1075,7 @@ export default function CreatorPage() {
                 onNext={handlePhone}
                 onBack={() => {
                   setDirection(-1);
-                  setStage(surveyId ? "intro" : "welcome");
+                  setStage(surveyId ? "review" : "welcome");
                   setScreenKey((k) => k + 1);
                 }}
                 initialValue={phone}

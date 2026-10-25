@@ -25,12 +25,18 @@ export interface CreateSurveyResponse {
   code: string;
   dashboardCode: string;
   uploadUrls: { brief: string; audience: string; gather: string };
+  /** The owner already has a cloned voice (a logged-in device), so the read-out can be skipped. */
+  voiceCloned?: boolean;
 }
 
+/** A logged-in device sends its key so it owns the parlo from the start (and keeps its cloned voice). */
 export function useCreateSurvey() {
   return useMutation({
-    mutationFn: () =>
-      apiFetch<CreateSurveyResponse>("/surveys", { method: "POST" }),
+    mutationFn: (apiKey?: string | null) =>
+      apiFetch<CreateSurveyResponse>("/surveys", {
+        method: "POST",
+        headers: apiKey ? { "X-Parlo-Api-Key": apiKey } : undefined,
+      }),
   });
 }
 
@@ -194,21 +200,57 @@ export function useUpdateQuestions() {
   });
 }
 
-// ── Creator voice intro ───────────────────────────────────────────────
+// ── The creator's voice and opener ───────────────────────────────────
 
-/** Fresh one-time upload URL for `surveys/{id}/intro.webm` (the creation-time URLs expire after 10 min). */
-export async function fetchIntroUploadUrl(surveyId: string): Promise<string> {
-  const data = await apiFetch<{ uploadUrl: string }>(`/surveys/${surveyId}/intro/upload-url`, {
+export type IntroKind = "voice" | "text" | "video";
+
+export interface VoiceCloneResult {
+  voiceId: string;
+  /** A line synthesised in the new clone, so the creator hears themself at once. Null if that step failed. */
+  preview: { audioUrl: string; durationMs: number } | null;
+}
+
+/** Clone the creator's voice from the read-out. `blob` must be WAV or MP3 (see lib/audioWav.ts). */
+export async function cloneVoice(surveyId: string, blob: Blob): Promise<VoiceCloneResult> {
+  const res = await fetch(`${API_BASE}/surveys/${surveyId}/voice/clone`, {
     method: "POST",
+    headers: { "Content-Type": blob.type || "audio/wav" },
+    body: blob,
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+/** Has this parlo's creator cloned their voice yet? */
+export function fetchVoiceStatus(surveyId: string) {
+  return apiFetch<{ cloned: boolean; passage: string }>(`/surveys/${surveyId}/voice`);
+}
+
+/** A typed opener, said in the creator's cloned voice. Saved server-side as the opener straight away. */
+export function synthesizeOpener(surveyId: string, text: string) {
+  return apiFetch<{ audioUrl: string; durationMs: number }>(`/surveys/${surveyId}/intro/synthesize`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+/** Fresh one-time upload URL for `surveys/{id}/intro.webm` (or `intro.mp4` for a video opener). */
+export async function fetchIntroUploadUrl(surveyId: string, kind: "voice" | "video" = "voice"): Promise<string> {
+  const data = await apiFetch<{ uploadUrl: string }>(
+    `/surveys/${surveyId}/intro/upload-url${kind === "video" ? "?kind=video" : ""}`,
+    { method: "POST" },
+  );
   return data.uploadUrl;
 }
 
-/** Tell the backend the intro landed in R2 so it shows up for participants. */
-export function saveIntro(surveyId: string, durationMs: number) {
+/** Tell the backend the opener landed in R2 so it shows up for participants. */
+export function saveIntro(surveyId: string, durationMs: number, kind: "voice" | "video" = "voice") {
   return apiFetch<{ success: true; durationMs: number }>(`/surveys/${surveyId}/intro`, {
     method: "PUT",
-    body: JSON.stringify({ durationMs }),
+    body: JSON.stringify({ durationMs, kind }),
   });
 }
 
@@ -636,7 +678,7 @@ interface APISurveyResponse {
     question_type?: "voice" | "photo" | "video";
   }[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
-  intro: { audioUrl: string; durationMs: number; transcript: string | null } | null;
+  intro: { audioUrl: string; durationMs: number; transcript: string | null; kind?: IntroKind } | null;
   visibility?: GroupVisibility;
   round?: { number: number; kind: RoundKind } | null;
   member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
@@ -670,6 +712,7 @@ export function useGetSurvey(code: string, token?: string | null) {
               audioUrl: data.intro.audioUrl,
               durationMs: data.intro.durationMs,
               transcript: data.intro.transcript ?? undefined,
+              kind: data.intro.kind ?? "voice",
             }
           : undefined,
         visibility: data.visibility ?? "private",

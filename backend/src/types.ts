@@ -15,6 +15,8 @@ export interface Env {
   TYPESAFE_API_KEY?: string;
   /** Optional: when set, the group agent's planning loop runs on Claude. */
   ANTHROPIC_API_KEY?: string;
+  /** Inworld TTS (instant voice cloning + synthesis). The Portal's Base64 credential, sent as `Authorization: Basic`. */
+  INWORLD_API_KEY?: string;
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   /** Firebase project whose ID tokens prove a phone number (`aud` claim). */
@@ -43,6 +45,10 @@ export interface User {
   linkedin_photo_url: string | null;
   linkedin_photo_r2_key: string | null;
   linkedin_connected_at: string | null;
+  /** Inworld instant voice clone, made from the read-out passage at the start of creation. */
+  voice_id?: string | null;
+  voice_sample_r2_key?: string | null;
+  voice_cloned_at?: string | null;
 }
 
 export interface Survey {
@@ -60,6 +66,8 @@ export interface Survey {
   intro_r2_key?: string | null;
   intro_duration_ms?: number | null;
   intro_transcript?: string | null;
+  /** voice (a recording), text (typed, synthesised in the cloned voice) or video. NULL = voice. */
+  intro_kind?: IntroKind | null;
   /** Mirror of the group agent's /report.md so members can read it from D1. */
   report_md?: string | null;
   report_updated_at?: string | null;
@@ -95,10 +103,14 @@ export interface Round {
   sent_at: string | null;
 }
 
+export type IntroKind = "voice" | "text" | "video";
+
 export interface SurveyIntro {
+  /** Signed URL of the opener — audio for voice/text, the video file for video. */
   audioUrl: string;
   durationMs: number;
   transcript: string | null;
+  kind: IntroKind;
 }
 
 export interface SurveyAudio {
@@ -169,6 +181,8 @@ export interface CreateSurveyResponse {
     audience: string;
     gather: string;
   };
+  /** True when the owner already has an Inworld voice clone, so the read-out screen can be skipped. */
+  voiceCloned: boolean;
 }
 
 export interface Clarification {
