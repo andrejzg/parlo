@@ -450,7 +450,7 @@ cd frontend && npx vite build && wrangler pages deploy dist --project-name parlo
 /Users/andrejzg/.npm-global/bin/wrangler deploy --name parlo-backend --config /Users/andrejzg/work/repos/parlo/backend/wrangler.toml
 ```
 
-CI (`deploy.yml`) does the same: sync secrets → apply migrations → deploy → verify bindings (now including `GROUP_AGENT`).
+CI (`deploy.yml`) does the same: sync secrets → apply migrations → deploy → verify bindings (now including `GROUP_AGENT`). Its jobs run on Node 22: wrangler 4 refuses Node 20, and from 2026-10-11 to 2026-10-25 every push to `main` failed the backend job at "Sync Worker secrets" with "Wrangler requires at least Node.js v22.0.0" while the frontend and MCP jobs still passed, so the backend was only ever deployed by hand in that window. If the backend job fails again, read the first line of that step before anything else.
 
 WARNING: Running `wrangler deploy` from the backend directory without `--name parlo-backend` may deploy to the wrong worker name. Always use the full command above.
 
