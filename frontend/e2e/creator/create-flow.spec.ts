@@ -287,18 +287,10 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/03b-outputs.png`, fullPage: true });
     await page.getByTestId("outputs-build").click();
 
-    // ── Building → the opener (the review screen went on 2026-10-25; the questions are live as built) ──
-    await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
-    await page.waitForTimeout(600);
-    await page.screenshot({ path: `${OUT}/04-building.png` });
-
+    // ── Straight to the opener: nothing is built yet (the review screen went on 2026-10-25; the building screen is the last step, behind OTP) ──
     await page.getByTestId("intro-record").waitFor({ timeout: 20_000 });
-    expect(generateBodies.length).toBe(1);
-    expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep", timing: "today" });
-    expect(generateBodies[0].topic).toBeUndefined();
-    // Canonical order, whatever order they were tapped in; the toggled-off Clips is gone.
-    expect(generateBodies[0].outputs).toEqual(["sheet", "carousel", "episode"]);
-    expect(generateBodies[0].brief).toBeUndefined();
+    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
+    expect(generateBodies.length).toBe(0);
     await expect(page.getByText("Record an opener for the group")).toBeVisible();
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/05-opener.png`, fullPage: true });
@@ -313,11 +305,62 @@ for (const deviceName of DEVICES) {
     await page.getByTestId("intro-use").click();
     await page.getByText("What's your phone number?").first().waitFor({ timeout: 10_000 });
     await introSaved;
+    // Still nothing built: the build is the last step, behind OTP.
+    expect(generateBodies.length).toBe(0);
 
     await context.close();
     await browser.close();
   });
 }
+
+test("logged-in device: Build it → opener → building last → ready (iPhone SE)", async () => {
+  test.setTimeout(90_000);
+  const OUT = path.join(OUT_ROOT, "parlo-creator-iphone-se");
+  fs.mkdirSync(OUT, { recursive: true });
+  const generateBodies: GenerateBody[] = [];
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ ...devices["iPhone SE"], permissions: ["microphone"] });
+  // A device that verified before: phone + OTP are skipped, so the building screen is reachable.
+  await context.addInitScript(() => {
+    localStorage.setItem(
+      "parlo-device-auth",
+      JSON.stringify({ id: "parlo-device", phone: "+447700900123", verifiedAt: Date.now(), apiKey: "pk_test_key" })
+    );
+  });
+  const page = await context.newPage();
+  await mockCreatorApi(page, generateBodies, []);
+  await page.route("**/api/my/surveys", (route: Route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ surveys: [] }) }));
+  await page.route("**/api/auth/linkedin/profile", (route: Route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: true, name: "Andrej", photoUrl: null }) }));
+  await page.route("**/api/surveys/*/claim", (route: Route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, apiKey: "pk_test_key", userId: "u1", phone: "+447700900123" }) }));
+  await page.route("**/api/my/surveys/*/settings", (route: Route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+  await injectAudioMocks(page);
+  await page.goto(BASE_URL);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: /create a parlo/i }).click();
+  await page.locator('[data-testid="shape-card"][data-shape="feedback"]').click();
+  await page.getByTestId("topic-continue").click();
+  await page.getByTestId("outputs-build").click();
+
+  // The opener first; nothing is built yet.
+  await page.getByTestId("intro-record").waitFor({ timeout: 10_000 });
+  expect(generateBodies.length).toBe(0);
+  await page.getByTestId("intro-skip").click();
+
+  // The build is the last screen, then the link.
+  await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${OUT}/06-building-last.png` });
+  await page.getByRole("heading", { name: /your agent is ready/i }).waitFor({ timeout: 20_000 });
+  expect(generateBodies.length).toBe(1);
+  expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "network", length: "few", timing: "week" });
+  expect(generateBodies[0].outputs).toEqual(["sheet"]);
+  expect(generateBodies[0].brief).toBeUndefined();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/07-ready.png`, fullPage: true });
+
+  await context.close();
+  await browser.close();
+});
 
 test("More → \"Something else\" opens the free brief and builds from it (iPhone SE)", async () => {
   test.setTimeout(90_000);
@@ -362,12 +405,9 @@ test("More → \"Something else\" opens the free brief and builds from it (iPhon
   await page.screenshot({ path: `${OUT}/09-free-brief.png`, fullPage: true });
   await page.getByTestId("brief-continue").click();
 
-  // Straight to building: no mandatory follow-ups any more.
-  await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
+  // Straight to the opener: nothing is built yet, no follow-ups, no building screen here.
   await page.getByTestId("intro-record").waitFor({ timeout: 20_000 });
-  expect(generateBodies.length).toBe(1);
-  expect(generateBodies[0].shape).toBeUndefined();
-  expect(generateBodies[0].brief).toContain("five questions at most");
+  expect(generateBodies.length).toBe(0);
   expect(clarifyBriefs).toHaveLength(0);
 
   await context.close();

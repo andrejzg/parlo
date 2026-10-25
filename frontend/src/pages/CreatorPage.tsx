@@ -43,10 +43,12 @@ import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
  *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
  *           → topic (the sentence the card started; who + length chips, and the shape's own third row: deadline / cadence / follow-up)
  *           → outputs ("What should it make?", six content-type cards, multi-select)
- *           → building (the questions go live as they are built)
- *           → intro (the opener: a voice hello the group hears first, skippable) → phone/otp → linkedin → ready
+ *           → intro (the opener: a voice hello the group hears first, skippable)
+ *           → phone/otp → linkedin → building ("Building your agent…", the questions are
+ *             generated here, last) → ready
  *   The review screen (swap, Shorter / More playful, Sharpen it, drag) went on 2026-10-25:
- *   the creator records the opener instead of reading the questions.
+ *   the creator records the opener instead of reading the questions, and the building
+ *   screen moved to the very end the same day. Nothing is built until then.
  *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
  *   and then builds straight away.
  */
@@ -243,11 +245,11 @@ export default function CreatorPage() {
     goForward("outputs");
   };
 
-  /** The outputs are picked (possibly none): build. */
+  /** The outputs are picked (possibly none): on to the opener. The build itself comes last. */
   const handleOutputsContinue = (picked: OutputId[]) => {
     setOutputs(picked);
     trackEvent("create_outputs_picked", { shape, audience, outputs: picked, count: picked.length });
-    goForward("building");
+    goForward("intro");
   };
 
   const resetBriefFlow = () => {
@@ -293,9 +295,10 @@ export default function CreatorPage() {
 
     setShape("other");
     forceReleaseSharedStream();
-    goForward("building");
+    goForward("intro");
   };
 
+  /** The last step: generate round 1 (the "Building your agent…" screen calls this). */
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
     if (!surveyId) {
       toast.error("Parlo not found. Please start over.");
@@ -317,10 +320,10 @@ export default function CreatorPage() {
     try {
       const result = await generateQuestions.mutateAsync({
         surveyId,
-        ...(shape && shape !== "other" ? { shape, audience, length, outputs, timing: timing ?? undefined } : { brief }),
+        ...(usesShape ? { shape, audience, length, outputs, timing: timing ?? undefined } : { brief }),
         clarifications,
       });
-      // The backend composes the brief from the taps; keep it for follow-ups and the agent.
+      // The backend composes the brief from the taps; keep it for the agent.
       if (result.brief) setBrief(result.brief);
       return result;
     } catch (err) {
@@ -362,7 +365,7 @@ export default function CreatorPage() {
         ]);
       }
       trackEvent("survey_questions_generated", { questionCount: typed?.questions?.length ?? 0 });
-      goForward("intro");
+      goForward("ready");
     },
     [],
   );
@@ -404,7 +407,7 @@ export default function CreatorPage() {
       try {
         const profile = await fetchLinkedInProfile(key);
         if (profile.connected) {
-          goForward("ready");
+          goForward("building");
           return;
         }
       } catch {}
@@ -910,7 +913,10 @@ export default function CreatorPage() {
                     size="lg"
                     className="w-full"
                     onClick={() => {
-                      if (mySurveys.length > 0) {
+                      // Back from LinkedIn mid-creation (the session restored the parlo): finish it.
+                      if (surveyId && !surveyTitle) {
+                        goForward("building");
+                      } else if (mySurveys.length > 0) {
                         goForward("home");
                       } else {
                         goForward("welcome");
