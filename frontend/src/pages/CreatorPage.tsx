@@ -3,10 +3,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import CreateLanding from "@/components/creator/CreateLanding";
 import ConsentScreen from "@/components/ConsentScreen";
-import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
-import ShapeScreen from "@/components/creator/ShapeScreen";
-import TopicScreen, { type TopicResult } from "@/components/creator/TopicScreen";
-import OutputsScreen from "@/components/creator/OutputsScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
 import IntroScreen, { type IntroResult } from "@/components/creator/IntroScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
@@ -17,12 +13,11 @@ import { fadeUp, pageVariants, popup, stagger } from "@/lib/animations";
 import { Check, CircleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
-import { forceReleaseSharedStream } from "@/hooks/useVoiceRecorder";
 import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, transcribeAudio, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
@@ -35,26 +30,23 @@ import { finalizeRecording } from "@/lib/audioTrim";
 import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
-import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, timingRowFor, type AudienceId, type LengthId, type ShapeId, type TimingId } from "@/lib/shapes";
-import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
 /**
- * Creation flow (output-first, 2026-10-14):
- *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
- *           → topic (the sentence the card started; who + length chips, and the shape's own third row: deadline / cadence / follow-up)
- *           → outputs ("What should it make?", six content-type cards, multi-select)
- *           → intro (the opener: a voice hello the group hears first, skippable)
- *           → phone/otp → linkedin → building ("Building your agent…", the questions are
- *             generated here, last) → ready
- *   The review screen (swap, Shorter / More playful, Sharpen it, drag) went on 2026-10-25:
- *   the creator records the opener instead of reading the questions, and the building
- *   screen moved to the very end the same day. Nothing is built until then.
- *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
- *   and then builds straight away.
+ * Creation flow ("dumb af", 2026-10-25):
+ *   welcome → intro (record the opener: the voice note the group hears first, and the
+ *             brief the agent builds the questions from; required)
+ *           → phone/otp → linkedin → building (Whisper transcript of the opener → /generate
+ *             as a free brief, last) → ready
+ *   The shape cards, the sentence with chips, the outputs cards, the free brief and the
+ *   review screen all went on 2026-10-25 (GROWTH.md). The backend keeps the shape /
+ *   outputs / timing vocabularies for the API and for parlos made before.
  */
-type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "building" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "building" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
+/** When Whisper hears nothing in the opener: still a brief the agent can work from. */
+const OPENER_FALLBACK_BRIEF =
+  "A short voice conversation with my group. Ask them, in a warm and direct way, what is on their mind about the thing I opened with, what they would change, and what they need from me. Four questions.";
 
 export default function CreatorPage() {
   useVisualViewport();
@@ -62,21 +54,12 @@ export default function CreatorPage() {
   const [initializing, setInitializing] = useState(true);
   const [stage, setStage] = useState<Stage>("welcome");
   const [screenKey, setScreenKey] = useState(0);
-  const [preferredMode, setPreferredMode] = useState<"voice" | "text">("voice");
   const [direction, setDirection] = useState(1); // 1 = forward, -1 = back
 
-  // Agent brief flow state
+  /** The opener's transcript: the brief the build works from. */
   const [brief, setBrief] = useState("");
-  const [briefMode, setBriefMode] = useState<"voice" | "text">("voice");
-
-  // Output-first flow state: the shape of what comes back, who the group is,
-  // how long it should take, and the one blank the creator filled.
-  const [shape, setShape] = useState<ShapeId | null>(null);
-  const [audience, setAudience] = useState<AudienceId>(DEFAULT_AUDIENCE);
-  const [length, setLength] = useState<LengthId>(DEFAULT_LENGTH);
-  const [timing, setTiming] = useState<TimingId | null>(null);
-  const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
-  const [clarifications, setClarifications] = useState<Clarification[]>([]);
+  const pendingTranscript = useRef<Promise<string> | null>(null);
+  const [clarifications] = useState<Clarification[]>([]);
   // "Update with feedback": the review screen shows the old draft dimmed while the revision lands.
   // What the clarifications were when "Sharpen it" was tapped, so the checkpoint's back arrow can drop this session's answers.
 
@@ -192,14 +175,14 @@ export default function CreatorPage() {
   useEffect(() => {
     if (stage !== "ready" || !surveyId || shareReachedFor.current === surveyId) return;
     shareReachedFor.current = surveyId;
-    trackEvent("create_share_reached", { surveyId, shape });
-  }, [stage, surveyId, shape]);
+    trackEvent("create_share_reached", { surveyId, shape: "opener" });
+  }, [stage, surveyId]);
 
-  /** Create a parlo and open the shape cards ("What do you want back?"). */
+  /** Create a parlo and go straight to the opener. */
   const handleStart = async () => {
     if (creatingRef.current) return false;
     creatingRef.current = true;
-    trackEvent("survey_creation_started", { mode: preferredMode });
+    trackEvent("survey_creation_started", { mode: "opener" });
     trackEvent("consent_accepted", { role: "creator" });
 
     try {
@@ -208,8 +191,9 @@ export default function CreatorPage() {
       setSurveyCode(result.code);
       setDashboardCode(result.dashboardCode);
       setUploadUrls(result.uploadUrls);
-      resetBriefFlow();
-      goForward("shape");
+      setBrief("");
+      pendingTranscript.current = null;
+      goForward("intro");
       return true;
     } catch (err) {
       captureException(err, { location: "CreatorPage.handleStart" });
@@ -220,118 +204,35 @@ export default function CreatorPage() {
     }
   };
 
-  /** A shape card was tapped: "Something else" opens the free brief, anything else the one-blank sentence with the shape's audience and outputs pre-picked. */
-  const handleShapePick = (id: ShapeId) => {
-    const picked = shapeById(id);
-    trackEvent("create_shape_picked", { shape: id, from: picked.more ? "more" : "deck" });
-    setShape(id);
-    setAudience(picked.audience);
-    setTiming(timingRowFor(picked)?.defaultId ?? null);
-    setOutputs(picked.outputs);
-    if (id === "other") {
-      trackEvent("create_free_brief_opened", {});
-      goForward("brief");
-      return;
-    }
-    goForward("topic");
-  };
-
-  /** The blank is filled: on to what the agent should make. */
-  const handleTopicContinue = (result: TopicResult) => {
-    setAudience(result.audience);
-    setLength(result.length);
-    setTiming(result.timing);
-    trackEvent("create_audience_picked", { shape, audience: result.audience, length: result.length, timing: result.timing });
-    goForward("outputs");
-  };
-
-  /** The outputs are picked (possibly none): on to the opener. The build itself comes last. */
-  const handleOutputsContinue = (picked: OutputId[]) => {
-    setOutputs(picked);
-    trackEvent("create_outputs_picked", { shape, audience, outputs: picked, count: picked.length });
-    goForward("intro");
-  };
-
-  const resetBriefFlow = () => {
-    setBrief("");
-    setClarifications([]);
-    setShape(null);
-    setAudience(DEFAULT_AUDIENCE);
-    setLength(DEFAULT_LENGTH);
-    setTiming(null);
-    setOutputs(DEFAULT_OUTPUTS);
-  };
-
-  /** The free brief is in. Keep the recording and build straight away. */
-  const handleBriefContinue = async (result: BriefResult) => {
-    const text = result.transcript.trim();
-    if (!text) {
-      toast.error("I didn't catch anything — try again?");
-      setScreenKey((k) => k + 1);
-      return;
-    }
-    setBrief(text);
-    setBriefMode(result.mode);
-    setPreferredMode(result.mode);
-    trackEvent("brief_submitted", {
-      mode: result.mode,
-      source: result.source,
-      chars: text.length,
-      durationMs: result.durationMs,
-    });
-
-    // Keep the raw recording for the future "proper agent" work (voice persona
-    // etc). Fire and forget; the transcript is what the pipeline needs today.
-    if (result.blob && uploadUrls?.brief) {
-      const briefUploadUrl = uploadUrls.brief;
-      const uploadPromise = finalizeRecording({ blob: result.blob, durationMs: result.durationMs }, "brief")
-        .then((final) => uploadAudioBlob(briefUploadUrl, final.blob))
-        .catch((err) => {
-        captureException(err, { location: "CreatorPage.uploadBrief" });
-        return false as boolean;
-      });
-      pendingUploads.current.push(uploadPromise);
-    }
-
-    setShape("other");
-    forceReleaseSharedStream();
-    goForward("intro");
-  };
-
   /** The last step: generate round 1 (the "Building your agent…" screen calls this). */
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
     if (!surveyId) {
       toast.error("Parlo not found. Please start over.");
       return undefined;
     }
-    const usesShape = !!shape && shape !== "other";
-    if (!usesShape && !brief.trim()) {
-      toast.error("Your brief is empty. Please start over.");
-      return undefined;
+    // The opener's transcript is the brief. Whisper runs while the creator
+    // verifies their number; if it comes back empty the agent still gets a
+    // usable brief rather than a dead end.
+    let text = brief.trim();
+    if (!text && pendingTranscript.current) {
+      try {
+        text = (await pendingTranscript.current).trim();
+      } catch {
+        text = "";
+      }
     }
-
-    // Wait for any pending audio uploads to finish before generating
-    try {
-      await Promise.all(pendingUploads.current);
-    } catch {
-      // Upload errors were already toasted individually
-    }
+    if (!text) text = OPENER_FALLBACK_BRIEF;
+    setBrief(text);
 
     try {
-      const result = await generateQuestions.mutateAsync({
-        surveyId,
-        ...(usesShape ? { shape, audience, length, outputs, timing: timing ?? undefined } : { brief }),
-        clarifications,
-      });
-      // The backend composes the brief from the taps; keep it for the agent.
-      if (result.brief) setBrief(result.brief);
+      const result = await generateQuestions.mutateAsync({ surveyId, brief: text, clarifications });
       return result;
     } catch (err) {
       captureException(err, { location: "CreatorPage.generateQuestions" });
       toast.error("Failed to generate questions. Please try again.");
       return undefined;
     }
-  }, [surveyId, generateQuestions, brief, clarifications, shape, audience, length, outputs, timing]);
+  }, [surveyId, generateQuestions, brief, clarifications]);
 
   const handleBuildingDone = useCallback(
     (result?: unknown) => {
@@ -375,8 +276,17 @@ export default function CreatorPage() {
    * background — the share link works either way — then move on to auth.
    */
   const handleIntroContinue = (intro: IntroResult | null) => {
-    if (intro && surveyId) {
+    if (!intro || !surveyId) {
+      toast.error("Record a short opener first. It's what the agent builds from.");
+      return;
+    }
+    {
       const id = surveyId;
+      // Whisper on the take, in the background: this is the brief at the build.
+      pendingTranscript.current = transcribeAudio(id, intro.blob).catch((err) => {
+        captureException(err, { location: "CreatorPage.transcribeOpener" });
+        return "";
+      });
       fetchIntroUploadUrl(id)
         .then((url) => uploadAudioBlob(url, intro.blob))
         .then(() => saveIntro(id, intro.durationMs))
@@ -528,14 +438,6 @@ export default function CreatorPage() {
       ? "welcome"
       : stage === "consent"
       ? "consent"
-      : stage === "shape"
-      ? "shape"
-      : stage === "topic"
-      ? "topic"
-      : stage === "outputs"
-      ? "outputs"
-      : stage === "brief"
-      ? `brief-${screenKey}`
       : stage === "building"
       ? "building"
       : stage === "intro"
@@ -633,8 +535,9 @@ export default function CreatorPage() {
                     setSurveyCode(survey.code);
                     setDashboardCode(survey.dashboardCode);
                     setUploadUrls(null);
-                    resetBriefFlow();
-                    goForward("shape");
+                    setBrief("");
+                    pendingTranscript.current = null;
+                    goForward("intro");
                   }
                 }}
               />
@@ -688,57 +591,6 @@ export default function CreatorPage() {
             {stage === "welcome" && (
               <CreateLanding onCreateAgent={() => void handleStart()} />
             )}
-            {stage === "shape" && (
-              <ShapeScreen
-                onPick={handleShapePick}
-                onMore={() => trackEvent("create_more_opened", {})}
-                onBack={() => {
-                  setDirection(-1);
-                  setStage(apiKey ? "home" : "welcome");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
-            {stage === "topic" && surveyId && shape && shape !== "other" && (
-              <TopicScreen
-                shape={shapeById(shape)}
-                initialAudience={audience}
-                initialLength={length}
-                initialTiming={timing}
-                onContinue={handleTopicContinue}
-                onBack={() => {
-                  setDirection(-1);
-                  forceReleaseSharedStream();
-                  setStage("shape");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
-            {stage === "outputs" && surveyId && shape && shape !== "other" && (
-              <OutputsScreen
-                initialOutputs={outputs}
-                onContinue={handleOutputsContinue}
-                onBack={() => {
-                  setDirection(-1);
-                  setStage("topic");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
-            {stage === "brief" && surveyId && (
-              <BriefScreen
-                surveyId={surveyId}
-                initialMode={brief ? briefMode : preferredMode}
-                initialTranscript={shape === "other" ? brief : ""}
-                onContinue={handleBriefContinue}
-                onBack={() => {
-                  setDirection(-1);
-                  forceReleaseSharedStream();
-                  setStage("shape");
-                  setScreenKey((k) => k + 1);
-                }}
-              />
-            )}
             {stage === "building" && (
               buildError ? (
                 <div className="flex flex-col items-center justify-center h-full px-l gap-l bg-background text-center">
@@ -770,11 +622,11 @@ export default function CreatorPage() {
             )}
             {stage === "intro" && (
               <IntroScreen
+                required
                 onContinue={handleIntroContinue}
                 onBack={() => {
-                  // Back from the opener rebuilds: the questions are live already, so this re-runs the build.
                   setDirection(-1);
-                  setStage(shape === "other" ? "brief" : "outputs");
+                  setStage(apiKey ? "home" : "welcome");
                   setScreenKey((k) => k + 1);
                 }}
               />
