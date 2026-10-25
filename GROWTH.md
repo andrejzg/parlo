@@ -84,6 +84,13 @@ Statuses: `idea` → `planned` → `running` → `kept` / `killed`.
 
 Newest first. Each entry: context, what was discussed, where we lean, what it forces, what's still open.
 
+### 2026-10-25 · What next, after the agent night
+
+**Context.** Andrej, at the end of the night the agent path was built and proven: "what next".
+
+**Where we lean, in order.** (1) **Participants answer by voice note to Parlo's number.** It is the same machinery as the opener (a keyword link in the invitation, a per-number binding, voice notes in, verified membership out) pointed at the people who decide the north-star loop, and it removes the browser, the mic permission and the OTP for all of them. The bot plays the opener, asks one question at a time, each reply is a voice note, the member joins with a verified number, the report comes back in the thread. Submit the `parlo_report_ready` template to Meta today, because review takes days and the report in the thread is the reveal. (2) **Creation by voice note to Parlo's number**: any unbound voice note to the bot makes a parlo, the reply is the share link to forward; the landing's button becomes "Send Parlo a voice note". That is the under-30-seconds path with no personal agent, and the number is identity. (3) **One real group this week**, per the first principle: everything so far was Andrej talking to Andrej's agent. Put a parlo into one WhatsApp group that exists and watch who answers and whether the report gets opened. (4) **The link preview still says "Voice Survey on Parlo" and "Voice surveys, made easy."**: every card Instinct posted tonight carried the April copy, in the one artefact that leaves the app. Fix the OG fallbacks in the Pages Function and `routes/og.ts`. Small, do it first.
+
+**Not now.** WebMCP (no consumer). Owner identity on the MCP authorize page (the claim link and the bot cover it). Muse and Dot (no access). Shaving Instinct's loop (not ours to shave).
 ### 2026-10-25 · The agent is the creator: Parlo as a tool other agents call
 
 **Context.** Andrej, the same evening as the opener-only cut: imagine being in Instinct (or Muse, or Dot), leaving a voice note "hey, create a parlo about…", and the agent does it, perhaps handing the recording to Parlo so the opener is in his voice. Parlo should work over WebMCP. His Instinct is reachable from his WhatsApp and is the test bed. "It might necessitate tearing down what we have today." Discussion only; nothing changed.
