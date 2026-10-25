@@ -1,7 +1,46 @@
 import { Hono } from "hono";
 import type { Env, WhatsAppWebhookPayload, Survey } from "../types";
-import { createWhatsAppClient } from "../services/whatsapp";
+import { createWhatsAppClient, downloadInboundMedia } from "../services/whatsapp";
 import { trackServerEvent } from "../services/analytics";
+import { openerTokenKey, storeIntroBytes } from "../services/intro";
+import { claimOwnership, normalizePhone } from "../services/groups";
+import { buildShareUrl } from "../services/slug";
+
+type InboundMedia = { url: string | null; id: string | null; contentType: string | null };
+type Inbound = { kind: "text" | "audio"; text: string; from: string; contactName: string | null; media: InboundMedia | null };
+
+/** Flatten one Kapso-v2 / Meta message object into what the handlers need. */
+function toInbound(msg: any, contactName: string | null): Inbound | null {
+  if (!msg || typeof msg !== "object") return null;
+  if (msg.type === "text" && msg.text?.body) {
+    return { kind: "text", text: String(msg.text.body).trim(), from: msg.from ?? "", contactName, media: null };
+  }
+  if (msg.type === "audio") {
+    const k = msg.kapso ?? {};
+    return {
+      kind: "audio",
+      text: "",
+      from: msg.from ?? "",
+      contactName: contactName ?? k.contact_name ?? null,
+      media: {
+        url: k.media_url ?? k.media_data?.url ?? null,
+        id: msg.audio?.id ?? null,
+        contentType: k.media_data?.content_type ?? msg.audio?.mime_type ?? null,
+      },
+    };
+  }
+  return null;
+}
+
+/** A WhatsApp `from` is digits without the plus; our users carry E.164. */
+function phoneFromWa(from: string): string {
+  return normalizePhone(from.startsWith("+") ? from : `+${from}`);
+}
+
+const OPENER_SESSION_TTL_SECONDS = 3600;
+function openerSessionKey(from: string) {
+  return `wa-opener:${from}`;
+}
 
 const webhooks = new Hono<{ Bindings: Env }>();
 
@@ -40,32 +79,20 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
   console.log("[webhook] raw payload:", JSON.stringify(raw).slice(0, 2000));
 
   // Normalize Kapso v2 payload or Meta raw payload into a flat message list
-  let incomingMessages: { text: string; from: string; contactName: string | null }[] = [];
+  const incomingMessages: Inbound[] = [];
 
   // Check for X-Webhook-Event header (Kapso v2 format)
   const webhookEvent = c.req.header("x-webhook-event");
 
   if (webhookEvent === "whatsapp.message.received" || raw.message) {
     // Kapso v2 format — message is at top level
-    const msg = raw.message;
-    if (msg && msg.type === "text" && msg.text?.body) {
-      incomingMessages.push({
-        text: msg.text.body.trim(),
-        from: msg.from ?? "",
-        contactName: raw.conversation?.phone_number ?? msg.kapso?.contact_name ?? null,
-      });
-    }
+    const one = toInbound(raw.message, raw.message?.kapso?.contact_name ?? null);
+    if (one) incomingMessages.push(one);
   } else if (Array.isArray(raw)) {
     // Kapso v2 buffered format — array of events
     for (const item of raw) {
-      const msg = item.message;
-      if (msg && msg.type === "text" && msg.text?.body) {
-        incomingMessages.push({
-          text: msg.text.body.trim(),
-          from: msg.from ?? "",
-          contactName: item.conversation?.phone_number ?? null,
-        });
-      }
+      const one = toInbound(item.message, item.message?.kapso?.contact_name ?? null);
+      if (one) incomingMessages.push(one);
     }
   } else if (raw.entry) {
     // Meta raw webhook format
@@ -74,12 +101,8 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
         const messages = change.value.messages ?? [];
         const contacts = change.value.contacts ?? [];
         for (const msg of messages) {
-          if (msg.type !== "text" || !msg.text?.body) continue;
-          incomingMessages.push({
-            text: msg.text.body.trim(),
-            from: msg.from,
-            contactName: contacts.find((ct: any) => ct.wa_id === msg.from)?.profile?.name ?? null,
-          });
+          const one = toInbound(msg, contacts.find((ct: any) => ct.wa_id === msg.from)?.profile?.name ?? null);
+          if (one) incomingMessages.push(one);
         }
       }
     }
@@ -87,8 +110,83 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
 
   console.log(`[webhook] parsed ${incomingMessages.length} messages:`, JSON.stringify(incomingMessages));
 
-  for (const { text, from, contactName } of incomingMessages) {
-    console.log(`[webhook] processing message from=${from} text="${text}"`);
+  for (const { kind, text, from, contactName, media } of incomingMessages) {
+    console.log(`[webhook] processing ${kind} from=${from} text="${text}"`);
+
+    // ── "opener <code> <token>": the deep link an agent (or the create answer) hands the owner.
+    // Binds this number to the parlo for an hour; the next voice note becomes the opener.
+    const openerMatch = kind === "text" ? text.match(/^opener\s+([a-z0-9]{6,12})\s+([a-z0-9]{16,40})\s*$/i) : null;
+    if (openerMatch) {
+      const [, code, token] = openerMatch;
+      const surveyId = await c.env.KV.get(openerTokenKey(token));
+      const survey = surveyId
+        ? await db.prepare("SELECT s.id, s.code, s.title, s.creator_id, u.phone AS owner_phone FROM surveys s JOIN users u ON u.id = s.creator_id WHERE s.id = ?").bind(surveyId).first<{ id: string; code: string; title: string | null; creator_id: string; owner_phone: string | null }>()
+        : null;
+      trackServerEvent(from, "whatsapp_opener_link_opened", { ok: !!survey && survey.code === code });
+      if (!survey || survey.code.toLowerCase() !== code.toLowerCase()) {
+        await wa.sendText(from, "That opener link has expired. Ask your agent for a fresh one, or open the parlo's dashboard to record it there.");
+        continue;
+      }
+      const senderPhone = phoneFromWa(from);
+      if (survey.owner_phone && survey.owner_phone !== senderPhone) {
+        await wa.sendText(from, "This parlo belongs to someone else, so I can't take its opener from this number.");
+        continue;
+      }
+      await c.env.KV.put(openerSessionKey(from), JSON.stringify({ surveyId: survey.id, token }), { expirationTtl: OPENER_SESSION_TTL_SECONDS });
+      await wa.sendText(
+        from,
+        `Hi! Send me a voice note now for "${survey.title ?? "your parlo"}", 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you'll do with it. They'll hear it before they answer.`
+      );
+      continue;
+    }
+
+    // ── A voice note: the opener, if this number asked to send one in the last hour.
+    if (kind === "audio") {
+      const sessionRaw = await c.env.KV.get(openerSessionKey(from));
+      if (!sessionRaw) {
+        await wa.sendText(from, "Thanks for the voice note! To add it as a parlo's opener, tap the opener link your agent sent you first (it starts with \"opener\"), then send the voice note again.");
+        continue;
+      }
+      const session = JSON.parse(sessionRaw) as { surveyId: string; token: string };
+      const survey = await db
+        .prepare("SELECT s.id, s.code, s.title, s.dashboard_code, s.creator_id, u.phone AS owner_phone FROM surveys s JOIN users u ON u.id = s.creator_id WHERE s.id = ?")
+        .bind(session.surveyId)
+        .first<{ id: string; code: string; title: string | null; dashboard_code: string; creator_id: string; owner_phone: string | null }>();
+      if (!survey) {
+        await c.env.KV.delete(openerSessionKey(from));
+        await wa.sendText(from, "That parlo is gone. Ask your agent for a fresh opener link.");
+        continue;
+      }
+      const senderPhone = phoneFromWa(from);
+      if (survey.owner_phone && survey.owner_phone !== senderPhone) {
+        await wa.sendText(from, "This parlo belongs to someone else, so I can't take its opener from this number.");
+        continue;
+      }
+      try {
+        const got = await downloadInboundMedia(c.env.KAPSO_API_KEY, c.env.WHATSAPP_PHONE_NUMBER_ID, media ?? {});
+        const saved = await storeIntroBytes(c.env, survey.id, got.bytes, got.contentType, "whatsapp");
+        // The number is proof (Meta delivered the message from it): an anonymous
+        // owner seat becomes this person's, with no OTP.
+        let claimed = false;
+        if (!survey.owner_phone) {
+          await claimOwnership(db, survey.id, survey.creator_id, senderPhone, contactName);
+          claimed = true;
+        }
+        await Promise.all([c.env.KV.delete(openerSessionKey(from)), c.env.KV.delete(openerTokenKey(session.token))]);
+        trackServerEvent(from, "whatsapp_opener_saved", { surveyId: survey.id, durationMs: saved.durationMs, bytes: saved.bytes, claimed });
+        const shareLink = buildShareUrl(survey.title, survey.code);
+        const heard = saved.transcript ? `I heard: "${saved.transcript.slice(0, 160)}${saved.transcript.length > 160 ? "…" : ""}"` : "Saved.";
+        await wa.sendText(
+          from,
+          `Opener saved for "${survey.title ?? "your parlo"}". ${heard}\n\nThe group hears it before they answer. Share: ${shareLink}\n\n${claimed ? "This parlo is now yours: " : "Your dashboard: "}https://parlo.me/d/${survey.dashboard_code}`
+        );
+      } catch (err) {
+        console.error("[webhook] opener voice note failed", { from, surveyId: survey.id, err });
+        trackServerEvent(from, "whatsapp_opener_failed", { surveyId: survey.id, error: err instanceof Error ? err.message : String(err) });
+        await wa.sendText(from, "I couldn't take that voice note. Could you send it once more?");
+      }
+      continue;
+    }
 
         // Check response pattern FIRST (message may contain both "survey" and "response")
         // Prefilled message: "Parlo - survey response submitted for <code>"

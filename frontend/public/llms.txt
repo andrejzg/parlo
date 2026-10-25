@@ -20,12 +20,13 @@ At least one of brief / opener_audio_url. No authentication is needed for the fi
      "whatsappShareLink":"a wa.me link with a short invitation and shareLink",
      "dashboardLink":    "answers and the agent's report",
      "claimLink":        "send this to the person you act for; one tap (and a phone code the first time) makes the parlo theirs. null when the call was authenticated",
+     "openerLink":       "WhatsApp link to Parlo's number; the person taps it and sends the opener as a voice note (see below)",
      "apiKey":           "send it as the X-Parlo-Api-Key header on later calls so new parlos belong to the same person and GET /api/my/surveys lists them",
      "questions":        [{"text", "hint", "type": "voice|photo|video"}],
      "briefSource":      "brief | opener_transcript | fallback",
      "opener":           {"durationMs", "transcript"} or null,
-     "openerRequest":    {"why", "askThePerson", "thenCall"} when no opener was given, else null,
-     "next":             ["1. post shareLink", "2. ask the person for the voice note (the words are included)", "3. send claimLink", "4. keep apiKey"]}
+     "openerRequest":    {"why", "link", "askThePerson", "alternatively"} when no opener was given, else null,
+     "next":             ["1. post shareLink", "2. send the person openerLink (the words are included)", "3. send claimLink", "4. keep apiKey"]}
 
 Errors are JSON `{error}`: 400 (nothing to build from, or a bad URL), 413 (audio over 12 MB), 415 (the URL was not audio), 429 (30 creations per hour per IP), 502 (the audio URL could not be fetched). Round 1 is written by a model from the brief, so the call takes a few seconds.
 
@@ -35,14 +36,13 @@ Example:
       -H 'content-type: application/json' \
       -d '{"brief":"I run a small climbing club. I want to hear from everyone who came this season: what made them come back, what nearly made them stop, what they want next year. I will use it to plan the winter programme."}'
 
-## The voice note (ask for it)
+## The voice note (send the link)
 
-The opener is the voice note the group hears before they answer: the person, in their own voice, saying why they are asking. It is the difference between a group chat answering and a link being ignored, so get one.
+The opener is the voice note the group hears before they answer: the person, in their own voice, saying why they are asking. It is the difference between a group chat answering and a link being ignored.
 
-- If the person sent you a voice note, pass its file URL as `opener_audio_url`. Its transcript also serves as the brief, so one voice note is enough to create the whole parlo.
-- If they typed, create the parlo first so the link is not delayed, then ask them for the voice note with these words (they are the same three prompts the web app shows): "Send me a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it. I will add it so they hear you before they answer."
-- Add it with `POST https://api.parlo.me/api/surveys/{parloId}/intro/from-url`, header `X-Parlo-Api-Key: <the apiKey from the create answer>`, body `{"url": "<https URL of the audio file>"}`. Any audio the server can fetch works: ogg/opus (WhatsApp voice notes), m4a, mp3, wav, webm, up to 12 MB. The answer is `{success, durationMs, transcript}`. People who opened the link before simply heard no opener; everyone after hears it.
-- The create answer's `openerRequest` field (present when no opener was given) repeats the ask and the exact call with the ids filled in, so you can forward `openerRequest.askThePerson` as is.
+- The create answer carries `openerLink`: a `https://wa.me/...` link into a chat with Parlo's own WhatsApp number, with "opener <code> <token>" prefilled. Send it to the person together with the share link. They tap it, press send, and reply with a voice note of 30 to 60 seconds (who they are, what they want to hear from the group, what they will do with it). Parlo stores it as the opener, transcribes it, and because the number is theirs, makes the parlo theirs: no claim link needed after that.
+- You do not need the audio file. If you do hold one as a URL, `opener_audio_url` on create, or `POST https://api.parlo.me/api/surveys/{parloId}/intro/from-url` with the API key and `{"url": "..."}`, stores it directly.
+- `openerRequest` in the create answer (present when no opener was given) has the link and the words to send: forward `openerRequest.askThePerson` as is.
 
 ## After the first call (X-Parlo-Api-Key: pk_...)
 

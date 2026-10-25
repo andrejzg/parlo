@@ -27,7 +27,6 @@ import {
 import { checkRateLimit } from "../services/ratelimit";
 import {
   transcribeAudio,
-  transcribeAudioDetailed,
   generateQuestions,
   generateQuestionsFromBrief,
   generateClarifyingQuestion,
@@ -39,6 +38,8 @@ import {
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
 import { closesAtFor, composeBrief, isAudienceId, isLengthId, isShapeId, resolveTiming, TOPIC_MAX_CHARS, type TimingId } from "../services/shapes";
 import { sanitizeOutputs } from "../services/outputs";
+import { OPENER_TOKEN_TTL_SECONDS, introKey, openerTokenKey, saveIntroFromUrl } from "../services/intro";
+import { buildBotChatUrl } from "../services/whatsapp";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
@@ -854,82 +855,6 @@ surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
   return c.json({ success: true, ...result.saved });
 });
 
-type IntroFromUrlOutcome =
-  | { ok: true; saved: { durationMs: number; transcript: string; bytes: number; contentType: string } }
-  | { ok: false; status: 400 | 413 | 415 | 502; error: string };
-
-/**
- * Fetch a creator's voice note from a URL into the opener slot and transcribe
- * it before returning (the caller usually wants the words as the brief).
- * Shared by `POST /intro/from-url` and `POST /api/agent/parlos`.
- */
-async function saveIntroFromUrl(env: Env, surveyId: string, rawUrl: unknown): Promise<IntroFromUrlOutcome> {
-  let source: URL;
-  try {
-    source = new URL(typeof rawUrl === "string" ? rawUrl : "");
-  } catch {
-    return { ok: false, status: 400, error: "url must be an absolute https URL" };
-  }
-  if (source.protocol !== "https:") return { ok: false, status: 400, error: "url must use https" };
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(source.toString(), {
-      redirect: "follow",
-      signal: AbortSignal.timeout(INTRO_FETCH_TIMEOUT_MS),
-      headers: { Accept: "audio/*, video/*;q=0.9, */*;q=0.5", "User-Agent": "Parlo/1.0 (+https://parlo.me)" },
-    });
-  } catch (err) {
-    console.error("[intro/from-url] fetch failed", { surveyId, err });
-    return { ok: false, status: 502, error: "Could not fetch the audio URL" };
-  }
-  if (!upstream.ok) return { ok: false, status: 502, error: `Audio URL answered ${upstream.status}` };
-
-  const declared = Number(upstream.headers.get("content-length") ?? "0");
-  if (declared > MAX_TRANSCRIBE_BYTES) return { ok: false, status: 413, error: "Audio too large" };
-  const contentType = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  if (!isIntroContentType(contentType)) {
-    return { ok: false, status: 415, error: `Not an audio file (content-type ${contentType || "unknown"})` };
-  }
-
-  const buf = await upstream.arrayBuffer();
-  if (buf.byteLength === 0) return { ok: false, status: 400, error: "Empty audio" };
-  if (buf.byteLength > MAX_TRANSCRIBE_BYTES) return { ok: false, status: 413, error: "Audio too large" };
-
-  const key = introKey(surveyId);
-  await env.AUDIO_BUCKET.put(key, buf, {
-    httpMetadata: { contentType: contentType || "audio/ogg" },
-  });
-
-  // Whisper now, not in the background: the caller usually needs the words.
-  let transcript = "";
-  let durationMs = 0;
-  try {
-    const detailed = await transcribeAudioDetailed(env.AI, buf, `survey-${surveyId}`);
-    transcript = detailed.text.trim();
-    durationMs = detailed.durationMs ?? 0;
-  } catch (err) {
-    console.error("[intro/from-url] transcription failed", { surveyId, err });
-  }
-
-  await env.DB
-    .prepare("UPDATE surveys SET intro_r2_key = ?, intro_duration_ms = ?, intro_transcript = ? WHERE id = ?")
-    .bind(key, durationMs, transcript || null, surveyId)
-    .run();
-
-  trackServerEvent(surveyId, "survey_intro_saved", { surveyId, durationMs, source: "url", bytes: buf.byteLength, contentType });
-
-  return { ok: true, saved: { durationMs, transcript, bytes: buf.byteLength, contentType } };
-}
-
-const INTRO_FETCH_TIMEOUT_MS = 20_000;
-
-/** WhatsApp voice notes are audio/ogg; phones send m4a/mp4; some hosts say octet-stream. */
-function isIntroContentType(ct: string): boolean {
-  if (!ct) return true;
-  return ct.startsWith("audio/") || ct.startsWith("video/") || ct === "application/octet-stream" || ct === "application/ogg";
-}
-
 // ── DELETE /api/surveys/:id/intro ── Remove the voice intro
 surveys.delete("/api/surveys/:id/intro", async (c) => {
   const surveyId = c.req.param("id");
@@ -944,10 +869,6 @@ surveys.delete("/api/surveys/:id/intro", async (c) => {
   ]);
   return c.json({ success: true });
 });
-
-function introKey(surveyId: string) {
-  return `surveys/${surveyId}/intro.webm`;
-}
 
 // ── POST /api/surveys/:id/claim ── Attach a verified identity to the parlo's owner seat
 //
@@ -1140,12 +1061,21 @@ surveys.post("/api/agent/parlos", async (c) => {
   });
 
   const whatsappText = encodeURIComponent(`Hey! I'd love to hear your thoughts. It takes 2 minutes, just tap and talk: ${shareLink}`);
+
+  // The opener by WhatsApp: a deep link into a chat with Parlo's number with
+  // "opener <code> <token>" prefilled. The person taps it and sends a voice
+  // note; the webhook stores it as the opener and, the number being proof,
+  // claims the parlo for them. Agents relay links where they drop asks.
+  const openerToken = generateCode(24);
+  await c.env.KV.put(openerTokenKey(openerToken), surveyId, { expirationTtl: OPENER_TOKEN_TTL_SECONDS });
+  const openerLink = buildBotChatUrl(`opener ${code} ${openerToken}`);
   const openerRequest = opener
     ? null
     : {
         why: "The opener is the voice note the group hears before they answer: the person, in their own voice, saying why they are asking. Parlos with one get answered; a link with no voice is a form.",
-        askThePerson: OPENER_ASK,
-        thenCall: `POST https://api.parlo.me/api/surveys/${surveyId}/intro/from-url with header X-Parlo-Api-Key: ${apiKey} and body {"url": "<https URL of the voice note file>"}. The parlo is already live; people who open it before that simply hear no opener.`,
+        link: openerLink,
+        askThePerson: `${OPENER_ASK} Tap this and send it to Parlo on WhatsApp: ${openerLink}`,
+        alternatively: `If you hold the voice note as a file URL yourself: POST https://api.parlo.me/api/surveys/${surveyId}/intro/from-url with header X-Parlo-Api-Key: ${apiKey} and body {"url": "<https URL>"}.`,
       };
   return c.json(
     {
@@ -1156,6 +1086,7 @@ surveys.post("/api/agent/parlos", async (c) => {
       whatsappShareLink: `https://wa.me/?text=${whatsappText}`,
       dashboardLink: `${origin}/d/${dashboardCode}`,
       claimLink,
+      openerLink,
       apiKey,
       questions: generated.questions,
       briefSource,
@@ -1168,7 +1099,7 @@ surveys.post("/api/agent/parlos", async (c) => {
       next: [
         `1. Post shareLink into the group chat. The parlo is live; anyone who opens it answers by voice.`,
         openerRequest
-          ? `2. Ask the person for the opener voice note now, in these words: "${OPENER_ASK}" When they send it, add it with openerRequest.thenCall. Do not skip this: the group hears it before they answer.`
+          ? `2. Send the person openerLink (${openerLink}) with these words: "${OPENER_ASK}" They tap it and send the voice note to Parlo on WhatsApp; nothing else to do. The group hears it before they answer.`
           : `2. The opener is in place; the group hears it before they answer.`,
         claimLink
           ? `3. Send claimLink to the person: one tap (and a phone code the first time) makes the parlo theirs, with the report and the dashboard.`
@@ -1182,7 +1113,7 @@ surveys.post("/api/agent/parlos", async (c) => {
 
 /** What an agent should ask its person for; the three prompts are the web opener screen's. */
 const OPENER_ASK =
-  "Send me a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it. I will add it so they hear you before they answer.";
+  "Record a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it. They hear it before they answer.";
 
 /** What the web opener falls back to when the creator said nothing usable (mirrors CreatorPage). */
 const FALLBACK_BRIEF =
