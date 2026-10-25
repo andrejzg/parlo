@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type SyntheticEvent } from "react";
 import { motion, Reorder, useDragControls, AnimatePresence } from "framer-motion";
-import { Camera, GripVertical, Mic, Plus, Trash2, Video } from "lucide-react";
+import { Camera, GripVertical, LoaderCircle, Mic, Plus, RefreshCw, Sparkles, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { useDragAutoScroll } from "@/hooks/useDragAutoScroll";
 import { stagger, fadeUp, transitionLarge, transitionSmall } from "@/lib/animations";
 
 export type ReviewQuestion = {
@@ -15,6 +15,57 @@ interface ReviewQuestionsScreenProps {
   questions: ReviewQuestion[];
   onConfirm: (questions: ReviewQuestion[]) => void;
   onRegenerate: () => void;
+  /** Chips: the whole draft rewritten in place (same count, order, type); null when it failed (texts stay). */
+  onAdjust?: (kind: "shorter" | "playful", current: ReviewQuestion[]) => Promise<ReviewQuestion[] | null>;
+  /** Chip: the optional follow-up loop, then a rebuild. */
+  /** "Sharpen it": hands up the draft as it stands so the follow-up loop can edit *this* list, swaps and all. */
+  onSharpen?: (current: ReviewQuestion[]) => void;
+  /** The draft is being edited with the creator's follow-up answers: cards dim, actions wait. */
+  revising?: boolean;
+  /** Bump to re-seed the cards from `questions` (after a revision lands). */
+  revisionKey?: number;
+  /** Per-question swap: resolves to the replacement, or null when it failed (the card keeps its text). */
+  onSwap?: (index: number, current: ReviewQuestion[]) => Promise<ReviewQuestion | null>;
+  /** What the agent will hand back to the group (the chosen shape's report). */
+  reportPreview?: string | null;
+  /** Parent is fetching the first follow-up. */
+  busy?: boolean;
+}
+
+function ReviewChip({
+  onClick,
+  children,
+  testId,
+  disabled = false,
+  busy = false,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+  testId: string;
+  disabled?: boolean;
+  /** This chip's request is in flight: it keeps its colour and shows a spinner. */
+  busy?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      aria-busy={busy}
+      data-testid={testId}
+      data-busy={busy}
+      className={`inline-flex items-center gap-xxs rounded-full bg-muted px-m py-xs text-s font-medium transition-[background-color,color,transform] hover:bg-neutral-4 active:translate-y-press focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring disabled:pointer-events-none ${
+        busy ? "text-foreground" : "text-foreground disabled:text-neutral-6"
+      }`}
+    >
+      {busy && (
+        <motion.span className="flex" animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+          <LoaderCircle size={14} aria-hidden />
+        </motion.span>
+      )}
+      {children}
+    </button>
+  );
 }
 
 interface QuestionItem {
@@ -29,21 +80,72 @@ function makeId() {
   return `q-${++nextId}-${Date.now()}`;
 }
 
-/** Small chip showing whether a question is voice, photo, or video, so the
- *  creator sees at a glance what the AI picked per question (future: tap to
- *  change the type). The visible label is asserted exactly by the creator
- *  e2e spec — keep "Voice" / "Photo" / "Video". */
-function MediaTypeBadge({ type }: { type: "voice" | "photo" | "video" }) {
-  const label = type === "voice" ? "Voice" : type === "photo" ? "Photo" : "Video";
-  const Icon = type === "voice" ? Mic : type === "photo" ? Camera : Video;
+type MediaType = "voice" | "photo" | "video";
+const MEDIA_TYPES: { type: MediaType; label: string; Icon: typeof Mic }[] = [
+  { type: "voice", label: "Voice", Icon: Mic },
+  { type: "photo", label: "Photo", Icon: Camera },
+  { type: "video", label: "Video", Icon: Video },
+];
+
+/** The chip showing whether a question is answered by voice, photo or video.
+ *  Tap it and it opens into the three options in the same row; tap one and
+ *  it closes on the pick. The visible label is asserted exactly by the
+ *  creator e2e spec — keep "Voice" / "Photo" / "Video". */
+function MediaTypePicker({ type, onChange }: { type: MediaType; onChange: (type: MediaType) => void }) {
+  const [open, setOpen] = useState(false);
+  const current = MEDIA_TYPES.find((m) => m.type === type) ?? MEDIA_TYPES[0];
+  // Pressing the chip must not move focus: while the question's textarea is
+  // being edited the header is collapsed for the keyboard, and a blur would
+  // end editing, spring the header back and drop the keyboard (the jump
+  // reported on 2026-10-15). Cancelling the press keeps the caret where it is.
+  const keepFocus = (e: SyntheticEvent) => e.preventDefault();
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+        onClick={() => setOpen(true)}
+        className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-s py-xxs text-xs font-medium text-neutral-8 transition-colors hover:bg-neutral-4 active:translate-y-press"
+        aria-label={`${current.label} answer. Change how it's answered`}
+        aria-haspopup="listbox"
+        aria-expanded={false}
+        data-testid="review-type"
+        data-type={type}
+      >
+        <current.Icon size={12} aria-hidden />
+        {current.label}
+      </button>
+    );
+  }
   return (
-    <span
-      className="shrink-0 inline-flex items-center gap-xxs rounded-full bg-muted px-s py-xxs text-xs font-medium text-neutral-8"
-      title={`${label} answer`}
-    >
-      <Icon size={12} aria-hidden />
-      {label}
-    </span>
+    <div className="flex flex-wrap gap-xxs" role="listbox" aria-label="How it's answered" data-testid="review-type-options">
+      {MEDIA_TYPES.map((m) => {
+        const selected = m.type === type;
+        return (
+          <button
+            key={m.type}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            onPointerDown={keepFocus}
+            onMouseDown={keepFocus}
+            onClick={() => {
+              onChange(m.type);
+              setOpen(false);
+            }}
+            className={`inline-flex items-center gap-xxs rounded-full px-s py-xxs text-xs font-medium transition-colors active:translate-y-press ${
+              selected ? "bg-primary text-primary-foreground" : "bg-muted text-neutral-8 hover:bg-neutral-4"
+            }`}
+            data-testid="review-type-option"
+            data-type={m.type}
+          >
+            <m.Icon size={12} aria-hidden />
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -53,16 +155,30 @@ function QuestionCard({
   isEditing,
   onTap,
   onChange,
+  onTypeChange,
   onDelete,
   canDelete,
+  onSwap,
+  swapping,
+  dimmed = false,
+  onDragStart,
+  onDragEnd,
 }: {
   item: QuestionItem;
   index: number;
   isEditing: boolean;
+  /** From `useDragAutoScroll`: the list scrolls when the card is dragged to an edge. */
+  onDragStart: (e: PointerEvent | MouseEvent | TouchEvent) => void;
+  onDragEnd: () => void;
   onTap: () => void;
   onChange: (value: string) => void;
+  onTypeChange: (type: MediaType) => void;
   onDelete: () => void;
   canDelete: boolean;
+  onSwap?: () => void;
+  swapping: boolean;
+  /** A rewrite of the whole draft is in flight. */
+  dimmed?: boolean;
 }) {
   const dragControls = useDragControls();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -96,51 +212,102 @@ function QuestionCard({
       value={item}
       dragListener={false}
       dragControls={dragControls}
+      onDragStart={(e) => onDragStart(e)}
+      onDragEnd={onDragEnd}
       className="list-none touch-none rounded-m"
       initial={{ opacity: 0, x: -12 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 40, transition: transitionSmall }}
-      transition={{ ...transitionLarge, delay: 0.04 * (index + 1) }}
+      // The staggered delay is for the entrance only: a reorder slide must start at once,
+      // or a card dragged down a scrolling list leaves an empty slot behind it.
+      transition={{ ...transitionLarge, delay: 0.04 * (index + 1), layout: { ...transitionSmall, delay: 0 } }}
       whileDrag={{ zIndex: 50, boxShadow: "var(--shadow-m)" }}
     >
-      {/* While editing, the card carries the focus indicator (accent edge)
-          because the inline textarea below is drawn without its own outline. */}
+      {/* No edge while editing: the caret and the keyboard say enough. */}
       <div
         ref={cardRef}
-        className={`relative flex items-start rounded-m bg-card p-m transition-shadow ${isEditing ? "shadow-edge-accent" : ""}`}
+        className={`relative flex items-stretch overflow-hidden rounded-m bg-card transition-[box-shadow,opacity] ${
+          dimmed || swapping ? "opacity-60" : ""
+        }`}
+        data-dimmed={dimmed || swapping}
       >
-        {/* Drag handle */}
+        {/* Drag rail: the whole left edge of the card, top to bottom, is the handle.
+            It carries the number too, so the text keeps its width on a 320px phone. */}
         <div
-          className="shrink-0 flex items-center justify-center w-11 h-11 -ml-xxs cursor-grab active:cursor-grabbing touch-none text-neutral-6"
+          className="relative shrink-0 flex w-11 items-center justify-center bg-muted text-neutral-8 cursor-grab active:cursor-grabbing touch-none transition-colors hover:bg-neutral-4"
           onPointerDown={(e) => dragControls.start(e)}
+          aria-label="Drag to reorder"
+          role="button"
+          data-testid="review-drag-rail"
         >
-          <GripVertical size={16} aria-hidden />
+          <span className="absolute inset-x-0 top-m text-center font-data text-xs font-medium tabular-nums" aria-hidden>
+            {index + 1}
+          </span>
+          <GripVertical size={18} aria-hidden />
         </div>
 
-        {/* Number — sized to the first text line so it reads as its label */}
-        <span className="shrink-0 flex h-6 w-5 items-center justify-center mt-xxs font-data text-xs font-medium tabular-nums text-muted-foreground">
-          {index + 1}
-        </span>
-
         {/* Question text + media-type badge — tap text to edit */}
-        <div className="flex-1 ml-s min-w-0 flex flex-col gap-xs py-xxs text-foreground">
+        <div className="flex-1 ml-s min-w-0 flex flex-col gap-xs py-m text-foreground">
           {isEditing ? (
-            <Textarea
+            <textarea
               ref={textareaRef}
               value={item.text}
               onChange={(e) => onChange(e.target.value)}
-              onBlur={onTap}
-              className="min-h-10 rounded-none bg-transparent px-zero py-zero text-m font-medium caret-color-1 focus-visible:outline-none"
+              onBlur={(e) => {
+                const next = e.relatedTarget as Node | null;
+                if (next && cardRef.current?.contains(next)) {
+                  textareaRef.current?.focus();
+                  return;
+                }
+                onTap();
+              }}
+              rows={1}
+              placeholder="Write the question"
+              aria-label={`Question ${index + 1}`}
+              className="w-full min-h-10 resize-none bg-transparent p-zero font-ui text-m font-medium text-foreground placeholder:text-neutral-6 caret-color-1 outline-none ring-0 shadow-none"
             />
           ) : (
             <button type="button" onClick={onTap} className="text-left text-m font-medium min-h-10">
-              {item.text || <span className="text-neutral-6">Tap to write question...</span>}
+              {/* Keyed by the text so a rewrite or swap fades the new wording in. */}
+              <motion.span
+                key={item.text}
+                className="block"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={transitionSmall}
+              >
+                {item.text || <span className="text-neutral-6">Tap to write question...</span>}
+              </motion.span>
             </button>
           )}
           <div className="flex">
-            <MediaTypeBadge type={item.type} />
+            <MediaTypePicker type={item.type} onChange={onTypeChange} />
           </div>
         </div>
+
+        {/* Swap and delete, stacked in one column so the text keeps its width. */}
+        <div className="shrink-0 flex flex-col items-center py-s mr-xxs">
+        {onSwap && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onSwap}
+            disabled={swapping}
+            aria-label="Swap this question"
+            className="shrink-0 text-muted-foreground"
+            data-testid="review-swap"
+            data-swapping={swapping}
+          >
+            <motion.span
+              className="flex"
+              animate={swapping ? { rotate: 360 } : { rotate: 0 }}
+              transition={swapping ? { duration: 1, repeat: Infinity, ease: "linear" } : transitionSmall}
+            >
+              <RefreshCw aria-hidden />
+            </motion.span>
+          </Button>
+        )}
 
         {/* Delete */}
         {canDelete && (
@@ -150,11 +317,12 @@ function QuestionCard({
             size="icon"
             onClick={onDelete}
             aria-label="Delete question"
-            className="shrink-0 -mr-xxs text-muted-foreground hover:bg-error-transparent hover:text-error"
+            className="shrink-0 text-muted-foreground hover:bg-error-transparent hover:text-error"
           >
             <Trash2 aria-hidden />
           </Button>
         )}
+        </div>
       </div>
     </Reorder.Item>
   );
@@ -164,19 +332,88 @@ export default function ReviewQuestionsScreen({
   questions,
   onConfirm,
   onRegenerate,
+  onAdjust,
+  onSharpen,
+  onSwap,
+  reportPreview = null,
+  busy = false,
+  revising = false,
+  revisionKey = 0,
 }: ReviewQuestionsScreenProps) {
-  const [items, setItems] = useState<QuestionItem[]>(() =>
-    questions.map((q) => ({
+  const seed = (qs: ReviewQuestion[]): QuestionItem[] =>
+    qs.map((q) => ({
       id: makeId(),
       text: q.text,
       hint: q.hint,
       type: q.type ?? "voice",
-    }))
-  );
+    }));
+  const [items, setItems] = useState<QuestionItem[]>(() => seed(questions));
+  const seededFor = useRef(revisionKey);
+  useEffect(() => {
+    if (seededFor.current === revisionKey) return;
+    seededFor.current = revisionKey;
+    setItems(seed(questions));
+    setEditingIndex(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revisionKey]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [swappingId, setSwappingId] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const autoScroll = useDragAutoScroll(listRef);
+  const [adjusting, setAdjusting] = useState<"shorter" | "playful" | null>(null);
+  void onRegenerate;
+
+  /** A chip: rewrite every card in place, keeping ids (and so order and drag state). */
+  const adjust = async (kind: "shorter" | "playful") => {
+    if (!onAdjust || adjusting || swappingId || revising) return;
+    setAdjusting(kind);
+    try {
+      const result = await onAdjust(
+        kind,
+        items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })),
+      );
+      if (result) {
+        setItems((prev) =>
+          prev.map((it, i) =>
+            result[i] ? { ...it, text: result[i].text, hint: result[i].hint ?? it.hint, type: result[i].type ?? it.type } : it,
+          ),
+        );
+      }
+    } finally {
+      setAdjusting(null);
+    }
+  };
+
+  const swap = async (index: number) => {
+    if (!onSwap || swappingId || revising) return;
+    const target = items[index];
+    if (!target) return;
+    setSwappingId(target.id);
+    try {
+      const replacement = await onSwap(
+        index,
+        items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })),
+      );
+      if (replacement) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === target.id
+              ? { ...it, text: replacement.text, hint: replacement.hint ?? it.hint, type: replacement.type ?? it.type }
+              : it,
+          ),
+        );
+      }
+    } finally {
+      setSwappingId(null);
+    }
+  };
 
   const updateQuestion = (id: string, value: string) => {
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: value } : item)));
+  };
+
+  const updateType = (id: string, type: MediaType) => {
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, type } : item)));
   };
 
   const deleteQuestion = (id: string) => {
@@ -185,8 +422,7 @@ export default function ReviewQuestionsScreen({
   };
 
   const addQuestion = () => {
-    // Manually-added questions default to voice — user can't pick the type
-    // here yet. (Future: add a long-press or context menu to switch.)
+    // A new question is voice until the creator taps its chip to make it photo or video.
     const newItem: QuestionItem = { id: makeId(), text: "", type: "voice" };
     setItems((prev) => [...prev, newItem]);
     setTimeout(() => setEditingIndex(items.length), 50);
@@ -223,16 +459,55 @@ export default function ReviewQuestionsScreen({
             <motion.p variants={fadeUp} className="text-s text-muted-foreground">
               Tap to edit, drag to reorder.
             </motion.p>
+            {(onAdjust || onSharpen) && (
+              <motion.div variants={fadeUp} className="flex flex-wrap justify-center gap-xs pt-xs">
+                {onAdjust && (
+                  <ReviewChip
+                    onClick={() => void adjust("shorter")}
+                    testId="review-adjust-shorter"
+                    busy={adjusting === "shorter"}
+                    disabled={!!adjusting || !!swappingId}
+                  >
+                    Shorter
+                  </ReviewChip>
+                )}
+                {onAdjust && (
+                  <ReviewChip
+                    onClick={() => void adjust("playful")}
+                    testId="review-adjust-playful"
+                    busy={adjusting === "playful"}
+                    disabled={!!adjusting || !!swappingId}
+                  >
+                    More playful
+                  </ReviewChip>
+                )}
+                {onSharpen && (
+                  <ReviewChip
+                    onClick={() => onSharpen(items.map((q) => ({ text: q.text, hint: q.hint, type: q.type })))}
+                    testId="review-sharpen"
+                    disabled={busy || !!adjusting || revising}
+                  >
+                    <Sparkles size={14} aria-hidden />
+                    {busy ? "Thinking…" : "Sharpen it"}
+                  </ReviewChip>
+                )}
+              </motion.div>
+            )}
           </div>
         </motion.div>
       </div>
 
-      {/* Content zone */}
+      {/* Content zone. No `layoutScroll` here on purpose: Framer caches a layoutScroll ancestor's
+          offset between layout updates, and a list that scrolls continuously under a drag then throws
+          the other cards off by the stale amount at every reorder. useDragAutoScroll keeps Framer in
+          viewport coordinates and shifts the pointer by the scrolled distance instead. */}
       <motion.div
+        ref={listRef}
         className="flex-1 min-h-0 overflow-y-auto px-l pt-xl pb-xs"
         variants={fadeUp}
         initial="initial"
         animate="animate"
+        data-testid="review-list"
       >
         <Reorder.Group axis="y" values={items} onReorder={setItems} className="list-none space-y-s">
           <AnimatePresence initial={false}>
@@ -244,8 +519,14 @@ export default function ReviewQuestionsScreen({
                 isEditing={editingIndex === i}
                 onTap={() => setEditingIndex(editingIndex === i ? null : i)}
                 onChange={(value) => updateQuestion(item.id, value)}
+                onTypeChange={(type) => updateType(item.id, type)}
+                onDragStart={autoScroll.onDragStart}
+                onDragEnd={autoScroll.onDragEnd}
                 onDelete={() => deleteQuestion(item.id)}
                 canDelete={items.length > 1}
+                onSwap={onSwap && !adjusting ? () => void swap(i) : undefined}
+                swapping={swappingId === item.id}
+                dimmed={!!adjusting || revising}
               />
             ))}
           </AnimatePresence>
@@ -255,6 +536,15 @@ export default function ReviewQuestionsScreen({
           <Plus aria-hidden />
           Add question
         </Button>
+
+        {reportPreview && (
+          <div className="mt-l rounded-m bg-card p-m flex flex-col gap-xs" data-testid="review-report-preview">
+            <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">
+              What comes back to the group
+            </span>
+            <p className="text-s text-foreground">{reportPreview}</p>
+          </div>
+        )}
       </motion.div>
 
       {/* Action zone — hidden when keyboard is open */}

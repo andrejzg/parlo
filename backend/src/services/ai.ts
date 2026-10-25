@@ -189,22 +189,50 @@ export async function runCerebras(
   messages: ChatMessage[],
   opts: { maxTokens?: number } = {}
 ): Promise<string> {
-  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: CEREBRAS_MODEL,
-      messages,
-      response_format: { type: "json_object" },
-      reasoning_effort: "low",
-      ...(opts.maxTokens && { max_tokens: opts.maxTokens }),
-    }),
-  });
+  const call = () =>
+    fetch("https://api.cerebras.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: CEREBRAS_MODEL,
+        messages,
+        response_format: { type: "json_object" },
+        reasoning_effort: "low",
+        ...(opts.maxTokens && { max_tokens: opts.maxTokens }),
+      }),
+    });
+  let res = await call();
+  if (res.status === 429) {
+    // Cerebras sheds load with a 429 "queue_exceeded" under traffic; one short retry
+    // usually gets through and keeps the fast model (seen 2026-10-15).
+    await new Promise((r) => setTimeout(r, 700));
+    res = await call();
+  }
   if (!res.ok) {
     throw new Error(`Cerebras ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   return data.choices?.[0]?.message?.content ?? "";
+}
+
+/**
+ * The text of a Workers AI chat result, whatever shape it came in. The
+ * Llama models answer `{response: string}` most of the time, but the
+ * fp8-fast variant has returned `response` as an already-parsed object
+ * and an OpenAI-style `{choices: [{message: {content}}]}`; a bare string
+ * and `{text}` have been seen too. `.trim()` on the raw field took the
+ * whole fallback down on 2026-10-15, which turned a Cerebras 429 into a
+ * 500 for the creator.
+ */
+export function textFromWorkersAi(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (!result || typeof result !== "object") return "";
+  const r = result as { response?: unknown; text?: unknown; choices?: { message?: { content?: unknown } }[] };
+  const fromChoices = r.choices?.[0]?.message?.content;
+  const candidate = r.response ?? r.text ?? fromChoices;
+  if (typeof candidate === "string") return candidate;
+  if (candidate && typeof candidate === "object") return JSON.stringify(candidate);
+  return "";
 }
 
 /**
@@ -231,10 +259,7 @@ export async function runJsonCompletion<T>(
   providers.push({
     provider: "cloudflare-workers-ai",
     model: WORKERS_AI_MODEL,
-    run: async () => {
-      const result = await ai.run(WORKERS_AI_MODEL, { messages });
-      return result.response ?? result.text ?? "";
-    },
+    run: async () => textFromWorkersAi(await ai.run(WORKERS_AI_MODEL, { messages })),
   });
 
   let lastError: unknown;
@@ -352,6 +377,255 @@ export async function generateQuestionsFromBrief(
       $ai_prompt_version_brief: briefPrompt.version,
     },
   });
+}
+
+// ── Swapping one question on the review screen ───────────────────────
+
+const SWAP_PROMPT = `A creator is reviewing the questions their agent will ask the group. They want question {{index}} of {{count}} replaced with a different one.
+
+BRIEF:
+{{brief}}
+
+CLARIFICATIONS:
+{{clarifications}}
+
+THE QUESTIONS THAT STAY (answered by voice unless noted; do not duplicate any of these):
+{{others}}
+
+THE QUESTION BEING REPLACED (the creator does not want this one; never return it or a rewording of it):
+{{current}}
+(its media type is "{{currentType}}")
+
+Write ONE new question for slot {{index}}: same tone and length as the ones that stay, a genuinely different angle on the brief that none of them covers, warm and conversational as the agent would say it out loud. Keep the slot's media type unless a different one is clearly better.{{nudge}}
+
+Return JSON: {"text": "...", "hint": "Question {{index}} of {{count}}", "type": "voice" | "photo" | "video"}.`;
+
+/** Models sometimes copy a "[voice] …" list format from a prompt into the answer. */
+function stripMediaTag(text: string): string {
+  return text.trim().replace(/^[\[(](voice|photo|video)[\])]\s*/i, "").trim();
+}
+
+export type ReplacementQuestion = { text: string; hint: string; type: "voice" | "photo" | "video" };
+
+function parseReplacementQuestion(text: string): ReplacementQuestion {
+  const parsed = JSON.parse(extractJson(text)) as { text?: unknown; hint?: unknown; type?: unknown };
+  const q = typeof parsed.text === "string" ? stripMediaTag(parsed.text) : "";
+  if (!q) throw new Error("Replacement question missing from AI response");
+  const type = parsed.type === "photo" ? "photo" : parsed.type === "video" ? "video" : "voice";
+  const hint = typeof parsed.hint === "string" && parsed.hint.trim() ? parsed.hint.trim() : "";
+  return { text: q, hint, type };
+}
+
+/**
+ * Review-screen swap: one new question for slot `index` (0-based) that covers
+ * an angle the rest of the draft doesn't. The prompt is code, not KV: it is
+ * small and tied to the response shape.
+ */
+export async function generateReplacementQuestion(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: {
+    brief: string;
+    clarifications: { question: string; answer: string }[];
+    questions: { text: string; type?: string }[];
+    index: number;
+  },
+  traceId?: string
+): Promise<ReplacementQuestion> {
+  const current = input.questions[input.index];
+  const others = input.questions
+    .map((q, i) => ({ q, i }))
+    .filter(({ i }) => i !== input.index)
+    .map(({ q, i }) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+    .join("\n");
+  const normalise = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const taken = new Set(input.questions.map((q) => normalise(q.text)));
+
+  let replacement: ReplacementQuestion | null = null;
+  // Small models sometimes hand the old question back; one retry with a blunter nudge fixes most of those.
+  for (let attempt = 0; attempt < 2 && !replacement; attempt++) {
+    const messages = [
+      { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: fill(SWAP_PROMPT, {
+          index: String(input.index + 1),
+          count: String(input.questions.length),
+          brief: input.brief,
+          clarifications: formatClarifications(input.clarifications),
+          others: others || "(none)",
+          current: current?.text ?? "",
+          currentType: current?.type ?? "voice",
+          nudge: attempt === 0 ? "" : " Your previous answer repeated the question being replaced. This one must ask about something else entirely.",
+        }),
+      },
+    ];
+    const candidate = await runJsonCompletion(ai, cerebrasApiKey, messages, parseReplacementQuestion, {
+      traceId,
+      maxTokens: 300,
+      properties: { swapIndex: input.index, questionCount: input.questions.length, attempt },
+    });
+    if (!taken.has(normalise(candidate.text))) replacement = candidate;
+    else if (attempt === 1) replacement = candidate; // give up gracefully rather than fail the tap
+  }
+  const out = replacement!;
+  if (!out.hint) out.hint = `Question ${input.index + 1} of ${input.questions.length}`;
+  return out;
+}
+
+// ── Rewriting the whole draft from a review-screen chip ──────────────
+
+/** The chips on the review screen. Server-side allowlist; the instruction is what the model sees. */
+export const ADJUST_KINDS = {
+  shorter: "Make every question shorter and punchier: one idea each, under 15 words where you can.",
+  playful: "Make the questions more playful and informal, like a friend asking, without losing what each one asks.",
+} as const;
+export type AdjustKind = keyof typeof ADJUST_KINDS;
+export function isAdjustKind(v: unknown): v is AdjustKind {
+  return typeof v === "string" && v in ADJUST_KINDS;
+}
+
+const ADJUST_PROMPT = `A creator is reviewing the questions their agent will ask the group and tapped a button to change all of them at once.
+
+BRIEF:
+{{brief}}
+
+THE QUESTIONS, in order (answered by voice unless noted):
+{{questions}}
+
+THE CHANGE: {{instruction}}
+
+Rewrite every question accordingly. Keep the same number of questions, the same order, and what each one asks; only the wording changes. Warm and conversational, as the agent would say them out loud.
+
+Return JSON: {"questions": [{"text": "..."}, ...]} with exactly {{count}} items in the same order.`;
+
+function parseAdjustedQuestions(text: string): string[] {
+  const parsed = JSON.parse(extractJson(text)) as { questions?: unknown };
+  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+    throw new Error("Adjusted questions missing from AI response");
+  }
+  return parsed.questions.map((q) => {
+    const t = typeof q === "string" ? q : typeof (q as { text?: unknown })?.text === "string" ? (q as { text: string }).text : "";
+    return stripMediaTag(t);
+  });
+}
+
+/**
+ * Review-screen chips ("Shorter", "More playful"): rewrite the draft on
+ * screen in place. Same count, order and media type; a slot the model
+ * skipped keeps its old text rather than failing the tap. Cerebras answers
+ * in about a second, so the review screen never has to leave.
+ */
+export async function adjustQuestions(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: { brief: string; kind: AdjustKind; questions: { text: string; hint?: string; type?: string }[] },
+  traceId?: string
+): Promise<{ text: string; hint: string; type: "voice" | "photo" | "video" }[]> {
+  const count = input.questions.length;
+  const messages = [
+    { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: fill(ADJUST_PROMPT, {
+        brief: input.brief,
+        instruction: ADJUST_KINDS[input.kind],
+        count: String(count),
+        questions: input.questions
+          .map((q, i) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+          .join("\n"),
+      }),
+    },
+  ];
+  const texts = await runJsonCompletion(ai, cerebrasApiKey, messages, parseAdjustedQuestions, {
+    traceId,
+    maxTokens: 900,
+    properties: { adjustKind: input.kind, questionCount: count },
+  });
+  return input.questions.map((q, i) => ({
+    text: texts[i] && texts[i].length > 0 ? texts[i] : q.text,
+    hint: q.hint && q.hint.trim() ? q.hint : `Question ${i + 1} of ${count}`,
+    type: q.type === "photo" ? "photo" : q.type === "video" ? "video" : "voice",
+  }));
+}
+
+// ── Revising the draft with the creator's follow-up answers ───────────
+
+const REVISE_PROMPT = `A creator is reviewing the questions their agent will ask the group. They answered a few follow-up questions about what they really want, and tapped "Update with feedback". Fold what they said into the questions.
+
+BRIEF:
+{{brief}}
+
+WHAT THE CREATOR SAID WHEN ASKED MORE:
+{{clarifications}}
+
+THE QUESTIONS AS THEY STAND, in order (answered by voice unless noted):
+{{questions}}
+
+Revise the list so it reflects what the creator told you: reword a question that now misses the point, drop one that the answers made redundant, add one where they surfaced something the list doesn't cover, reorder if the flow improves. Keep what already works; this is an edit, not a rewrite. Stay within {{min}} to {{max}} questions. Warm and conversational, as the agent would say them out loud.
+
+Return JSON: {"questions": [{"text": "...", "type": "voice" | "photo" | "video"}, ...]} in the order they should be asked. Keep each question's type unless the creator's answers call for a different one.`;
+
+function parseRevisedQuestions(text: string): { text: string; type: "voice" | "photo" | "video" }[] {
+  const parsed = JSON.parse(extractJson(text)) as { questions?: unknown };
+  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+    throw new Error("Revised questions missing from AI response");
+  }
+  return parsed.questions
+    .map((q) => {
+      const raw = typeof q === "string" ? q : typeof (q as { text?: unknown })?.text === "string" ? (q as { text: string }).text : "";
+      const type = (q as { type?: unknown })?.type;
+      return {
+        text: stripMediaTag(raw).trim(),
+        type: type === "photo" ? ("photo" as const) : type === "video" ? ("video" as const) : ("voice" as const),
+      };
+    })
+    .filter((q) => q.text.length > 0);
+}
+
+/**
+ * The checkpoint after "Sharpen it": the draft on the review screen edited
+ * in the light of the creator's follow-up answers. Unlike `adjustQuestions`
+ * the count may change (within two of the current length) and questions may
+ * be added, dropped or reordered; the model is told it is an edit, not a
+ * rewrite. Cerebras answers in a second or two, so the review screen shows
+ * the old draft dimmed and fades the new one in.
+ */
+export async function reviseQuestions(
+  ai: any,
+  cerebrasApiKey: string | undefined,
+  input: {
+    brief: string;
+    clarifications: { question: string; answer: string }[];
+    questions: { text: string; hint?: string; type?: string }[];
+  },
+  traceId?: string
+): Promise<{ text: string; hint: string; type: "voice" | "photo" | "video" }[]> {
+  const count = input.questions.length;
+  const min = Math.max(1, count - 2);
+  const max = Math.min(20, count + 2);
+  const messages = [
+    { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: fill(REVISE_PROMPT, {
+        brief: input.brief,
+        clarifications: formatClarifications(input.clarifications),
+        min: String(min),
+        max: String(max),
+        questions: input.questions
+          .map((q, i) => `${i + 1}. ${q.text}${q.type && q.type !== "voice" ? ` (answered by ${q.type})` : ""}`)
+          .join("\n"),
+      }),
+    },
+  ];
+  const revised = await runJsonCompletion(ai, cerebrasApiKey, messages, parseRevisedQuestions, {
+    traceId,
+    maxTokens: 1200,
+    properties: { questionCount: count, clarificationCount: input.clarifications.length },
+  });
+  const kept = revised.slice(0, max);
+  return kept.map((q, i) => ({ ...q, hint: `Question ${i + 1} of ${kept.length}` }));
 }
 
 // ── Clarifying questions ─────────────────────────────────────────────

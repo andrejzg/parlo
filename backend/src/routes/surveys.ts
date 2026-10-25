@@ -30,9 +30,14 @@ import {
   generateQuestions,
   generateQuestionsFromBrief,
   generateClarifyingQuestion,
+  generateReplacementQuestion,
+  adjustQuestions, reviseQuestions,
+  isAdjustKind,
   type GeneratedSurvey,
 } from "../services/ai";
 import { evaluateBrief, BRIEF_MAX_CHARS } from "../services/brief";
+import { composeBrief, isAudienceId, isLengthId, isShapeId, TOPIC_MAX_CHARS } from "../services/shapes";
+import { sanitizeOutputs } from "../services/outputs";
 import { trackServerEvent } from "../services/analytics";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
@@ -268,6 +273,128 @@ surveys.post("/api/surveys/:id/clarify", async (c) => {
   return c.json(response);
 });
 
+/** The draft on the review screen, as the swap and adjust routes read it from an untrusted body. */
+function draftFromBody(input: unknown): { text: string; hint?: string; type: string }[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((q): q is { text: string; hint?: unknown; type?: unknown } => !!q && typeof q === "object" && typeof (q as { text?: unknown }).text === "string")
+    .slice(0, 20)
+    .map((q) => ({
+      text: q.text.trim().slice(0, 500),
+      hint: typeof q.hint === "string" ? q.hint.slice(0, 80) : undefined,
+      type: typeof q.type === "string" ? q.type : "voice",
+    }))
+    .filter((q) => q.text.length > 0);
+}
+
+// ── POST /api/surveys/:id/questions/adjust ── Rewrite the whole draft in place
+// Review-screen chips. Body: { kind: "shorter" | "playful", questions: [{text, hint?, type?}] }.
+// Same count, order and media type back, only the wording changed. Nothing
+// is saved; the review screen persists with PUT /questions on confirm.
+surveys.post("/api/surveys/:id/questions/adjust", async (c) => {
+  const surveyId = c.req.param("id");
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "question-adjust", ip, 300);
+  if (!allowed) return c.json({ error: "Too many requests" }, 429);
+
+  const survey = await c.env.DB.prepare("SELECT brief FROM surveys WHERE id = ?").bind(surveyId).first<{ brief: string | null }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const body = await c.req.json<{ kind?: unknown; questions?: unknown }>().catch(() => ({}) as { kind?: unknown; questions?: unknown });
+  if (!isAdjustKind(body.kind)) return c.json({ error: "unknown kind" }, 400);
+  const questions = draftFromBody(body.questions);
+  if (questions.length === 0) return c.json({ error: "questions are required" }, 400);
+
+  const adjusted = await adjustQuestions(
+    c.env.AI,
+    c.env.CEREBRAS_API_KEY,
+    { brief: survey.brief?.trim() || "(no brief)", kind: body.kind, questions },
+    `survey-${surveyId}`
+  );
+  trackServerEvent(surveyId, "survey_questions_adjusted", { surveyId, kind: body.kind, questionCount: questions.length });
+  return c.json({ questions: adjusted });
+});
+
+// ── POST /api/surveys/:id/questions/revise ── The draft edited with the follow-up answers
+// The checkpoint after "Sharpen it". Body: { questions: [{text, hint?, type?}],
+// clarifications: [{question, answer}] }. Questions may be reworded, dropped,
+// added or reordered (count within two of the draft). The clarifications are
+// persisted to brief_clarifications so the agent and /swap see them. Nothing
+// else is saved; the review screen persists with PUT /questions on confirm.
+surveys.post("/api/surveys/:id/questions/revise", async (c) => {
+  const surveyId = c.req.param("id");
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "question-revise", ip, 300);
+  if (!allowed) return c.json({ error: "Too many requests" }, 429);
+
+  const survey = await c.env.DB.prepare("SELECT brief FROM surveys WHERE id = ?").bind(surveyId).first<{ brief: string | null }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const body = await c.req
+    .json<{ questions?: unknown; clarifications?: unknown }>()
+    .catch(() => ({}) as { questions?: unknown; clarifications?: unknown });
+  const questions = draftFromBody(body.questions);
+  if (questions.length === 0) return c.json({ error: "questions are required" }, 400);
+  const clarifications = sanitizeClarifications(body.clarifications);
+  if (clarifications.length === 0) return c.json({ error: "clarifications are required" }, 400);
+
+  const revised = await reviseQuestions(
+    c.env.AI,
+    c.env.CEREBRAS_API_KEY,
+    { brief: survey.brief?.trim() || "(no brief)", clarifications, questions },
+    `survey-${surveyId}`
+  );
+  await c.env.DB.prepare("UPDATE surveys SET brief_clarifications = ? WHERE id = ?").bind(JSON.stringify(clarifications), surveyId).run();
+  trackServerEvent(surveyId, "survey_questions_revised", {
+    surveyId,
+    clarificationCount: clarifications.length,
+    before: questions.length,
+    after: revised.length,
+  });
+  return c.json({ questions: revised });
+});
+
+// ── POST /api/surveys/:id/questions/swap ── One different question for a slot
+// Review-screen fidget. Body: { index, questions: [{text, type?}] } — the
+// draft on screen. Nothing is saved here; the review screen persists the
+// whole list with PUT /questions on confirm. Works from the brief stored by
+// /generate, so it needs a generate first.
+surveys.post("/api/surveys/:id/questions/swap", async (c) => {
+  const surveyId = c.req.param("id");
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "question-swap", ip, 300);
+  if (!allowed) return c.json({ error: "Too many requests" }, 429);
+
+  const survey = await c.env.DB.prepare("SELECT brief, brief_clarifications FROM surveys WHERE id = ?")
+    .bind(surveyId)
+    .first<{ brief: string | null; brief_clarifications: string | null }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+  if (!survey.brief?.trim()) return c.json({ error: "This parlo has no brief to work from yet" }, 400);
+
+  const body = await c.req.json<{ index?: unknown; questions?: unknown }>().catch(() => ({} as { index?: unknown; questions?: unknown }));
+  const questions = draftFromBody(body.questions);
+  const index = typeof body.index === "number" ? Math.floor(body.index) : -1;
+  if (questions.length === 0 || index < 0 || index >= questions.length) {
+    return c.json({ error: "index and questions are required" }, 400);
+  }
+
+  let clarifications: Clarification[] = [];
+  try {
+    clarifications = sanitizeClarifications(JSON.parse(survey.brief_clarifications ?? "[]"));
+  } catch {
+    clarifications = [];
+  }
+
+  const question = await generateReplacementQuestion(
+    c.env.AI,
+    c.env.CEREBRAS_API_KEY,
+    { brief: survey.brief, clarifications, questions, index },
+    `survey-${surveyId}`
+  );
+  trackServerEvent(surveyId, "survey_question_swapped", { surveyId, index, questionCount: questions.length });
+  return c.json({ question });
+});
+
 // ── POST /api/surveys/:id/generate ── Generate questions via AI
 // Agent brief flow: body { brief, clarifications } (text already transcribed).
 // Legacy flow: optional { textAnswers } with R2 audio for whatever is missing.
@@ -294,20 +421,38 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
     console.log("[generate] No request body or invalid JSON, falling back to audio-only:", e);
   }
 
-  const brief = typeof body.brief === "string" ? body.brief.trim().slice(0, BRIEF_MAX_CHARS) : "";
+  // Output-first flow: the brief is composed from the taps and the one blank.
+  // "Something else" sends a free-form brief instead; the legacy flow neither.
+  let brief = "";
+  let outputShape: string | null = null;
+  let audienceKind: string | null = null;
+  let lengthKind: string | null = null;
+  const outputs = sanitizeOutputs(body.outputs);
+  if (typeof body.shape === "string" && body.shape !== "other") {
+    if (!isShapeId(body.shape) || body.shape === "other") return c.json({ error: "unknown shape" }, 400);
+    const topic = typeof body.topic === "string" ? body.topic.trim().slice(0, TOPIC_MAX_CHARS) : "";
+    if (!topic) return c.json({ error: "topic is required" }, 400);
+    const audience = isAudienceId(body.audience) ? body.audience : "group";
+    const length = isLengthId(body.length) ? body.length : "few";
+    brief = composeBrief({ shape: body.shape, audience, length, topic, outputs });
+    outputShape = body.shape;
+    audienceKind = audience;
+    lengthKind = length;
+  } else if (typeof body.brief === "string") {
+    brief = body.brief.trim().slice(0, BRIEF_MAX_CHARS);
+    if (brief) outputShape = "other";
+  }
+
   if (brief) {
     const clarifications = sanitizeClarifications(body.clarifications);
-    const generated = await generateQuestionsFromBrief(
-      c.env.AI,
-      c.env.KV,
-      { brief, clarifications },
-      c.env.CEREBRAS_API_KEY
-    );
+    const generated = await generateQuestionsFromBrief(c.env.AI, c.env.KV, { brief, clarifications }, c.env.CEREBRAS_API_KEY);
     console.log("[generate] Generated from brief:", JSON.stringify(generated));
 
     await db
-      .prepare("UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ? WHERE id = ?")
-      .bind(generated.title, brief, JSON.stringify(clarifications), surveyId)
+      .prepare(
+        "UPDATE surveys SET title = ?, brief = ?, brief_clarifications = ?, output_shape = ?, audience_kind = ?, outputs = ? WHERE id = ?"
+      )
+      .bind(generated.title, brief, JSON.stringify(clarifications), outputShape, audienceKind, JSON.stringify(outputs), surveyId)
       .run();
     await replaceQuestions(db, surveyId, generated);
 
@@ -315,13 +460,19 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
       surveyId,
       title: generated.title,
       questionCount: generated.questions.length,
-      source: "brief",
+      source: outputShape && outputShape !== "other" ? "shape" : "brief",
+      shape: outputShape,
+      audience: audienceKind,
+      length: lengthKind,
+      outputs,
+      outputCount: outputs.length,
       clarificationCount: clarifications.length,
     });
 
     const response: GenerateSurveyResponse = {
       title: generated.title,
       questions: generated.questions,
+      brief,
     };
     return c.json(response);
   }
@@ -403,10 +554,11 @@ surveys.post("/api/surveys/:id/generate", async (c) => {
     source: "legacy",
   });
 
-  // 5. Return the generated data
+  // 5. Return the generated data (the legacy flow keeps no brief)
   const response: GenerateSurveyResponse = {
     title: generated.title,
     questions: generated.questions,
+    brief: "",
   };
 
   return c.json(response);
