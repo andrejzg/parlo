@@ -27,6 +27,7 @@ import {
 import { checkRateLimit } from "../services/ratelimit";
 import {
   transcribeAudio,
+  transcribeAudioDetailed,
   generateQuestions,
   generateQuestionsFromBrief,
   generateClarifyingQuestion,
@@ -95,9 +96,15 @@ surveys.post("/api/surveys", async (c) => {
   const db = c.env.DB;
 
   // One identity table: find or create the owner (anonymous until they verify a phone).
+  // An API key (an agent acting for its person, the MCP server, a verified
+  // device) makes that user the owner outright, so the parlo shows up in
+  // their home list and `list_my_surveys` without a claim step.
   let finalCreatorId: string;
+  const authedUserId = c.get("userId");
   const creatorPhone = body.creatorPhone ? normalizePhone(body.creatorPhone) : null;
-  if (creatorPhone) {
+  if (authedUserId) {
+    finalCreatorId = authedUserId;
+  } else if (creatorPhone) {
     const existing = await findUserByPhone(db, creatorPhone);
     if (existing) {
       finalCreatorId = existing.id;
@@ -168,7 +175,7 @@ surveys.post("/api/surveys", async (c) => {
     },
   };
 
-  trackServerEvent(finalCreatorId, "survey_created", { surveyId, code, dashboardCode });
+  trackServerEvent(finalCreatorId, "survey_created", { surveyId, code, dashboardCode, viaApiKey: !!authedUserId });
 
   return c.json(response, 201);
 });
@@ -816,6 +823,98 @@ surveys.put("/api/surveys/:id/intro", async (c) => {
 
   return c.json({ success: true, durationMs });
 });
+
+// ── POST /api/surveys/:id/intro/from-url ── Fetch the opener from a URL
+//
+// For agents (the MCP server, an owner's personal agent) that hold the
+// creator's voice note as a URL rather than as bytes in a browser. Body:
+// `{url}` (https). The Worker fetches it (12 MB cap, audio or video content
+// type), stores it under the intro key, transcribes it with Whisper *before*
+// answering so the transcript can be the brief, and takes the duration from
+// Whisper's word timings. Owner only: the Worker fetches whatever URL it is
+// given, so the caller has to be the person the parlo belongs to.
+surveys.post("/api/surveys/:id/intro/from-url", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
+
+  const surveyId = c.req.param("id");
+  const db = c.env.DB;
+  const survey = await db
+    .prepare("SELECT id FROM surveys WHERE id = ? AND creator_id = ?")
+    .bind(surveyId, userId)
+    .first<{ id: string }>();
+  if (!survey) return c.json({ error: "Survey not found" }, 404);
+
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  const allowed = await checkRateLimit(c.env.KV, "intro-from-url", ip, 60);
+  if (!allowed) return c.json({ error: "Rate limit exceeded" }, 429);
+
+  const body = await c.req.json<{ url?: unknown }>().catch(() => ({} as { url?: unknown }));
+  let source: URL;
+  try {
+    source = new URL(typeof body.url === "string" ? body.url : "");
+  } catch {
+    return c.json({ error: "url must be an absolute https URL" }, 400);
+  }
+  if (source.protocol !== "https:") return c.json({ error: "url must use https" }, 400);
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(source.toString(), {
+      redirect: "follow",
+      signal: AbortSignal.timeout(INTRO_FETCH_TIMEOUT_MS),
+      headers: { Accept: "audio/*, video/*;q=0.9, */*;q=0.5", "User-Agent": "Parlo/1.0 (+https://parlo.me)" },
+    });
+  } catch (err) {
+    console.error("[intro/from-url] fetch failed", { surveyId, err });
+    return c.json({ error: "Could not fetch the audio URL" }, 502);
+  }
+  if (!upstream.ok) return c.json({ error: `Audio URL answered ${upstream.status}` }, 502);
+
+  const declared = Number(upstream.headers.get("content-length") ?? "0");
+  if (declared > MAX_TRANSCRIBE_BYTES) return c.json({ error: "Audio too large" }, 413);
+  const contentType = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!isIntroContentType(contentType)) {
+    return c.json({ error: `Not an audio file (content-type ${contentType || "unknown"})` }, 415);
+  }
+
+  const buf = await upstream.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "Empty audio" }, 400);
+  if (buf.byteLength > MAX_TRANSCRIBE_BYTES) return c.json({ error: "Audio too large" }, 413);
+
+  const key = introKey(surveyId);
+  await c.env.AUDIO_BUCKET.put(key, buf, {
+    httpMetadata: { contentType: contentType || "audio/ogg" },
+  });
+
+  // Whisper now, not in the background: the caller usually needs the words.
+  let transcript = "";
+  let durationMs = 0;
+  try {
+    const detailed = await transcribeAudioDetailed(c.env.AI, buf, `survey-${surveyId}`);
+    transcript = detailed.text.trim();
+    durationMs = detailed.durationMs ?? 0;
+  } catch (err) {
+    console.error("[intro/from-url] transcription failed", { surveyId, err });
+  }
+
+  await db
+    .prepare("UPDATE surveys SET intro_r2_key = ?, intro_duration_ms = ?, intro_transcript = ? WHERE id = ?")
+    .bind(key, durationMs, transcript || null, surveyId)
+    .run();
+
+  trackServerEvent(surveyId, "survey_intro_saved", { surveyId, durationMs, source: "url", bytes: buf.byteLength, contentType });
+
+  return c.json({ success: true, durationMs, transcript, bytes: buf.byteLength, contentType });
+});
+
+const INTRO_FETCH_TIMEOUT_MS = 20_000;
+
+/** WhatsApp voice notes are audio/ogg; phones send m4a/mp4; some hosts say octet-stream. */
+function isIntroContentType(ct: string): boolean {
+  if (!ct) return true;
+  return ct.startsWith("audio/") || ct.startsWith("video/") || ct === "application/octet-stream" || ct === "application/ogg";
+}
 
 // ── DELETE /api/surveys/:id/intro ── Remove the voice intro
 surveys.delete("/api/surveys/:id/intro", async (c) => {

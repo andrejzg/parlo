@@ -7,7 +7,7 @@ const BASE_URL = "https://parlo.me";
 export function registerCreateSurvey(server: McpServer, client: ParloClient) {
   server.tool(
     "create_survey",
-    "Create a new Parlo voice survey. Provide the audience description and what info to gather, and the AI will generate interview questions.",
+    "Legacy: prefer create_parlo. Creates a parlo from two fields (who answers, what to gather) and generates round 1 from them.",
     {
       audience: z.string().describe("Who will be answering this survey? e.g. 'startup founders', 'my team'"),
       gather: z.string().describe("What information should the survey gather? e.g. 'feedback on our onboarding flow'"),

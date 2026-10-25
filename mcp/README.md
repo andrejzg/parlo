@@ -6,18 +6,20 @@ MCP (Model Context Protocol) server for Parlo — create and monitor voice surve
 
 ## What it does
 
-From an AI assistant, you can say things like:
+From an AI assistant (Claude, a personal agent on WhatsApp such as Instinct, anything that speaks MCP), you can say things like:
+- "Create a parlo for my climbing club: what made them come back this season and what they want next year" (or forward the voice note that says it)
 - "Create a voice survey about customer satisfaction for my restaurant"
 - "How many responses has my survey gotten?"
 - "Show me what people said"
 - "Change question 2 to ask about wait times"
 - "Give me the WhatsApp share link"
 
-## Tools (8)
+## Tools (9)
 
 | Tool | Description |
 |------|-------------|
-| `create_survey` | Creates a survey + generates questions via AI from a text description of audience and what to gather |
+| `create_parlo` | **The one to use.** `{brief?, opener_audio_url?, title?}` → a live parlo and its share link in one call. The brief is the creator's own words (who they are, who should answer, what they want to know, what they'll do with it). A voice-note URL becomes the opener participants hear, and its transcript is the brief when none is typed. Returns `shareLink`, `whatsappShareLink`, `dashboardLink`, the round-1 questions, `briefSource` and `opener {durationMs, transcript}` |
+| `create_survey` | Legacy. Creates a survey + generates questions from two fields (audience, what to gather) |
 | `get_dashboard` | Full response data — respondent names, timestamps, audio/photo/video URLs, transcriptions |
 | `get_survey_stats` | Quick summary — response count, latest activity, respondent names |
 | `get_survey` | Survey details (title, status, questions) by participant code |

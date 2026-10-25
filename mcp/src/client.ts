@@ -13,7 +13,9 @@ export interface CreateSurveyResponse {
   id: string;
   code: string;
   dashboardCode: string;
+  apiKey: string;
   uploadUrls: {
+    brief: string;
     audience: string;
     gather: string;
   };
@@ -22,11 +24,23 @@ export interface CreateSurveyResponse {
 export interface Question {
   text: string;
   hint?: string;
+  type?: "voice" | "photo" | "video";
 }
 
 export interface GenerateQuestionsResponse {
   title: string;
   questions: Question[];
+  /** The brief the questions were built from; empty in legacy mode. */
+  brief: string;
+}
+
+export interface IntroFromUrlResponse {
+  success: true;
+  durationMs: number;
+  /** Whisper's transcript of the opener; empty when transcription failed. */
+  transcript: string;
+  bytes: number;
+  contentType: string;
 }
 
 export interface SavedQuestion {
@@ -97,9 +111,20 @@ class ParloApiError extends Error {
     public statusText: string,
     public body: string,
   ) {
-    super(`Parlo API error ${status} ${statusText}: ${body}`);
+    super(`Parlo API error ${status} ${statusText}: ${describeBody(body)}`);
     this.name = "ParloApiError";
   }
+}
+
+/** The backend answers errors as `{error}`; show the sentence, not the JSON. */
+function describeBody(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    if (typeof parsed?.error === "string" && parsed.error) return parsed.error;
+  } catch {
+    /* not JSON */
+  }
+  return body;
 }
 
 export class ParloClient {
@@ -155,6 +180,22 @@ export class ParloClient {
     });
   }
 
+  /**
+   * The opener-only flow (2026-10-25): one free-form brief, the backend
+   * builds round 1 and the parlo is live when this returns.
+   */
+  async generateFromBrief(surveyId: string, brief: string): Promise<GenerateQuestionsResponse> {
+    return this.request("POST", `/api/surveys/${surveyId}/generate`, {
+      brief,
+      clarifications: [],
+    });
+  }
+
+  /** Fetch the creator's voice note from a URL into the parlo's opener slot. */
+  async setIntroFromUrl(surveyId: string, url: string): Promise<IntroFromUrlResponse> {
+    return this.request("POST", `/api/surveys/${surveyId}/intro/from-url`, { url });
+  }
+
   async updateQuestions(
     surveyId: string,
     questions: Question[],
@@ -180,6 +221,7 @@ export class ParloClient {
     if (!this.apiKey) {
       throw new Error("API key is required to list surveys");
     }
-    return this.request("GET", "/api/my/surveys");
+    const res = await this.request<{ surveys: MySurvey[] }>("GET", "/api/my/surveys");
+    return res.surveys ?? [];
   }
 }

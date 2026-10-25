@@ -15,6 +15,25 @@ export async function transcribeAudio(
   audioBlob: ArrayBuffer,
   traceId?: string
 ): Promise<string> {
+  const { text } = await transcribeAudioDetailed(ai, audioBlob, traceId);
+  return text;
+}
+
+export interface DetailedTranscript {
+  text: string;
+  /** End of the last word Whisper timed, in ms; null when it gave no timings. */
+  durationMs: number | null;
+}
+
+/**
+ * Whisper with the word timings kept: `durationMs` is the end of the last
+ * word, which is the only clock a Worker has for audio it did not record.
+ */
+export async function transcribeAudioDetailed(
+  ai: any,
+  audioBlob: ArrayBuffer,
+  traceId?: string
+): Promise<DetailedTranscript> {
   const start = Date.now();
   let isError = false;
   let errorMsg: string | undefined;
@@ -24,8 +43,14 @@ export async function transcribeAudio(
     const result = await ai.run("@cf/openai/whisper", {
       audio: [...new Uint8Array(audioBlob)],
     });
-    outputText = result.text;
-    return outputText;
+    outputText = typeof result?.text === "string" ? result.text : "";
+    const words: unknown = result?.words;
+    let durationMs: number | null = null;
+    if (Array.isArray(words) && words.length > 0) {
+      const last = words[words.length - 1] as { end?: unknown };
+      if (typeof last?.end === "number" && Number.isFinite(last.end)) durationMs = Math.round(last.end * 1000);
+    }
+    return { text: outputText, durationMs };
   } catch (err: any) {
     isError = true;
     errorMsg = err?.message ?? String(err);
