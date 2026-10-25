@@ -103,6 +103,8 @@ Newest first. Each entry: context, what was discussed, where we lean, what it fo
 
 **Not here.** Private / open (stays with consent, two states only); tone or formality (already derived from the audience); anything typed (just removed; "Sharpen it" is the side door that is allowed); report format (the outputs screen's job).
 
+**Per-shape rows.** Andrej likes the idea that different cards carry different chips. Leaning: the first two rows (who, how long) are fixed; the third row is the shape's own question, and only exists where the chip changes the agent's behaviour, not the copy. Deadline (Today / This week / Keep it open) for the post, testimonials, milestone, feedback and team shapes; cadence (Every day / Every week, auto-sent) for the check-in; "Follow up?" (Just once / Let the agent probe) for customer interviews, which switches round-2 proposals on; nothing for references, which is one-shot. Sketched 2026-10-25 as two phones with a live example line under the chips.
+
 **Open.** Whether to build the deadline as a chip here or as the default on the ready screen with the chip later; whether the cadence implies the agent auto-sends check-in rounds without approval (it should, for that shape, or the card is a lie).
 
 ### 2026-10-25 · Voice-first opening built, then parked
