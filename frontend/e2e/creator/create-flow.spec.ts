@@ -261,20 +261,20 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
     await page.getByTestId("topic-continue").click();
 
-    // ── Outputs? Eight cards, multi-select, build is live at once ──
-    await page.getByRole("heading", { name: "Outputs?" }).waitFor({ timeout: 10_000 });
-    await expect(page.getByTestId("outputs-subline")).toHaveText("Make content for your socials or just store the results in a sheet.");
-    await expect(page.getByTestId("output-card")).toHaveCount(8);
+    // ── What should it make? Six content-type cards (2026-10-25), multi-select, build is live at once ──
+    await page.getByRole("heading", { name: "What should it make?" }).waitFor({ timeout: 10_000 });
+    await expect(page.getByTestId("outputs-subline")).toHaveText("From everyone's answers. The report always comes back.");
+    await expect(page.getByTestId("output-card")).toHaveCount(6);
     await expect(page.getByTestId("outputs-build")).toBeEnabled();
-    // The Google Sheet starts on; everything else off.
+    // Feedback pre-picks only Google Sheet & Drive; everything else off.
     await expect(page.locator('[data-testid="output-card"][data-selected="true"]')).toHaveCount(1);
     await expect(page.locator('[data-testid="output-card"][data-output="sheet"]')).toHaveAttribute("data-selected", "true");
-    await page.locator('[data-testid="output-card"][data-output="podcast"]').click();
-    await page.locator('[data-testid="output-card"][data-output="instagram"]').click();
-    await page.locator('[data-testid="output-card"][data-output="tiktok"]').click();
-    await page.locator('[data-testid="output-card"][data-output="tiktok"]').click();
-    await expect(page.locator('[data-testid="output-card"][data-output="podcast"]')).toHaveAttribute("data-selected", "true");
-    await expect(page.locator('[data-testid="output-card"][data-output="tiktok"]')).toHaveAttribute("data-selected", "false");
+    await page.locator('[data-testid="output-card"][data-output="episode"]').click();
+    await page.locator('[data-testid="output-card"][data-output="carousel"]').click();
+    await page.locator('[data-testid="output-card"][data-output="clips"]').click();
+    await page.locator('[data-testid="output-card"][data-output="clips"]').click();
+    await expect(page.locator('[data-testid="output-card"][data-output="episode"]')).toHaveAttribute("data-selected", "true");
+    await expect(page.locator('[data-testid="output-card"][data-output="clips"]')).toHaveAttribute("data-selected", "false");
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/03b-outputs.png`, fullPage: true });
     await page.getByTestId("outputs-build").click();
@@ -288,8 +288,8 @@ for (const deviceName of DEVICES) {
     expect(generateBodies.length).toBe(1);
     expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep" });
     expect(generateBodies[0].topic).toBeUndefined();
-    // Canonical order, whatever order they were tapped in; the toggled-off TikTok is gone.
-    expect(generateBodies[0].outputs).toEqual(["sheet", "instagram", "podcast"]);
+    // Canonical order, whatever order they were tapped in; the toggled-off Clips is gone.
+    expect(generateBodies[0].outputs).toEqual(["sheet", "carousel", "episode"]);
     expect(generateBodies[0].brief).toBeUndefined();
     await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
     await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });

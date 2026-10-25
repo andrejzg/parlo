@@ -52,7 +52,7 @@ export const SHAPES: Shape[] = [
     sentence: "Crowdsource a post from {who}",
     report: "A LinkedIn post built from everyone's best lines, ready to copy, then the themes behind it.",
     audience: "network",
-    outputs: ["sheet", "linkedin"],
+    outputs: ["sheet", "post", "carousel"],
   },
   {
     id: "testimonials",
@@ -61,7 +61,7 @@ export const SHAPES: Shape[] = [
     sentence: "Collect testimonials from {who}",
     report: "The strongest quotes, ready for a post or your site, with who said them.",
     audience: "customers",
-    outputs: ["sheet", "linkedin"],
+    outputs: ["sheet", "post", "carousel"],
   },
   {
     id: "milestone",
@@ -70,7 +70,7 @@ export const SHAPES: Shape[] = [
     sentence: "Celebrate a milestone with {who}",
     report: "A post celebrating it in their words, with the lines that stuck.",
     audience: "customers",
-    outputs: ["sheet", "linkedin"],
+    outputs: ["sheet", "post", "carousel"],
   },
   {
     id: "feedback",

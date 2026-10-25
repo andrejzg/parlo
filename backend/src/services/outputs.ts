@@ -1,16 +1,22 @@
 /**
  * What the agent should make from the answers, beyond the report it always
  * writes: the creator's multi-select on the second card screen of creation.
- * The picks live in `surveys.outputs` (JSON array, migration 0014), go into
- * the composed brief so the question generator writes asks that feed them
- * (a podcast wants voice stories, Instagram adds a photo ask, TikTok adds a
- * video ask), and into the agent's `/brief.md` so the digest knows what to
- * produce after each round. Producers for each output come later; the pick
- * is the intent (GROWTH.md, 2026-10-15, S18/S19).
+ * The deck is content types, not channels (GROWTH.md, 2026-10-25): a
+ * carousel goes to Instagram, LinkedIn and TikTok alike, so the pick says
+ * what to make and the Exports card says where it goes. The picks live in
+ * `surveys.outputs` (JSON array, migration 0014), go into the composed brief
+ * so the question generator writes asks that feed them (an episode wants
+ * voice stories, a carousel may add a photo ask, clips may add a video ask),
+ * and into the agent's `/brief.md` so the digest knows what to produce after
+ * each round. Producers for each output come later; the pick is the intent
+ * (GROWTH.md, 2026-10-15, S18/S19).
  *
- * Ids and order MUST match `frontend/src/lib/outputs.ts`.
+ * Ids and order MUST match `frontend/src/lib/outputs.ts`. The channel ids
+ * the deck used from 2026-10-15 to 2026-10-25 are still accepted and mapped
+ * to their content type (`LEGACY_OUTPUTS`), so old parlos and cached
+ * frontends keep working.
  */
-export type OutputId = "sheet" | "instagram" | "linkedin" | "tiktok" | "drive" | "table" | "podcast" | "other";
+export type OutputId = "sheet" | "clips" | "post" | "thread" | "carousel" | "episode";
 
 interface OutputSpec {
   id: OutputId;
@@ -25,54 +31,58 @@ interface OutputSpec {
 export const OUTPUTS: OutputSpec[] = [
   {
     id: "sheet",
-    label: "Google Sheet",
-    makes: "A Google Sheet with one row per person that fills as answers land.",
+    label: "Google Sheet & Drive",
+    makes:
+      "A Google Sheet with one row per answer that fills as answers land, and a Google Drive folder with the raw files: audio, photos, video and transcripts, one folder per person.",
     questions: "Keep the answers comparable across people so they tabulate cleanly.",
   },
   {
-    id: "instagram",
-    label: "Instagram carousel",
-    makes: "An Instagram carousel and caption built from the group's answers and photos.",
-    questions: "Make one question a photo question that asks for a picture that shows what they mean.",
+    id: "clips",
+    label: "Clips",
+    makes:
+      "Short audio and video clips for Reels, TikTok and Shorts: each voice answer as a captioned audiogram over a still, and any video answers cut to vertical.",
+    questions:
+      "Ask for told moments with a beginning and an end, so each answer can stand on its own as a clip. You may make one question a video question that asks for a short, visual moment worth watching.",
   },
   {
-    id: "linkedin",
-    label: "LinkedIn post",
-    makes: "A LinkedIn post in the creator's voice built on the group's best lines.",
+    id: "post",
+    label: "Post",
+    makes: "A post in the creator's voice built on the group's best lines, ready to paste on LinkedIn, X or Threads.",
     questions: "Make sure one question invites a crisp, quotable line from each person.",
   },
   {
-    id: "tiktok",
-    label: "TikTok",
-    makes: "A short vertical video cut from the group's clips.",
-    questions: "Make one question a video question that asks for a short, visual moment worth watching.",
+    id: "thread",
+    label: "Thread",
+    makes: "A thread with one take per person, in order, each a short post of its own, for X or Threads.",
+    questions: "Make sure one question invites a crisp, quotable line from each person.",
   },
   {
-    id: "drive",
-    label: "Google Drive folder",
-    makes: "A Google Drive folder with the raw answers as files: audio, photos, video and transcripts, one folder per person.",
-    questions: "",
+    id: "carousel",
+    label: "Carousel",
+    makes:
+      "A swipeable carousel of quote cards, one per person, with a caption, for Instagram, LinkedIn or TikTok photo mode.",
+    questions:
+      "Make sure one question invites a crisp, quotable line from each person. You may make one question a photo question that asks for a picture that shows what they mean.",
   },
   {
-    id: "table",
-    label: "Agent-ready URL",
-    makes: "A secure URL to a queryable table of the answers that the creator's other AI tools can read.",
-    questions: "Keep the answers comparable across people so they tabulate cleanly.",
-  },
-  {
-    id: "podcast",
-    label: "Podcast",
-    makes: "A short episode cut from the group's voice notes, with narration between them.",
+    id: "episode",
+    label: "Episode",
+    makes: "A short podcast episode cut from the group's voice notes, with narration between them.",
     questions:
       "Keep every question a voice question and ask for told moments with a beginning and an end, so each answer can stand on its own as a clip.",
   },
-  {
-    id: "other",
-    label: "Somewhere else",
-    makes: "An export to a destination the creator connects on the dashboard (Notion, Slack, their own tool).",
-    questions: "",
-  },
 ];
+
+/** Channel ids from the 2026-10-15 deck → the content type they meant. Unmapped (`drive`, `table`, `other`) fold into the sheet or nothing. */
+export const LEGACY_OUTPUTS: Record<string, OutputId | null> = {
+  instagram: "carousel",
+  linkedin: "post",
+  tiktok: "clips",
+  podcast: "episode",
+  drive: "sheet",
+  table: "sheet",
+  other: null,
+};
 
 export const OUTPUT_IDS = OUTPUTS.map((o) => o.id);
 
@@ -80,10 +90,17 @@ export function isOutputId(v: unknown): v is OutputId {
   return typeof v === "string" && (OUTPUT_IDS as string[]).includes(v);
 }
 
-/** Validate a request body's `outputs`: unknown ids dropped, duplicates collapsed, canonical order. */
+/** A current id as is, a legacy id as its content type, anything else null. */
+export function resolveOutputId(v: unknown): OutputId | null {
+  if (isOutputId(v)) return v;
+  if (typeof v === "string" && v in LEGACY_OUTPUTS) return LEGACY_OUTPUTS[v];
+  return null;
+}
+
+/** Validate a request body's `outputs`: legacy ids mapped, unknown ids dropped, duplicates collapsed, canonical order. */
 export function sanitizeOutputs(v: unknown): OutputId[] {
   if (!Array.isArray(v)) return [];
-  const set = new Set(v.filter(isOutputId));
+  const set = new Set(v.map(resolveOutputId).filter((id): id is OutputId => id !== null));
   return OUTPUT_IDS.filter((id) => set.has(id));
 }
 
