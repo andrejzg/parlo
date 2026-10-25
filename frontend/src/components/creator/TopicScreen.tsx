@@ -16,7 +16,7 @@ import { fadeUp, stagger, transitionLarge } from "@/lib/animations";
 
 /**
  * The second screen of creation: the sentence the chosen shape started, with
- * one blank to fill ("Take the temperature of [my team] on ___"). The blank
+ * one blank to fill ("Crowdsource a post from [my network] on ___"). The blank
  * is typed (the mic beside the CTA was removed on 2026-10-15: a few words is
  * a typing job, and the next screen is where the picks happen). The audience
  * chips swap the phrase in the sentence and set the tone; the length chips
@@ -73,7 +73,6 @@ function Chip({
 }
 
 export default function TopicScreen({
-  surveyId,
   shape,
   initialTopic = "",
   initialAudience = DEFAULT_AUDIENCE,
@@ -133,9 +132,11 @@ export default function TopicScreen({
       <motion.div className="px-l pt-xxs shrink-0" variants={stagger} initial="initial" animate="animate">
         <motion.p variants={fadeUp} className="font-editorial text-l sm:text-xl font-medium text-foreground" data-testid="topic-sentence">
           {before}
-          <span className="rounded-xs bg-muted px-xxs" data-testid="topic-who">
-            {who}
-          </span>
+          {who && (
+            <span className="rounded-xs bg-muted px-xxs" data-testid="topic-who">
+              {who}
+            </span>
+          )}
           {after}
         </motion.p>
         <motion.div variants={fadeUp}>
@@ -159,7 +160,7 @@ export default function TopicScreen({
       </motion.div>
 
       <motion.div className="px-l pt-l flex flex-col gap-l shrink-0" variants={stagger} initial="initial" animate="animate">
-        <motion.div variants={fadeUp} className="flex flex-col gap-s">
+        {who && <motion.div variants={fadeUp} className="flex flex-col gap-s">
           <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">Who are they?</span>
           <div className="flex flex-wrap gap-xs">
             {AUDIENCES.filter((a) => a.id !== DEFAULT_AUDIENCE).map((a) => (
@@ -174,7 +175,7 @@ export default function TopicScreen({
               </Chip>
             ))}
           </div>
-        </motion.div>
+        </motion.div>}
 
         <motion.div variants={fadeUp} className="flex flex-col gap-s">
           <span className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground">How long for them?</span>

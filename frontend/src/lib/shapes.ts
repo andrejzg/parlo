@@ -1,86 +1,144 @@
 /**
- * The shapes a parlo's answer can take. Creation starts here: the creator
- * picks what they want back from the group ("Decide", "Rank", "Take the
- * temperature"…), then fills the one blank the shape leaves in its sentence.
- * Shapes are finite and any topic maps onto one; they are deliberately not
- * use-case templates (see GROWTH.md, 2026-10-12).
+ * The shapes a parlo can take. Creation starts here: the creator picks what
+ * they want to find out ("Crowdsource a post", "Collect testimonials"…),
+ * then fills the one blank the shape leaves in its sentence. The deck is
+ * written for the wedge, founders and tech operators who post on LinkedIn a
+ * lot, and leads with self-promotion (GROWTH.md, 2026-10-23). Six cards sit
+ * on the first screen; the rest wait behind "More".
  *
- * Ids and order MUST match `backend/src/services/shapes.ts`, which composes
- * the brief the model builds the questions from and tells the agent what
- * the report should look like.
+ * Ids MUST match `backend/src/services/shapes.ts`, which composes the brief
+ * the model builds the questions from and tells the agent what the report
+ * should look like. The backend also keeps the retired ids (decide, rank…)
+ * so parlos made before 2026-10-24 keep their report shape.
  */
-export type ShapeId = "decide" | "rank" | "temperature" | "ideas" | "stories" | "feedback" | "headcount" | "other";
-export type AudienceId = "group" | "friends" | "team" | "customers" | "community" | "strangers";
+import type { OutputId } from "./outputs";
+
+export type ShapeId =
+  | "post"
+  | "testimonials"
+  | "milestone"
+  | "validate"
+  | "customers"
+  | "feedback"
+  | "team"
+  | "references"
+  | "other";
+export type AudienceId = "group" | "network" | "customers" | "team" | "strangers" | "community" | "friends";
 export type LengthId = "one" | "few" | "deep";
 
 export interface Shape {
   id: ShapeId;
   /** The verb on the card. */
   label: string;
-  /** The example under the verb; also the blank's placeholder. */
+  /** The line under the verb on the card; reads on from the label. */
+  card: string;
+  /** The blank's placeholder on the next screen. */
   example: string;
-  /** The sentence the card starts. `{who}` is the audience; the blank follows the sentence. */
+  /** The sentence the card starts. `{who}` is the audience; the blank follows the sentence. No `{who}` = the audience is fixed and the chips are hidden. */
   sentence: string;
-  /** What the agent hands back to the group. Shown on review; the agent commits to it. */
+  /** What the agent hands back. Shown on review; the agent commits to it. */
   report: string;
+  /** Who the creator is most likely asking; pre-selects the chip. */
+  audience: AudienceId;
+  /** What the agent makes beyond the report; pre-selects the output cards. */
+  outputs: OutputId[];
+  /** On the first screen, or behind "More". */
+  more?: boolean;
 }
 
 export const SHAPES: Shape[] = [
   {
-    id: "decide",
-    label: "Decide",
-    example: "where to go for the offsite",
-    sentence: "Help {who} decide",
-    report: "The group's pick, the runner-up, and why.",
+    id: "post",
+    label: "Crowdsource a post",
+    card: "on how founders hire engineer #1",
+    example: "how founders hire engineer #1",
+    sentence: "Crowdsource a post from {who} on",
+    report: "A LinkedIn post built from everyone's best lines, ready to copy, then the themes behind it.",
+    audience: "network",
+    outputs: ["sheet", "linkedin"],
   },
   {
-    id: "rank",
-    label: "Rank",
-    example: "our priorities for next quarter",
-    sentence: "Get {who} to rank",
-    report: "A ranked list, with how many put each thing first.",
+    id: "testimonials",
+    label: "Collect testimonials",
+    card: "from clients, for your launch post",
+    example: "our launch post",
+    sentence: "Collect testimonials from {who} for",
+    report: "The strongest quotes, ready for a post or your site, with who said them.",
+    audience: "customers",
+    outputs: ["sheet", "linkedin"],
   },
   {
-    id: "temperature",
-    label: "Take the temperature",
-    example: "the new offsite plan",
-    sentence: "Take the temperature of {who} on",
-    report: "Where the group stands, the split, and what's behind it.",
+    id: "milestone",
+    label: "Celebrate a milestone",
+    card: "our first 100 customers, in their words",
+    example: "our first 100 customers",
+    sentence: "Celebrate a milestone with {who}:",
+    report: "A post celebrating it in their words, with the lines that stuck.",
+    audience: "customers",
+    outputs: ["sheet", "linkedin"],
   },
   {
-    id: "ideas",
-    label: "Collect ideas",
-    example: "the Christmas party",
-    sentence: "Collect ideas from {who} for",
-    report: "Every idea, grouped, with the ones that came up most.",
+    id: "validate",
+    label: "Validate an idea",
+    card: "whether PMs would pay for it",
+    example: "would PMs pay for an AI spec writer?",
+    sentence: "Validate an idea with {who}:",
+    report: "Whether people want it, what they'd pay, and what would stop them.",
+    audience: "strangers",
+    outputs: ["sheet"],
   },
   {
-    id: "stories",
-    label: "Hear stories",
-    example: "their first week here",
-    sentence: "Hear stories from {who} about",
-    report: "The themes across everyone's stories, with the lines that stuck.",
+    id: "customers",
+    label: "Interview customers",
+    card: "about why they picked you",
+    example: "why they picked us",
+    sentence: "Interview {who} about",
+    report: "Why they chose you, in their words, with the patterns across everyone.",
+    audience: "customers",
+    outputs: ["sheet"],
   },
   {
     id: "feedback",
     label: "Get feedback",
+    card: "on my pitch deck",
     example: "my pitch deck",
     sentence: "Get honest feedback from {who} on",
     report: "What works and what to fix, in order of how often it came up.",
+    audience: "network",
+    outputs: ["sheet"],
   },
   {
-    id: "headcount",
-    label: "Head count",
-    example: "the ski trip",
-    sentence: "Count {who} in or out for",
-    report: "Who's in, who's out, who's unsure, and what they need.",
+    id: "team",
+    label: "Ask my team",
+    card: "what's slowing us down",
+    example: "what's slowing us down",
+    sentence: "Ask {who}",
+    report: "What the team said, grouped, with what to fix first.",
+    audience: "team",
+    outputs: ["sheet"],
+    more: true,
+  },
+  {
+    id: "references",
+    label: "Check references",
+    card: "for my next VP Sales",
+    example: "Sam, our next VP Sales",
+    sentence: "Check references for",
+    report: "Where the references agree, where they differ, and any flags.",
+    audience: "group",
+    outputs: ["sheet"],
+    more: true,
   },
   {
     id: "other",
     label: "Something else",
+    card: "describe it in your own words",
     example: "describe it in your own words",
     sentence: "",
-    report: "A report on what the group said.",
+    report: "A report on what they said.",
+    audience: "group",
+    outputs: ["sheet"],
+    more: true,
   },
 ];
 
@@ -88,14 +146,15 @@ export function shapeById(id: ShapeId): Shape {
   return SHAPES.find((s) => s.id === id) ?? SHAPES[SHAPES.length - 1];
 }
 
-/** `group` is the unselected default ("the group"); the rest are the chips. */
+/** `group` is the unselected default ("the group"); the rest are the chips, in this order. */
 export const AUDIENCES: { id: AudienceId; label: string; phrase: string }[] = [
   { id: "group", label: "The group", phrase: "the group" },
-  { id: "friends", label: "Friends and family", phrase: "my friends and family" },
-  { id: "team", label: "My team", phrase: "my team" },
+  { id: "network", label: "My network", phrase: "my network" },
   { id: "customers", label: "My customers", phrase: "my customers" },
-  { id: "community", label: "My community", phrase: "my community" },
+  { id: "team", label: "My team", phrase: "my team" },
   { id: "strangers", label: "People I don't know yet", phrase: "people I don't know yet" },
+  { id: "community", label: "My community", phrase: "my community" },
+  { id: "friends", label: "Friends and family", phrase: "my friends and family" },
 ];
 
 export const DEFAULT_AUDIENCE: AudienceId = "group";
@@ -112,8 +171,14 @@ export const LENGTHS: { id: LengthId; label: string }[] = [
 
 export const DEFAULT_LENGTH: LengthId = "few";
 
-/** The sentence with the audience dropped in, split around the audience so it can be styled: [before, who, after]. */
+/** Whether the shape's sentence names its audience (and so shows the "Who are they?" chips). */
+export function hasAudience(shape: Shape): boolean {
+  return shape.sentence.includes("{who}");
+}
+
+/** The sentence with the audience dropped in, split around the audience so it can be styled: [before, who, after]. `who` is empty when the shape fixes its audience. */
 export function sentenceParts(shape: Shape, audience: AudienceId): [string, string, string] {
+  if (!hasAudience(shape)) return [shape.sentence, "", ""];
   const [before = "", after = ""] = shape.sentence.split("{who}");
   return [before, audiencePhrase(audience), after];
 }
