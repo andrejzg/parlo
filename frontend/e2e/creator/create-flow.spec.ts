@@ -313,7 +313,7 @@ for (const deviceName of DEVICES) {
   });
 }
 
-test("logged-in device: Build it → opener → building last → ready (iPhone SE)", async () => {
+test("logged-in device: Continue → opener → building last → ready (iPhone SE)", async () => {
   test.setTimeout(90_000);
   const OUT = path.join(OUT_ROOT, "parlo-creator-iphone-se");
   fs.mkdirSync(OUT, { recursive: true });
