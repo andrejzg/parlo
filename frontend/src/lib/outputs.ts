@@ -1,6 +1,6 @@
 /**
  * What the agent should make from the answers, beyond the report it always
- * writes. The second card screen of creation ("What should the agent make?"),
+ * writes. The second card screen of creation ("Outputs?"),
  * multi-select: a Google Sheet (on by default), Instagram, LinkedIn, TikTok,
  * Google Drive, an agent-ready URL, a podcast, somewhere else. The picks are
  * stored on the survey and shape the questions the model writes (a podcast
@@ -21,7 +21,7 @@ export interface Output {
 }
 
 export const OUTPUTS: Output[] = [
-  { id: "sheet", label: "Google Sheet", example: "fills as answers land" },
+  { id: "sheet", label: "Google Sheet", example: "store answers in a sheet" },
   { id: "instagram", label: "Instagram", example: "carousel, adds a photo ask" },
   { id: "linkedin", label: "LinkedIn", example: "your voice, their best lines" },
   { id: "tiktok", label: "TikTok", example: "a vertical cut, adds a video ask" },

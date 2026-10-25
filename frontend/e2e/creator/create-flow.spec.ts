@@ -257,8 +257,9 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/03-topic.png`, fullPage: true });
     await page.getByTestId("topic-continue").click();
 
-    // ── What should the agent make? Eight cards, multi-select, build is live at once ──
-    await page.getByText("What should the agent make?").waitFor({ timeout: 10_000 });
+    // ── Outputs? Eight cards, multi-select, build is live at once ──
+    await page.getByRole("heading", { name: "Outputs?" }).waitFor({ timeout: 10_000 });
+    await expect(page.getByTestId("outputs-subline")).toHaveText("Make content for your socials or just store the results in a sheet.");
     await expect(page.getByTestId("output-card")).toHaveCount(8);
     await expect(page.getByTestId("outputs-build")).toBeEnabled();
     // The Google Sheet starts on; everything else off.

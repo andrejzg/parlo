@@ -65,10 +65,10 @@ export default function OutputsScreen({ initialOutputs = [], onContinue, onBack 
         animate="animate"
       >
         <motion.h1 variants={fadeUp} className="font-editorial text-l sm:text-xl font-medium text-foreground pt-xxs pb-xs">
-          What should the agent make?
+          Outputs?
         </motion.h1>
         <motion.p variants={fadeUp} className="text-s text-muted-foreground pb-l" data-testid="outputs-subline">
-          The report always comes back. Pick anything else, after every round.
+          Make content for your socials or just store the results in a sheet.
         </motion.p>
 
         <div className="grid grid-cols-2 gap-s pb-l">

@@ -50,7 +50,7 @@ import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
  * Creation flow (output-first, 2026-10-14):
  *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
  *           → topic (the sentence the card started, one blank; who + length chips)
- *           → outputs ("What should the agent make?", eight cards, multi-select)
+ *           → outputs ("Outputs?", eight cards, multi-select)
  *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
  *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
  *           → intro (voice hello, skippable) → phone/otp → linkedin → ready
