@@ -25,6 +25,9 @@ export type ShapeId =
   | "other";
 export type AudienceId = "group" | "network" | "customers" | "team" | "strangers" | "community" | "friends";
 export type LengthId = "one" | "few" | "deep";
+/** The third chip row: the shape's own question, only where the chip changes what the agent does (GROWTH.md, 2026-10-25). */
+export type TimingRowId = "deadline" | "cadence" | "followup";
+export type TimingId = "today" | "week" | "open" | "daily" | "weekly" | "once" | "probe";
 
 export interface Shape {
   id: ShapeId;
@@ -40,6 +43,8 @@ export interface Shape {
   audience: AudienceId;
   /** What the agent makes beyond the report; pre-selects the output cards. */
   outputs: OutputId[];
+  /** The third chip row, when the shape has one: a deadline, the check-in cadence, or whether the agent may follow up. */
+  timing?: TimingRowId;
   /** On the first screen, or behind "More". */
   more?: boolean;
 }
@@ -47,6 +52,7 @@ export interface Shape {
 export const SHAPES: Shape[] = [
   {
     id: "post",
+    timing: "deadline",
     label: "Crowdsource a post",
     card: "on how founders hire engineer #1",
     sentence: "Crowdsource a post from {who}",
@@ -56,6 +62,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "testimonials",
+    timing: "deadline",
     label: "Collect testimonials",
     card: "from clients, for your launch post",
     sentence: "Collect testimonials from {who}",
@@ -65,6 +72,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "milestone",
+    timing: "deadline",
     label: "Celebrate a milestone",
     card: "our first 100 customers, in their words",
     sentence: "Celebrate a milestone with {who}",
@@ -74,6 +82,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "feedback",
+    timing: "deadline",
     label: "Get feedback",
     card: "on my pitch deck",
     sentence: "Get honest feedback from {who}",
@@ -83,6 +92,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "customers",
+    timing: "followup",
     label: "Interview customers",
     card: "about why they picked you",
     sentence: "Interview {who}",
@@ -92,6 +102,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "checkin",
+    timing: "cadence",
     label: "Regular check-in",
     card: "run a weekly standup",
     sentence: "Run a regular check-in with {who}",
@@ -101,6 +112,7 @@ export const SHAPES: Shape[] = [
   },
   {
     id: "team",
+    timing: "deadline",
     label: "Ask my team",
     card: "what's slowing us down",
     sentence: "Ask {who}",
@@ -159,6 +171,45 @@ export const LENGTHS: { id: LengthId; label: string }[] = [
 ];
 
 export const DEFAULT_LENGTH: LengthId = "few";
+
+/**
+ * The third chip row, per shape. Ids and defaults MUST match
+ * `backend/src/services/shapes.ts` (TIMINGS / TIMING_ROWS), which turns the
+ * pick into the round's close, the nudge before it and, for a cadence, the
+ * next round.
+ */
+export const TIMING_ROWS: Record<TimingRowId, { label: string; defaultId: TimingId; chips: { id: TimingId; label: string }[] }> = {
+  deadline: {
+    label: "When do you need it?",
+    defaultId: "week",
+    chips: [
+      { id: "today", label: "Today" },
+      { id: "week", label: "This week" },
+      { id: "open", label: "Keep it open" },
+    ],
+  },
+  cadence: {
+    label: "How often?",
+    defaultId: "weekly",
+    chips: [
+      { id: "daily", label: "Every day" },
+      { id: "weekly", label: "Every week" },
+    ],
+  },
+  followup: {
+    label: "Follow up?",
+    defaultId: "once",
+    chips: [
+      { id: "once", label: "Just once" },
+      { id: "probe", label: "Let the agent probe" },
+    ],
+  },
+};
+
+/** The shape's row and its default chip; null when the shape is one-shot. */
+export function timingRowFor(shape: Shape): { row: TimingRowId; defaultId: TimingId } | null {
+  return shape.timing ? { row: shape.timing, defaultId: TIMING_ROWS[shape.timing].defaultId } : null;
+}
 
 /** Whether the shape's sentence names its audience (and so shows the "Who are they?" chips). */
 export function hasAudience(shape: Shape): boolean {

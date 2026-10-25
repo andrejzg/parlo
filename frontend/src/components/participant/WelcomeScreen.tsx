@@ -1,3 +1,4 @@
+import { describeDeadline } from "@/lib/deadline";
 import { motion } from "framer-motion";
 import { Camera, Mic, Users, Video } from "lucide-react";
 import { Survey } from "@/types/survey";
@@ -57,6 +58,12 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
             ? survey.description
             : "You've answered everything in this round."}
         </motion.p>
+
+        {hasPending && describeDeadline(round?.closesAt) && (
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground -mt-s" data-testid="welcome-deadline">
+            {describeDeadline(round?.closesAt)}. The agent writes the report then.
+          </motion.p>
+        )}
 
         {/* The creator's voice hello — a real person asking beats any copy. */}
         {survey.intro && (

@@ -63,6 +63,8 @@ export interface Survey {
   /** Mirror of the group agent's /report.md so members can read it from D1. */
   report_md?: string | null;
   report_updated_at?: string | null;
+  /** The third chip row's pick (services/shapes.ts TIMINGS); null = no row or an older parlo. */
+  timing?: string | null;
 }
 
 // ── Groups ──
@@ -93,6 +95,10 @@ export interface Round {
   proposed_by: string;
   created_at: string;
   sent_at: string | null;
+  /** When a sent round stops taking answers (ISO); null = open-ended. */
+  closes_at?: string | null;
+  /** When the close actually ran (ISO). */
+  closed_at?: string | null;
 }
 
 export interface SurveyIntro {
@@ -191,6 +197,8 @@ export interface GenerateSurveyRequest {
   brief?: string;
   /** What the agent should make beyond the report (ids from services/outputs.ts). */
   outputs?: string[];
+  /** The third chip row's pick (ids from services/shapes.ts TIMINGS); ignored for shapes without a row. */
+  timing?: string;
   clarifications?: Clarification[];
   /** Legacy two-question flow. */
   textAnswers?: {
@@ -269,7 +277,7 @@ export interface SurveyPublicView {
   intro: SurveyIntro | null;
   visibility: GroupVisibility;
   /** Latest sent round, if any. */
-  round: { number: number; kind: RoundKind } | null;
+  round: { number: number; kind: RoundKind; closesAt: string | null } | null;
   /** Set when the visitor carried a valid member token. */
   member: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
   /** The agent's report. `markdown` is only filled once the visitor has answered. */

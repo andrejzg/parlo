@@ -5,6 +5,7 @@
  * only renders what comes out.
  */
 
+import { describeDeadline } from "@/lib/deadline";
 import type { MySurvey } from "@/api/client";
 
 /** What the viewer has to do, if anything. Rows with an action are pinned. */
@@ -74,11 +75,13 @@ export function describeParlo(s: MySurvey): ParloRow {
 
   if (s.round) {
     const { number, answered, targets } = s.round;
+    const deadline = describeDeadline(s.round.closesAt);
+    const closing = deadline && deadline !== "Closed" ? ` · ${deadline.charAt(0).toLowerCase()}${deadline.slice(1)}` : "";
     // Round 1 is open to anyone with the link, so it has no fixed audience.
     if (number > 1 && targets > 0) {
-      return quiet(answered >= targets ? `Everyone answered round ${number}` : `Round ${number} · ${answered} of ${targets} answered`);
+      return quiet(answered >= targets ? `Everyone answered round ${number}` : `Round ${number} · ${answered} of ${targets} answered${closing}`);
     }
-    return quiet(`Round ${number} · ${count(answered, "answer")}`);
+    return quiet(`Round ${number} · ${count(answered, "answer")}${closing}`);
   }
 
   return quiet(count(s.responseCount, "answer"));
