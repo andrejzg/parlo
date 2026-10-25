@@ -105,6 +105,8 @@ Newest first. Each entry: context, what was discussed, where we lean, what it fo
 
 **Per-shape rows.** Andrej likes the idea that different cards carry different chips. Leaning: the first two rows (who, how long) are fixed; the third row is the shape's own question, and only exists where the chip changes the agent's behaviour, not the copy. Deadline (Today / This week / Keep it open) for the post, testimonials, milestone, feedback and team shapes; cadence (Every day / Every week, auto-sent) for the check-in; "Follow up?" (Just once / Let the agent probe) for customer interviews, which switches round-2 proposals on; nothing for references, which is one-shot. Sketched 2026-10-25 as two phones with a live example line under the chips.
 
+**The example line moves.** Andrej: the first question belongs on the next screen, not here. Agreed: a templated fake question next to real chips invites editing it, and "it fills the space" is not a reason. Leaning: drop it from the sentence screen and make the build screen the reveal instead. One fast single-question call lands the real first ask in about a second, shown big with "the rest are coming" under it; the other questions fill in beneath as the full draft arrives, and the screen is the review screen with no cut (building + review merge, one screen fewer). Real question, so the Shorter / More playful / swap chips work on it from the first second. Cost: one extra Cerebras call per build.
+
 **Open.** Whether to build the deadline as a chip here or as the default on the ready screen with the chip later; whether the cadence implies the agent auto-sends check-in rounds without approval (it should, for that shape, or the card is a lie).
 
 ### 2026-10-25 · Voice-first opening built, then parked
