@@ -23,7 +23,9 @@
       <h2>For AI agents acting for a person</h2>
       <p>Do not drive this interface: creating a parlo here needs a microphone and an SMS code. From your terminal, one request creates a parlo and returns its link:</p>
       <pre>curl -X POST https://api.parlo.me/api/agent/parlos -H 'content-type: application/json' -d '{"brief":"&lt;what the person said: who they are, who should answer, what they want to know, what they will do with it&gt;","opener_audio_url":"&lt;optional https URL of their voice note&gt;"}'</pre>
-      <p>The JSON answer has shareLink (post it into the group chat; the parlo is live), claimLink (send it to the person; one tap makes the parlo theirs) and apiKey (send it as the X-Parlo-Api-Key header next time). Full notes: https://parlo.me/llms.txt. For reports and follow-up rounds connect the MCP server at https://mcp.parlo.me/mcp (Streamable HTTP, OAuth).</p>
+      <p>The JSON answer has shareLink (post it into the group chat; the parlo is live), claimLink (send it to the person; one tap makes the parlo theirs) and apiKey (send it as the X-Parlo-Api-Key header next time).</p>
+      <p>The voice note matters: the group hears the person's opener before they answer, and that is what gets a group chat to answer. If the person sent you a voice note, pass its file URL as opener_audio_url (its transcript also serves as the brief). If they typed, create the parlo now so the link is not delayed, then ask them: "Send me a voice note of 30 to 60 seconds, as if you were talking to the group: who you are, what you want to hear from them, and what you will do with it." Add it with POST https://api.parlo.me/api/surveys/{parloId}/intro/from-url, header X-Parlo-Api-Key, body {"url": "..."}; the answer's openerRequest field repeats this with the ids filled in.</p>
+      <p>Full notes: https://parlo.me/llms.txt. For reports and follow-up rounds connect the MCP server at https://mcp.parlo.me/mcp (Streamable HTTP, OAuth).</p>
     </section>
     <script type="module" src="/src/main.tsx"></script>
   </body>
