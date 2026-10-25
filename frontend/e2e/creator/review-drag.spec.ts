@@ -27,8 +27,7 @@ test("dragging a review card near the edge scrolls the list", async () => {
   await page.goto("http://localhost:5173/");
   await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: /create a parlo/i }).click();
-  await page.locator('[data-testid="shape-card"][data-shape="temperature"]').click();
-  await page.getByTestId("topic-textarea").fill("the plan");
+  await page.locator('[data-testid="shape-card"][data-shape="feedback"]').click();
   await page.getByTestId("topic-continue").click();
   await page.getByTestId("outputs-build").click();
   await page.getByText("Review your").waitFor({ timeout: 20_000 });
