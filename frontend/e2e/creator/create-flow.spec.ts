@@ -8,7 +8,7 @@ const OUT_ROOT = process.env.PARLO_SHOTS_DIR ?? "/tmp";
 
 /**
  * Creator flow, output-first: shape cards (six + More) → the sentence + who/length chips (taps only) → the outputs cards → building
- * → review (swap / shorter / sharpen) → intro. Plus the "Something else"
+ * → the opener (review went on 2026-10-25). Plus the "Something else"
  * escape hatch into the free brief on one device.
  *
  * Playwright's Chromium has no speech engine, so the
@@ -287,131 +287,24 @@ for (const deviceName of DEVICES) {
     await page.screenshot({ path: `${OUT}/03b-outputs.png`, fullPage: true });
     await page.getByTestId("outputs-build").click();
 
-    // ── Building → review with media badges and the report preview ──
+    // ── Building → the opener (the review screen went on 2026-10-25; the questions are live as built) ──
     await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${OUT}/04-building.png` });
 
-    await page.getByText("Review your").waitFor({ timeout: 20_000 });
+    await page.getByTestId("intro-record").waitFor({ timeout: 20_000 });
     expect(generateBodies.length).toBe(1);
     expect(generateBodies[0]).toMatchObject({ shape: "feedback", audience: "team", length: "deep", timing: "today" });
     expect(generateBodies[0].topic).toBeUndefined();
     // Canonical order, whatever order they were tapped in; the toggled-off Clips is gone.
     expect(generateBodies[0].outputs).toEqual(["sheet", "carousel", "episode"]);
     expect(generateBodies[0].brief).toBeUndefined();
-    await page.getByText("Voice", { exact: true }).first().waitFor({ timeout: 5000 });
-    await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
-    await page.getByText("Video", { exact: true }).first().waitFor({ timeout: 5000 });
-    await expect(page.getByTestId("review-report-preview")).toContainText("What works and what to fix");
+    await expect(page.getByText("Record an opener for the group")).toBeVisible();
     await page.waitForTimeout(600);
-    await page.screenshot({ path: `${OUT}/05-review.png`, fullPage: true });
+    await page.screenshot({ path: `${OUT}/05-opener.png`, fullPage: true });
 
-    // ── "Shorter": the draft is rewritten in place; the review screen never leaves ──
-    await page.getByTestId("review-adjust-shorter").click();
-    await page.getByText("Gut feeling about the offsite?").waitFor({ timeout: 10_000 });
-    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
-    await expect(page.getByText("Review your questions")).toBeVisible();
-    expect(generateBodies.length).toBe(1);
-    expect(adjustBodies.length).toBe(1);
-    expect(adjustBodies[0].kind).toBe("shorter");
-    expect(adjustBodies[0].questions.map((q) => q.text)).toEqual(DRAFT.map((q) => q.text));
-    // Order and media types survive the rewrite.
-    await page.getByText("Snap where you'd rather be").waitFor({ timeout: 5000 });
-    await page.getByText("Photo", { exact: true }).first().waitFor({ timeout: 5000 });
-    await expect(page.getByTestId("review-adjust-shorter")).toHaveAttribute("data-busy", "false");
-
-    // ── The type chip is a picker: tap it, pick Video, the chip says Video ──
-    await page.locator('[data-testid="review-type"][data-type="voice"]').first().click();
-    await page.locator('[data-testid="review-type-option"][data-type="video"]').click();
-    await expect(page.getByTestId("review-type-options")).toHaveCount(0);
-    await expect(page.locator('[data-testid="review-type"][data-type="video"]')).toHaveCount(2);
-    await page.locator('[data-testid="review-type"][data-type="video"]').first().click();
-    await page.locator('[data-testid="review-type-option"][data-type="voice"]').click();
-    await expect(page.locator('[data-testid="review-type"][data-type="video"]')).toHaveCount(1);
-
-    // ── Add a question: the textarea takes focus, the header collapses, and picking a type keeps it that way (no jump) ──
-    await page.getByRole("button", { name: /add question/i }).click();
-    const newQuestion = page.getByRole("textbox", { name: "Question 4" });
-    await expect(newQuestion).toBeFocused();
-    await newQuestion.fill("Anything else on your mind?");
-    await page.waitForTimeout(500); // the header's collapse transition
-    const before = await newQuestion.boundingBox();
-    await page.locator('[data-testid="review-type"][data-type="voice"]').last().click();
-    await page.locator('[data-testid="review-type-option"][data-type="photo"]').click();
-    await expect(newQuestion).toBeFocused();
-    await expect(page.locator('[data-testid="review-type"][data-type="photo"]')).toHaveCount(2);
-    await page.waitForTimeout(500);
-    const after = await newQuestion.boundingBox();
-    // Still editing, so the header stayed collapsed and the card did not move.
-    expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(2);
-    // Tapping away ends editing.
-    await page.locator('[data-testid="review-drag-rail"]').first().click();
-    await expect(page.getByRole("textbox", { name: "Question 4" })).toHaveCount(0);
-    await page.getByRole("button", { name: "Delete question" }).last().click();
-    await expect(page.getByRole("textbox", { name: "Question 4" })).toHaveCount(0);
-
-    // ── Swap question 2 in place ──
-    await page.getByTestId("review-swap").nth(1).click();
-    await page.getByText(SWAPPED.text).waitFor({ timeout: 10_000 });
-    await expect(page.getByText("Gut feeling about the offsite?")).toBeVisible();
-    await page.waitForTimeout(400);
-    await page.screenshot({ path: `${OUT}/06-review-swapped.png`, fullPage: true });
-
-    reviseBodies.length = 0;
-    // ── A failed follow-up call never leaves the review screen (it used to bounce to the build) ──
-    await page.route("**/api/surveys/*/clarify", (route: Route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Internal Server Error" }) }), { times: 1 });
-    await page.getByTestId("review-sharpen").click();
-    await page.getByText("Couldn't think of a follow-up just now").waitFor({ timeout: 10_000 });
-    await expect(page.getByText("Review your questions")).toBeVisible();
-    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
-    await expect(page.getByTestId("review-sharpen")).toHaveText(/Sharpen it/);
-
-    // ── "Sharpen it": follow-ups from the composed brief → checkpoint → the draft edited in place ──
-    await page.getByTestId("review-sharpen").click();
-    await expect(question(page)).toHaveText(FOLLOW_UPS[0].question, { timeout: 10_000 });
-    expect(clarifyBriefs[0]).toBe(COMPOSED_BRIEF);
-    await page.waitForTimeout(600);
-    await page.screenshot({ path: `${OUT}/07-followup-1.png` });
-    await answerFollowUp(page, "The dates, people have holidays booked.");
-    await expect(question(page)).toHaveText(FOLLOW_UPS[1].question, { timeout: 10_000 });
-    await answerFollowUp(page, "If more than a third can't make it.");
-
-    await page.getByTestId("checkpoint-update").waitFor({ timeout: 10_000 });
-    await page.waitForTimeout(600);
-    await page.screenshot({ path: `${OUT}/08-checkpoint.png` });
-
-    // The back arrow: review as it was, the swapped draft intact, nothing applied, the answers dropped.
-    await page.getByTestId("checkpoint-back").click();
-    await page.getByText("Review your").waitFor({ timeout: 10_000 });
-    await expect(page.getByText(SWAPPED.text)).toBeVisible();
-    expect(reviseBodies.length).toBe(0);
-    await page.getByTestId("review-sharpen").click();
-    // Dropped answers mean the follow-ups start again from the first one.
-    await expect(question(page)).toHaveText(FOLLOW_UPS[0].question, { timeout: 10_000 });
-    await answerFollowUp(page, "The dates, people have holidays booked.");
-    await expect(question(page)).toHaveText(FOLLOW_UPS[1].question, { timeout: 10_000 });
-    await answerFollowUp(page, "If more than a third can't make it.");
-    await page.getByTestId("checkpoint-update").waitFor({ timeout: 10_000 });
-
-    // "Update with feedback": straight back to review, the old cards dimmed, the revised ones fade in. No rebuild.
-    await page.getByTestId("checkpoint-update").click();
-    await page.getByText("Review your").waitFor({ timeout: 10_000 });
-    await expect(page.getByRole("heading", { name: /building your agent/i })).toHaveCount(0);
-    await page.getByText(REVISED[0].text).waitFor({ timeout: 10_000 });
-    await expect(page.getByText(REVISED[2].text)).toBeVisible();
-    await expect(page.getByText(DRAFT[2].text)).toHaveCount(0);
-    expect(generateBodies.length).toBe(1);
-    expect(reviseBodies.length).toBe(1);
-    expect(reviseBodies[0].clarifications).toHaveLength(2);
-    // The draft sent is the one on screen: the swap survived "Sharpen it".
-    expect(reviseBodies[0].questions.map((q) => q.text)).toEqual(["Gut feeling about the offsite?", SWAPPED.text, SHORTER[2]]);
-    await page.waitForTimeout(400);
-    await page.screenshot({ path: `${OUT}/09-review-revised.png`, fullPage: true });
-
-    // ── Intro: record a hello, use it → phone ──
+    // ── The opener: record it, use it → phone ──
     const introSaved = page.waitForRequest((r) => r.method() === "PUT" && /\/api\/surveys\/[^/]+\/intro$/.test(r.url()));
-    await page.getByRole("button", { name: /confirm & go live/i }).click();
-    await page.getByTestId("intro-record").waitFor({ timeout: 10_000 });
     await page.getByTestId("intro-record").click();
     await page.getByTestId("intro-stop").waitFor({ timeout: 5000 });
     await page.waitForTimeout(1200);
@@ -471,13 +364,11 @@ test("More → \"Something else\" opens the free brief and builds from it (iPhon
 
   // Straight to building: no mandatory follow-ups any more.
   await page.getByRole("heading", { name: /building your agent/i }).waitFor({ timeout: 5000 });
-  await page.getByText("Review your").waitFor({ timeout: 20_000 });
+  await page.getByTestId("intro-record").waitFor({ timeout: 20_000 });
   expect(generateBodies.length).toBe(1);
   expect(generateBodies[0].shape).toBeUndefined();
   expect(generateBodies[0].brief).toContain("five questions at most");
   expect(clarifyBriefs).toHaveLength(0);
-  // The free brief has no shape, so no report preview is promised.
-  await expect(page.getByTestId("review-report-preview")).toHaveCount(0);
 
   await context.close();
   await browser.close();

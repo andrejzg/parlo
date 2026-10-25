@@ -3,20 +3,16 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import CreateLanding from "@/components/creator/CreateLanding";
 import ConsentScreen from "@/components/ConsentScreen";
-import CreationQuestionScreen from "@/components/creator/CreationQuestionScreen";
 import BriefScreen, { type BriefResult } from "@/components/creator/BriefScreen";
 import ShapeScreen from "@/components/creator/ShapeScreen";
 import TopicScreen, { type TopicResult } from "@/components/creator/TopicScreen";
 import OutputsScreen from "@/components/creator/OutputsScreen";
-import CheckpointScreen from "@/components/creator/CheckpointScreen";
 import BuildingAgentScreen from "@/components/creator/BuildingAgentScreen";
-import ReviewQuestionsScreen, { type ReviewQuestion } from "@/components/creator/ReviewQuestionsScreen";
 import IntroScreen, { type IntroResult } from "@/components/creator/IntroScreen";
 import AgentReadyScreen from "@/components/creator/AgentReadyScreen";
 import PhoneScreen from "@/components/participant/PhoneScreen";
 import OtpScreen from "@/components/participant/OtpScreen";
 import CreatorSidebar, { MenuButton } from "@/components/creator/CreatorSidebar";
-import { VoiceAnswer } from "@/types/survey";
 import { fadeUp, pageVariants, popup, stagger } from "@/lib/animations";
 import { Check, CircleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,23 +22,19 @@ import CreatorHome from "@/components/creator/CreatorHome";
 import ProfilePage from "@/components/creator/ProfilePage";
 import InboxPage from "@/components/creator/InboxPage";
 import { sendOtp, type ConfirmationResult } from "@/lib/firebase";
-import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, swapQuestion, adjustQuestions, reviseQuestions, type AdjustKind, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
+import { sendWhatsAppOtp, claimSurvey, loginByPhone, fetchMySurveys, fetchLinkedInProfile, startLinkedIn, fetchIntroUploadUrl, saveIntro, type MySurvey, type LinkedInProfile, type PhoneProof } from "@/api/client";
 import {
   useCreateSurvey,
   useGenerateQuestions,
-  useUpdateQuestions,
-  fetchClarifyingQuestion,
   type CreateSurveyResponse,
   type GenerateQuestionsResponse,
   type Clarification,
-  type ClarifyingQuestion,
 } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
 import { finalizeRecording } from "@/lib/audioTrim";
 import { toast } from "@/components/ui/sonner";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { getDeviceAuth, saveDeviceAuth, clearDeviceAuth } from "@/lib/sessionStore";
-import { isClarifyCheckpoint, MAX_CLARIFICATIONS } from "@/lib/briefChecklist";
 import { DEFAULT_AUDIENCE, DEFAULT_LENGTH, shapeById, timingRowFor, type AudienceId, type LengthId, type ShapeId, type TimingId } from "@/lib/shapes";
 import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
 
@@ -51,13 +43,14 @@ import { DEFAULT_OUTPUTS, type OutputId } from "@/lib/outputs";
  *   welcome → shape ("What do you want to find out?", six cards + More; a pick pre-sets audience and outputs)
  *           → topic (the sentence the card started; who + length chips, and the shape's own third row: deadline / cadence / follow-up)
  *           → outputs ("What should it make?", six content-type cards, multi-select)
- *           → building → review (swap a question, "Shorter" / "More playful" rebuild,
- *             "Sharpen it" → clarify ×N → checkpoint → building → review again)
- *           → intro (voice hello, skippable) → phone/otp → linkedin → ready
+ *           → building (the questions go live as they are built)
+ *           → intro (the opener: a voice hello the group hears first, skippable) → phone/otp → linkedin → ready
+ *   The review screen (swap, Shorter / More playful, Sharpen it, drag) went on 2026-10-25:
+ *   the creator records the opener instead of reading the questions.
  *   The "Something else" card opens the free brief (5-item checklist, TypeSafe Jev)
- *   and then builds straight away; follow-ups are the same review-screen option.
+ *   and then builds straight away.
  */
-type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "clarify" | "checkpoint" | "building" | "review" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
+type Stage = "home" | "profile" | "inbox" | "welcome" | "consent" | "shape" | "topic" | "outputs" | "brief" | "building" | "intro" | "ready" | "phone" | "otp" | "linkedin-connect" | "linkedin-success" | "dashboard";
 
 const CREATOR_SESSION_KEY = "parlo-creator-session";
 
@@ -82,14 +75,8 @@ export default function CreatorPage() {
   const [timing, setTiming] = useState<TimingId | null>(null);
   const [outputs, setOutputs] = useState<OutputId[]>(DEFAULT_OUTPUTS);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
-  const [currentQuestion, setCurrentQuestion] = useState<ClarifyingQuestion | null>(null);
-  const [clarifyAnswerDraft, setClarifyAnswerDraft] = useState<string | null>(null);
-  const [nextLoading, setNextLoading] = useState(false);
   // "Update with feedback": the review screen shows the old draft dimmed while the revision lands.
-  const [revising, setRevising] = useState(false);
-  const [revisionKey, setRevisionKey] = useState(0);
   // What the clarifications were when "Sharpen it" was tapped, so the checkpoint's back arrow can drop this session's answers.
-  const clarificationsBeforeSharpen = useRef<Clarification[] | null>(null);
 
   // Error state for building screen
   const [buildError, setBuildError] = useState(false);
@@ -188,7 +175,6 @@ export default function CreatorPage() {
   // Mutations
   const createSurvey = useCreateSurvey();
   const generateQuestions = useGenerateQuestions();
-  const updateQuestions = useUpdateQuestions();
 
   // Track in-flight uploads so we don't block the UI
   const pendingUploads = useRef<Promise<boolean>[]>([]);
@@ -267,9 +253,6 @@ export default function CreatorPage() {
   const resetBriefFlow = () => {
     setBrief("");
     setClarifications([]);
-    setCurrentQuestion(null);
-    setClarifyAnswerDraft(null);
-    setNextLoading(false);
     setShape(null);
     setAudience(DEFAULT_AUDIENCE);
     setLength(DEFAULT_LENGTH);
@@ -277,34 +260,7 @@ export default function CreatorPage() {
     setOutputs(DEFAULT_OUTPUTS);
   };
 
-  /**
-   * Fetch the next Cerebras follow-up for the given history and show it.
-   * If the model can't produce one, we don't block the creator: go build.
-   */
-  const fetchNextQuestion = useCallback(
-    async (briefText: string, history: Clarification[]) => {
-      if (!surveyId) return;
-      setNextLoading(true);
-      try {
-        const q = await fetchClarifyingQuestion(surveyId, briefText, history);
-        setCurrentQuestion(q);
-        setClarifyAnswerDraft(null);
-        trackEvent("clarify_question_shown", { index: q.index });
-        goForward("clarify");
-      } catch (err) {
-        // Stay where the creator is (review or the checkpoint). The old fallback went to the
-        // build and threw the draft away, which is never what a tap on "Sharpen it" means.
-        captureException(err, { location: "CreatorPage.fetchNextQuestion" });
-        toast.error("Couldn't think of a follow-up just now. Try again?");
-      } finally {
-        setNextLoading(false);
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [surveyId],
-  );
-
-  /** The free brief is in. Keep the recording and build straight away; follow-ups are a review-screen option. */
+  /** The free brief is in. Keep the recording and build straight away. */
   const handleBriefContinue = async (result: BriefResult) => {
     const text = result.transcript.trim();
     if (!text) {
@@ -338,91 +294,6 @@ export default function CreatorPage() {
     setShape("other");
     forceReleaseSharedStream();
     goForward("building");
-  };
-
-  /** A follow-up was answered. Checkpoint, cap, or fetch the next one. */
-  const handleClarifyAnswer = async (answer: VoiceAnswer) => {
-    if (!currentQuestion) return;
-    const text = (answer.textContent ?? answer.transcript ?? "").trim();
-    setPreferredMode(answer.textContent ? "text" : "voice");
-
-    if (!text) {
-      toast.error("I didn't catch that — could you say it again?");
-      setClarifyAnswerDraft(null);
-      setScreenKey((k) => k + 1);
-      return;
-    }
-
-    const history = [...clarifications, { question: currentQuestion.question, answer: text }];
-    setClarifications(history);
-    const n = history.length;
-    trackEvent("clarify_question_answered", { index: n, mode: answer.textContent ? "text" : "voice", chars: text.length });
-
-    if (n >= MAX_CLARIFICATIONS) {
-      forceReleaseSharedStream();
-      goForward("checkpoint");
-      return;
-    }
-    if (isClarifyCheckpoint(n)) {
-      goForward("checkpoint");
-      return;
-    }
-    await fetchNextQuestion(brief, history);
-  };
-
-  /** Back from a follow-up: re-open the previous one (or the brief) with its answer editable. */
-  const handleClarifyBack = () => {
-    setDirection(-1);
-    if (clarifications.length === 0) {
-      // "Sharpen it" was tapped on the review screen; that's where back goes.
-      setStage("review");
-      setScreenKey((k) => k + 1);
-      return;
-    }
-    const prev = clarifications[clarifications.length - 1];
-    setClarifications(clarifications.slice(0, -1));
-    setCurrentQuestion({ question: prev.question, hint: null, index: clarifications.length });
-    setClarifyAnswerDraft(prev.answer);
-    setStage("clarify");
-    setScreenKey((k) => k + 1);
-  };
-
-  /** "Update with feedback": back to review at once, the draft dimmed, then edited with the answers. */
-  const handleCheckpointCreate = async () => {
-    if (!surveyId || revising) return;
-    trackEvent("clarify_checkpoint", { choice: "update", answered: clarifications.length });
-    forceReleaseSharedStream();
-    clarificationsBeforeSharpen.current = null;
-    setRevising(true);
-    goForward("review");
-    try {
-      const { questions } = await reviseQuestions(surveyId, generatedQuestions, clarifications);
-      setGeneratedQuestions(questions);
-      setRevisionKey((k) => k + 1);
-    } catch (err) {
-      captureException(err, { location: "CreatorPage.reviseQuestions" });
-      toast.error("Couldn't fold that in just now. Your questions are as they were.");
-    } finally {
-      setRevising(false);
-    }
-  };
-
-  /** The checkpoint's back arrow: review as it was, this sharpen session's answers dropped. */
-  const handleCheckpointBack = () => {
-    trackEvent("clarify_checkpoint", { choice: "back", answered: clarifications.length });
-    forceReleaseSharedStream();
-    if (clarificationsBeforeSharpen.current) setClarifications(clarificationsBeforeSharpen.current);
-    clarificationsBeforeSharpen.current = null;
-    setCurrentQuestion(null);
-    setClarifyAnswerDraft(null);
-    setDirection(-1);
-    setStage("review");
-    setScreenKey((k) => k + 1);
-  };
-
-  const handleCheckpointContinue = async () => {
-    trackEvent("clarify_checkpoint", { choice: "continue", answered: clarifications.length });
-    await fetchNextQuestion(brief, clarifications);
   };
 
   const handleGenerate = useCallback(async (): Promise<GenerateQuestionsResponse | undefined> => {
@@ -490,29 +361,11 @@ export default function CreatorPage() {
           { text: "If you could wave a magic wand, what would the ideal solution look like?", type: "voice" },
         ]);
       }
-      goForward("review");
+      trackEvent("survey_questions_generated", { questionCount: typed?.questions?.length ?? 0 });
+      goForward("intro");
     },
     [],
   );
-
-  const handleReviewConfirm = (
-    questions: { text: string; hint?: string; type?: "voice" | "photo" | "video" }[],
-  ) => {
-    trackEvent("survey_questions_generated", { questionCount: questions.length });
-    setGeneratedQuestions(questions);
-
-    // Persist edited questions to backend (optimistic — proceed regardless).
-    // We round-trip the media type so the creator's edits don't silently
-    // reset a photo/video question back to voice.
-    if (surveyId) {
-      updateQuestions.mutate(
-        { surveyId, questions },
-        { onError: () => toast.error("Failed to save question edits. Your link still works.") },
-      );
-    }
-
-    goForward("intro");
-  };
 
   /**
    * The creator recorded (or skipped) their voice hello. Upload it in the
@@ -582,51 +435,6 @@ export default function CreatorPage() {
       return true;
     } catch { return false; }
   }, []);
-
-  const handleRegenerate = async () => {
-    goForward("building");
-  };
-
-  /** Review-screen chips: the draft rewritten in place; the screen never leaves. */
-  const handleAdjust = async (kind: AdjustKind, current: ReviewQuestion[]): Promise<ReviewQuestion[] | null> => {
-    if (!surveyId) return null;
-    trackEvent("review_adjust", { kind, questionCount: current.length });
-    try {
-      const { questions } = await adjustQuestions(surveyId, kind, current);
-      setGeneratedQuestions(questions);
-      return questions;
-    } catch (err) {
-      captureException(err, { location: "CreatorPage.handleAdjust" });
-      toast.error("Couldn't rewrite them just now. Try again?");
-      return null;
-    }
-  };
-
-  /** Review-screen "Sharpen it": the optional follow-up loop; the checkpoint then edits *this* draft. */
-  const handleSharpen = async (current: ReviewQuestion[]) => {
-    trackEvent("review_sharpen", { answered: clarifications.length });
-    setGeneratedQuestions(current);
-    clarificationsBeforeSharpen.current = clarifications;
-    await fetchNextQuestion(brief, clarifications);
-  };
-
-  /** Review-screen swap: one different question for that slot. */
-  const handleSwap = async (index: number, current: ReviewQuestion[]): Promise<ReviewQuestion | null> => {
-    if (!surveyId) return null;
-    try {
-      const { question } = await swapQuestion(
-        surveyId,
-        index,
-        current.map((q) => ({ text: q.text, type: q.type })),
-      );
-      trackEvent("review_swap", { index });
-      return question;
-    } catch (err) {
-      captureException(err, { location: "CreatorPage.handleSwap" });
-      toast.error("Couldn't think of another one. Try again?");
-      return null;
-    }
-  };
 
   const handleDashboard = () => {
     if (dashboardCode) {
@@ -725,12 +533,8 @@ export default function CreatorPage() {
       ? "outputs"
       : stage === "brief"
       ? `brief-${screenKey}`
-      : stage === "checkpoint"
-      ? `checkpoint-${clarifications.length}`
       : stage === "building"
       ? "building"
-      : stage === "review"
-      ? "review"
       : stage === "intro"
       ? "intro"
       : stage === "ready"
@@ -746,12 +550,6 @@ export default function CreatorPage() {
       : stage === "dashboard"
       ? "dashboard"
       : `cq-${screenKey}`;
-
-  // When stepping back to a follow-up, re-open it with the previous answer typed in.
-  const existingAnswer: VoiceAnswer | undefined =
-    stage === "clarify" && currentQuestion && clarifyAnswerDraft
-      ? { questionId: `clarify-${currentQuestion.index}`, durationMs: 0, textContent: clarifyAnswerDraft }
-      : undefined;
 
   if (initializing) {
     return (
@@ -938,36 +736,6 @@ export default function CreatorPage() {
                 }}
               />
             )}
-            {stage === "clarify" && currentQuestion && (
-              <CreationQuestionScreen
-                question={{
-                  id: `clarify-${currentQuestion.index}`,
-                  text: currentQuestion.question,
-                  subtext: currentQuestion.hint,
-                }}
-                questionIndex={currentQuestion.index - 1}
-                totalQuestions={currentQuestion.index}
-                isLast={false}
-                progressLabel={`Step 2 · Follow-up ${currentQuestion.index}`}
-                ctaLabel="Continue"
-                transcriptSurveyId={surveyId ?? undefined}
-                busy={nextLoading}
-                existingAnswer={existingAnswer}
-                onNext={handleClarifyAnswer}
-                onBack={handleClarifyBack}
-                initialMode={preferredMode}
-              />
-            )}
-            {stage === "checkpoint" && (
-              <CheckpointScreen
-                answeredCount={clarifications.length}
-                canContinue={clarifications.length < MAX_CLARIFICATIONS}
-                busy={nextLoading}
-                onCreate={() => void handleCheckpointCreate()}
-                onContinue={handleCheckpointContinue}
-                onBack={handleCheckpointBack}
-              />
-            )}
             {stage === "building" && (
               buildError ? (
                 <div className="flex flex-col items-center justify-center h-full px-l gap-l bg-background text-center">
@@ -997,26 +765,13 @@ export default function CreatorPage() {
                 />
               )
             )}
-            {stage === "review" && (
-              <ReviewQuestionsScreen
-                questions={generatedQuestions}
-                onConfirm={handleReviewConfirm}
-                onRegenerate={handleRegenerate}
-                onAdjust={handleAdjust}
-                onSharpen={(current) => void handleSharpen(current)}
-                onSwap={handleSwap}
-                revising={revising}
-                revisionKey={revisionKey}
-                reportPreview={shape && shape !== "other" ? shapeById(shape).report : null}
-                busy={nextLoading}
-              />
-            )}
             {stage === "intro" && (
               <IntroScreen
                 onContinue={handleIntroContinue}
                 onBack={() => {
+                  // Back from the opener rebuilds: the questions are live already, so this re-runs the build.
                   setDirection(-1);
-                  setStage("review");
+                  setStage(shape === "other" ? "brief" : "outputs");
                   setScreenKey((k) => k + 1);
                 }}
               />

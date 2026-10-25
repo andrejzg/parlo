@@ -56,20 +56,6 @@ export function evaluateBrief(surveyId: string, transcript: string) {
   });
 }
 
-export interface ClarifyingQuestion {
-  question: string;
-  hint: string | null;
-  index: number;
-}
-
-/** Ask Cerebras for the next clarifying question given everything so far. */
-export function fetchClarifyingQuestion(surveyId: string, brief: string, history: Clarification[]) {
-  return apiFetch<ClarifyingQuestion>(`/surveys/${surveyId}/clarify`, {
-    method: "POST",
-    body: JSON.stringify({ brief, history }),
-  });
-}
-
 /** Whisper transcription of a creator recording (fallback when Web Speech is unavailable). */
 export async function transcribeAudio(surveyId: string, blob: Blob): Promise<string> {
   const res = await fetch(`${API_BASE}/surveys/${surveyId}/transcribe`, {
@@ -139,60 +125,6 @@ export function useGenerateQuestions() {
         body,
       });
     },
-  });
-}
-
-export type AdjustKind = "shorter" | "playful";
-
-/** Review-screen chips: the draft on screen rewritten in place (same count, order and type). Nothing is saved. */
-export function adjustQuestions(
-  surveyId: string,
-  kind: AdjustKind,
-  questions: { text: string; hint?: string; type?: string }[],
-) {
-  return apiFetch<{ questions: { text: string; hint: string; type: "voice" | "photo" | "video" }[] }>(
-    `/surveys/${surveyId}/questions/adjust`,
-    { method: "POST", body: JSON.stringify({ kind, questions }) }
-  );
-}
-
-/** The checkpoint after "Sharpen it": the draft edited with the follow-up answers (count may change). Persists the clarifications; the draft is not saved. */
-export function reviseQuestions(
-  surveyId: string,
-  questions: { text: string; hint?: string; type?: string }[],
-  clarifications: { question: string; answer: string }[],
-) {
-  return apiFetch<{ questions: { text: string; hint: string; type: "voice" | "photo" | "video" }[] }>(
-    `/surveys/${surveyId}/questions/revise`,
-    { method: "POST", body: JSON.stringify({ questions, clarifications }) }
-  );
-}
-
-/** Review-screen swap: one different question for slot `index`, given the draft on screen. Nothing is saved. */
-export function swapQuestion(surveyId: string, index: number, questions: { text: string; type?: string }[]) {
-  return apiFetch<{ question: { text: string; hint: string; type: "voice" | "photo" | "video" } }>(
-    `/surveys/${surveyId}/questions/swap`,
-    { method: "POST", body: JSON.stringify({ index, questions }) }
-  );
-}
-
-export function useUpdateQuestions() {
-  return useMutation({
-    mutationFn: ({
-      surveyId,
-      questions,
-    }: {
-      surveyId: string;
-      questions: {
-        text: string;
-        hint?: string;
-        type?: "voice" | "photo" | "video";
-      }[];
-    }) =>
-      apiFetch(`/surveys/${surveyId}/questions`, {
-        method: "PUT",
-        body: JSON.stringify({ questions }),
-      }),
   });
 }
 
