@@ -11,7 +11,7 @@ import { useFitLines } from "@/hooks/useFitLines";
  * The second card screen of creation: what should the agent make, beyond
  * the report it always writes? Six content types (not channels, see
  * GROWTH.md 2026-10-25), the same deck as the shape cards, but several can
- * be on at once: a tap flips a card to the primary fill, "Build it" is live
+ * be on at once: a tap flips a card to the primary fill, "Continue" is live
  * from the first frame (nothing picked is a valid answer). Google Sheet &
  * Drive starts on (`DEFAULT_OUTPUTS`); the page owns that default.
  */
@@ -126,7 +126,7 @@ export default function OutputsScreen({ initialOutputs = [], onContinue, onBack 
         transition={transitionLarge}
       >
         <Button size="lg" className="w-full" onClick={() => onContinue(sortOutputs(picked))} data-testid="outputs-build">
-          Build it
+          Continue
         </Button>
       </motion.div>
     </div>
