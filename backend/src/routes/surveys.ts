@@ -1069,6 +1069,9 @@ surveys.post("/api/agent/parlos", async (c) => {
   const openerToken = generateCode(24);
   await c.env.KV.put(openerTokenKey(openerToken), surveyId, { expirationTtl: OPENER_TOKEN_TTL_SECONDS });
   const openerLink = buildBotChatUrl(`opener ${code} ${openerToken}`);
+  // Answering on WhatsApp: the bot plays the opener, asks one question at a
+  // time, takes voice notes, and the member joins with a verified number.
+  const answerLink = buildBotChatUrl(`answer ${code}`);
   const openerRequest = opener
     ? null
     : {
@@ -1087,6 +1090,7 @@ surveys.post("/api/agent/parlos", async (c) => {
       dashboardLink: `${origin}/d/${dashboardCode}`,
       claimLink,
       openerLink,
+      answerLink,
       apiKey,
       questions: generated.questions,
       briefSource,
@@ -1097,7 +1101,7 @@ surveys.post("/api/agent/parlos", async (c) => {
       // second on purpose, before the claim link, so it is not the bit
       // that gets dropped from a short reply.
       next: [
-        `1. Post shareLink into the group chat. The parlo is live; anyone who opens it answers by voice.`,
+        `1. Post shareLink into the group chat. The parlo is live; anyone who opens it answers by voice in the browser. answerLink (${answerLink}) does the same inside WhatsApp: Parlo asks the questions in a chat and takes voice notes. Post both, or answerLink alone for a WhatsApp group.`,
         openerRequest
           ? `2. Send the person openerLink (${openerLink}) with these words: "${OPENER_ASK}" They tap it and send the voice note to Parlo on WhatsApp; nothing else to do. The group hears it before they answer.`
           : `2. The opener is in place; the group hears it before they answer.`,

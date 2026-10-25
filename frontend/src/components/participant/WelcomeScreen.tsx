@@ -7,6 +7,7 @@ import { stagger, fadeUp } from "@/lib/animations";
 import { getMediaMix } from "@/lib/mediaMix";
 import VoiceNotePill from "@/components/VoiceNotePill";
 import { visibilityCopy } from "@/lib/visibility";
+import { buildBotChatUrl } from "@/lib/whatsapp";
 
 interface WelcomeScreenProps {
   survey: Survey;
@@ -112,9 +113,16 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
       {/* CTA */}
       <motion.div variants={fadeUp} className="w-full max-w-xs flex flex-col items-center gap-m">
         {hasPending ? (
-          <Button size="lg" className="w-full" onClick={onStart}>
-            {survey.ctaLabel}
-          </Button>
+          <>
+            <Button size="lg" className="w-full" onClick={onStart}>
+              {survey.ctaLabel}
+            </Button>
+            {mix.isVoiceOnly && survey.code && (
+              <Button variant="link" size="sm" asChild>
+                <a href={buildBotChatUrl(`answer ${survey.code}`)}>Answer on WhatsApp instead</a>
+              </Button>
+            )}
+          </>
         ) : onSeeReport ? (
           <Button size="lg" className="w-full" onClick={onSeeReport}>
             See what the group said

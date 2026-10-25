@@ -62,6 +62,14 @@ export async function downloadInboundMedia(
 export interface WhatsAppClient {
   sendTemplate(to: string, templateName: string, components: TemplateComponent[]): Promise<void>;
   sendText(to: string, message: string): Promise<void>;
+  /** An audio message from a public URL (Meta fetches it; OGG/Opus, MP3, M4A, AAC, AMR only). Resolves false when the send failed. */
+  sendAudio(to: string, link: string): Promise<boolean>;
+}
+
+/** Content types WhatsApp will play as an audio message (no WAV, no WebM). */
+export function isWhatsAppPlayableAudio(contentType: string | null | undefined): boolean {
+  const ct = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  return ["audio/ogg", "application/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac", "audio/amr"].includes(ct);
 }
 
 interface TemplateComponent {
@@ -101,6 +109,21 @@ export function createWhatsAppClient(apiKey: string, phoneNumberId: string): Wha
       } else {
         trackServerEvent(to, "whatsapp_message_sent", { type: "template", templateName });
       }
+    },
+
+    async sendAudio(to: string, link: string) {
+      const res = await fetch(`${KAPSO_BASE}/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ messaging_product: "whatsapp", to, type: "audio", audio: { link } }),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        console.error(`[WhatsApp] sendAudio failed: ${res.status} ${err}`);
+        return false;
+      }
+      trackServerEvent(to, "whatsapp_message_sent", { type: "audio" });
+      return true;
     },
 
     async sendText(to: string, message: string) {
