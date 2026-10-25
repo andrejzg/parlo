@@ -30,7 +30,7 @@ import { pickAgentModel } from "./model";
 import { initAnalytics, trackServerEvent } from "../services/analytics";
 import { closesAtFor, repeatsOnClose, shapeReport, timingSpec } from "../services/shapes";
 import { outputsAgentSection, parseOutputs } from "../services/outputs";
-import { closeRound, createProposedRound, getRound, membersPendingFor, overdueRounds, setRoundClosesAt, type ProposedAsk } from "../services/rounds";
+import { closeRound, createProposedRound, getRound, membersPendingFor, overdueRounds, roundAsks, sendRound, type ProposedAsk } from "../services/rounds";
 import { notifyManagers, notifyUsers } from "../services/notify";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { displayNameFor } from "../services/groups";
@@ -616,12 +616,39 @@ export class GroupAgent extends Agent<Env, GroupState> {
     });
 
     if (repeats) {
-      // The check-in: the next round, same asks, for the owner to approve.
-      await this.proposeRound(surveyId, {
+      // The check-in: the next round goes out by itself, same asks, no tap
+      // (decided 2026-10-25). The owner is told, and can still edit the
+      // cadence or close the parlo.
+      const proposal = await this.proposeRound(surveyId, {
         preferKind: "poll",
         hint: `This is a recurring check-in (${survey?.timing}). Propose the next round with the same asks as round ${round.number}, word for word, so the rounds compare.`,
       });
+      if (proposal.ok && proposal.round) await this.sendProposedRound(surveyId, proposal.round.id);
     }
+  }
+
+  /** Send a round the agent just proposed, as if the owner had approved it. */
+  private async sendProposedRound(surveyId: string, roundId: string) {
+    const round = await getRound(this.env.DB, roundId);
+    if (!round || round.status !== "proposed") return;
+    const survey = await this.env.DB
+      .prepare("SELECT id, code, title, timing FROM surveys WHERE id = ?")
+      .bind(surveyId)
+      .first<{ id: string; code: string; title: string | null; timing: string | null }>();
+    if (!survey) return;
+    const asks = await roundAsks(this.env.DB, round.id);
+    if (asks.length === 0) return;
+    const sent = await sendRound(this.env, survey, round, asks, null);
+    await sent.sendMessages();
+    if (sent.closesAt) await this.scheduleClose(surveyId, round.id, sent.closesAt.toISOString());
+    trackServerEvent(surveyId, "round_auto_sent", { surveyId, round: round.number, kind: round.kind, recipients: sent.recipients.length });
+    await notifyManagers(this.env, surveyId, {
+      type: "new_round",
+      title: `Round ${round.number} of ${survey.title ?? "your parlo"} went out`,
+      body: `The check-in's next round, sent to ${sent.recipients.length} ${sent.recipients.length === 1 ? "person" : "people"}. Same asks as last time.`,
+      surveyId,
+      surveyTitle: survey.title,
+    });
   }
 
   /** What the owner's dashboard shows. */
