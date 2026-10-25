@@ -1,6 +1,4 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import type { AudienceId, LengthId, ShapeId, TimingId } from "@/lib/shapes";
-import type { OutputId } from "@/lib/outputs";
 import type { Survey, DashboardData, PublicResult } from "@/types/survey";
 import { getMediaMix } from "@/lib/mediaMix";
 
@@ -88,14 +86,14 @@ export interface GenerateQuestionsResponse {
 export interface GenerateQuestionsInput {
   surveyId: string;
   /** Output-first flow: the shape of what comes back, who, how long, and the one blank. */
-  shape?: ShapeId;
-  audience?: AudienceId;
-  length?: LengthId;
+  shape?: string;
+  audience?: string;
+  length?: string;
   topic?: string;
   /** What the agent should make beyond the report. */
-  outputs?: OutputId[];
+  outputs?: string[];
   /** The third chip row's pick (deadline / cadence / follow-up), when the shape has one. */
-  timing?: TimingId;
+  timing?: string;
   /** Free brief ("Something else"): the creator's own words. */
   brief?: string;
   clarifications?: Clarification[];

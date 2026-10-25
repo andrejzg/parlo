@@ -10,11 +10,11 @@ import { trackEvent } from "@/lib/posthog";
 import { finalizeRecording } from "@/lib/audioTrim";
 
 /**
- * The opener: right after the build, the creator records the short hello the
- * group hears on the welcome screen before the first question. A real voice
- * is the thing that gets busy people to actually answer. Since 2026-10-25
- * this is the step after building (the review screen is gone), so the
- * questions are already live when they get here.
+ * The opener: the first and only creative step since 2026-10-25. The creator
+ * records the short hello the group hears on the welcome screen before the
+ * first question, and its Whisper transcript is the brief the agent builds
+ * the questions from (so with `required` there is no skip). A real voice is
+ * the thing that gets busy people to actually answer.
  *
  * Tap to record (unlike the brief, this one is a small performance and people
  * want a beat to think), 60 s cap, playback + re-record, and a skip link so
@@ -29,13 +29,15 @@ export interface IntroResult {
 interface IntroScreenProps {
   onContinue: (intro: IntroResult | null) => void;
   onBack?: () => void;
+  /** No "Skip for now": the opener is the brief the agent builds from (2026-10-25). */
+  required?: boolean;
 }
 
 const MAX_MS = 60_000;
 
 const PROMPTS = [
   "Who you are",
-  "Why you're asking them",
+  "What you want to know from them",
   "What you'll do with it",
 ];
 
@@ -54,7 +56,7 @@ const recordControlClass =
 
 type Phase = "idle" | "recording" | "recorded";
 
-export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
+export default function IntroScreen({ onContinue, onBack, required = false }: IntroScreenProps) {
   const recorder = useVoiceRecorder();
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -187,7 +189,7 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
           Record an opener for the group
         </motion.h2>
         <motion.p variants={fadeUp} className="mt-xs text-s text-muted-foreground">
-          Your questions are ready. They'll hear this before the first one; a real voice is what gets busy people to answer. Under a minute.
+          They hear this first, and the agent builds its questions from what you say. A real voice is what gets busy people to answer. Under a minute.
         </motion.p>
 
         <motion.ul className="flex flex-col gap-xs mt-s list-none" aria-label="What to mention">
@@ -309,18 +311,20 @@ export default function IntroScreen({ onContinue, onBack }: IntroScreenProps) {
           </motion.div>
         )}
 
-        <motion.div variants={fadeUp}>
-          <Button
-            type="button"
-            variant="link"
-            size="sm"
-            onClick={handleSkip}
-            disabled={isTransitioning}
-            data-testid="intro-skip"
-          >
-            Skip for now
-          </Button>
-        </motion.div>
+        {!required && (
+          <motion.div variants={fadeUp}>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              onClick={handleSkip}
+              disabled={isTransitioning}
+              data-testid="intro-skip"
+            >
+              Skip for now
+            </Button>
+          </motion.div>
+        )}
       </motion.div>
     </div>
   );
