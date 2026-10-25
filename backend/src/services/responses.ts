@@ -3,7 +3,7 @@ import { generateId } from "./codes";
 import { ensureMember } from "./groups";
 import { notifyManagers } from "./notify";
 import { trackServerEvent } from "./analytics";
-import { transcribeResponseAnswers } from "./transcription";
+import { ingestIntoAgent, transcribeResponseAnswers } from "./transcription";
 
 export type SubmitOutcome =
   | { ok: true; responseId: string; surveyId: string; memberToken: string | null; visibility: GroupVisibility; answers: number }
@@ -22,7 +22,9 @@ export async function submitResponse(
   ctx: { waitUntil(promise: Promise<unknown>): void },
   responseId: string,
   who: { userId: string | null; firstName?: string | null; lastName?: string | null },
-  source: "web" | "whatsapp"
+  source: "web" | "whatsapp",
+  /** Transcripts already made (the WhatsApp bot transcribes each voice note on receipt), by question id. */
+  pretranscribed: Record<string, string> = {}
 ): Promise<SubmitOutcome> {
   const db = env.DB;
   const existing = await db
@@ -64,6 +66,7 @@ export async function submitResponse(
     .bind(existing.survey_id)
     .all<SurveyQuestion>();
   const inserts: D1PreparedStatement[] = [];
+  let pendingCount = 0;
   for (const q of questions.results) {
     if (q.target_user_id && q.target_user_id !== userId) continue;
     if (q.question_type === "photo") {
@@ -80,6 +83,7 @@ export async function submitResponse(
     if (q.question_type === "video") {
       const key = `responses/${responseId}/${q.id}.mp4`;
       if (await env.AUDIO_BUCKET.head(key)) {
+        pendingCount += 1;
         inserts.push(
           db
             .prepare("INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, video_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, '', ?, 0, 'pending')")
@@ -92,11 +96,21 @@ export async function submitResponse(
     const wavKey = `responses/${responseId}/${q.id}.wav`;
     const audioKey = (await env.AUDIO_BUCKET.head(webmKey)) ? webmKey : (await env.AUDIO_BUCKET.head(wavKey)) ? wavKey : null;
     if (audioKey) {
-      inserts.push(
-        db
-          .prepare("INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, ?, 0, 'pending')")
-          .bind(generateId(), responseId, q.id, audioKey)
-      );
+      const text = pretranscribed[q.id];
+      if (typeof text === "string") {
+        inserts.push(
+          db
+            .prepare("INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription, transcription_status) VALUES (?, ?, ?, ?, 0, ?, 'completed')")
+            .bind(generateId(), responseId, q.id, audioKey, text)
+        );
+      } else {
+        pendingCount += 1;
+        inserts.push(
+          db
+            .prepare("INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription_status) VALUES (?, ?, ?, ?, 0, 'pending')")
+            .bind(generateId(), responseId, q.id, audioKey)
+        );
+      }
     }
   }
   if (inserts.length > 0) await db.batch(inserts);
@@ -125,6 +139,12 @@ export async function submitResponse(
     surveyTitle,
   });
 
-  ctx.waitUntil(transcribeResponseAnswers(env, responseId));
+  if (pendingCount > 0) {
+    // Web uploads: Whisper in the background, then the agent ingests.
+    ctx.waitUntil(transcribeResponseAnswers(env, responseId));
+  } else if (inserts.length > 0) {
+    // Everything already transcribed (the bot): hand it to the agent now, in the request.
+    await ingestIntoAgent(env, responseId).catch((err) => console.error(`[submit] agent ingest failed for ${responseId}:`, err));
+  }
   return { ok: true, responseId, surveyId: existing.survey_id, memberToken, visibility, answers: inserts.length };
 }

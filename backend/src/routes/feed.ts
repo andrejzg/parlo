@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { sweepPendingTranscriptions } from "../services/transcription";
 import type { Env, ResponseAnswer, SurveyQuestion } from "../types";
 import type { AuthVariables } from "../middleware/auth";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
@@ -311,6 +312,8 @@ feed.post("/api/my/surveys/:surveyId/read", async (c) => {
     .bind(userId, surveyId)
     .run();
 
+  // Opening the dashboard also picks up any answer whose transcription never ran.
+  c.executionCtx.waitUntil(sweepPendingTranscriptions(c.env, { surveyId, limit: 5 }).catch(() => undefined));
   return c.json({ ok: true });
 });
 

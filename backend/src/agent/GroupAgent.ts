@@ -24,6 +24,7 @@
 
 import { Agent } from "agents";
 import { notifyReportReady } from "../services/reportReady";
+import { sweepPendingTranscriptions } from "../services/transcription";
 import { generateText, tool, stepCountIs } from "ai";
 import { z } from "zod";
 import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types";
@@ -510,6 +511,11 @@ export class GroupAgent extends Agent<Env, GroupState> {
     const surveyId = this.state.surveyId;
     if (!surveyId) return;
     for (const r of await overdueRounds(this.env.DB, surveyId)) await this.closeRound({ roundId: r.id });
+    try {
+      await sweepPendingTranscriptions(this.env, { surveyId, limit: 10 });
+    } catch (err) {
+      console.error("[agent] transcription sweep failed", { surveyId, err });
+    }
     if (this.state.ingestedSinceDigest > 0) await this.runDigest();
   }
 
