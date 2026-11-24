@@ -176,6 +176,9 @@ export default function ParticipantPage() {
     }, 1500);
 
     (async () => {
+      // Set when this load is the return from LinkedIn's OAuth with the profile connected.
+      let backFromLinkedIn: { profile: LinkedInProfile; phone: string } | null = null;
+
       // Check for returning device FIRST, unconditionally. A verified
       // participant opening a brand-new survey has no session record for
       // that survey code, but we still need to know they've authenticated
@@ -193,20 +196,17 @@ export default function ParticipantPage() {
           setDeviceApiKey(deviceAuth.apiKey);
         }
 
-        // Check if returning from LinkedIn OAuth
+        // Check if returning from LinkedIn OAuth. The trip was a full page
+        // load, so the sitting (answers, response session, upload URLs) has to
+        // come back from IndexedDB below before "You're connected" can lead
+        // to a submit. Until 2026-11-24 this returned here, the sitting was
+        // never restored, and Continue ended on "No response session".
         const params = new URLSearchParams(window.location.search);
         if (params.get("linkedin") === "connected" && deviceAuth?.apiKey) {
           window.history.replaceState({}, "", window.location.pathname + window.location.hash);
           try {
             const profile = await fetchLinkedInProfile(deviceAuth.apiKey);
-            if (profile.connected) {
-              setLinkedInProfile(profile);
-              setPhone(deviceAuth.phone);
-              setStage("linkedin-success");
-              clearTimeout(failsafe);
-              setSessionRestored(true);
-              return;
-            }
+            if (profile.connected) backFromLinkedIn = { profile, phone: deviceAuth.phone };
           } catch {}
         }
       } catch {
@@ -219,6 +219,12 @@ export default function ParticipantPage() {
 
         const session = await getSession(code);
         if (!session || session.surveyId !== surveyQuery.data.id) {
+          if (backFromLinkedIn) {
+            // Connected, but this browser holds no sitting (LinkedIn handed the
+            // trip back to a different browser, or storage was cleared).
+            trackEvent("participant_linkedin_return_without_session", { surveyCode: code });
+            toast("LinkedIn is connected. Your answers weren't found on this device, so please record them again.");
+          }
           // A member with nothing left to answer lands on the group's report.
           if (surveyQuery.data.member && surveyQuery.data.questions.length === 0 && !landedOnReport) {
             setLandedOnReport(true);
@@ -245,17 +251,18 @@ export default function ParticipantPage() {
         }));
 
         // Restore state
-        setStage(session.stage as Stage);
+        setStage(backFromLinkedIn ? "linkedin-success" : (session.stage as Stage));
         setQuestionIndex(session.questionIndex);
         setAnswers(restoredAnswers);
-        setPhone(session.phone);
+        setPhone(backFromLinkedIn?.phone || session.phone);
+        if (backFromLinkedIn) setLinkedInProfile(backFromLinkedIn.profile);
         setResponseCode(session.responseCode || "");
         responseIdRef.current = session.responseId;
         uploadUrlsRef.current = session.uploadUrls;
         uploadUrlsCreatedAtRef.current = session.uploadUrlsCreatedAt;
         setScreenKey((k) => k + 1);
 
-        toast("Session restored — pick up where you left off");
+        if (!backFromLinkedIn) toast("Session restored — pick up where you left off");
       } catch {
         // IDB not available or corrupt — start fresh
       }
