@@ -20,7 +20,9 @@ import {
   setMemberRole,
   transferOwnership,
 } from "../services/groups";
-import { getRound, listRounds, roundAsks, sendRound, setRoundStatus, updateRoundAsks } from "../services/rounds";
+import { getRound, listRounds, roundAsks, sendRound, setRoundReward, setRoundStatus, updateRoundAsks } from "../services/rounds";
+import { formatMoney, roundCost, sanitizeCents } from "../services/rewards";
+import { logEvent, markSteersTakenUp, participantLabels } from "../services/briefBoard";
 import { notifyUsers } from "../services/notify";
 import { extractCode } from "../services/slug";
 import { generatePresignedReadUrl, generateReadToken } from "../services/r2";
@@ -60,8 +62,17 @@ groups.get("/api/my/surveys/:surveyId/members", async (c) => {
   const gate = await requireMember(c, surveyId);
   if (gate instanceof Response) return gate;
   const members = await listMembers(c.env.DB, surveyId);
-  // Phones are for managers only.
-  const safe = canManage(gate.membership.role) ? members : members.map((m) => ({ ...m, phone: null, linkedinEmail: null }));
+  // Phones, emails and personal-link tokens are for managers only.
+  let safe = canManage(gate.membership.role) ? members : members.map((m) => ({ ...m, phone: null, linkedinEmail: null, accessToken: "" }));
+  if (gate.membership.role === "client") {
+    // The client hears voices and sees a label ("Customer 3"), never a participant's name or face.
+    const labels = await participantLabels(c.env.DB, surveyId);
+    safe = safe.map((m) =>
+      m.role === "member"
+        ? { ...m, displayName: labels.get(m.userId)?.label ?? "Participant", firstName: null, lastName: null, linkedinName: null, linkedinPhotoUrl: null, descriptor: null }
+        : m
+    );
+  }
   return c.json({ members: safe, you: { userId: gate.membership.user_id, role: gate.membership.role } });
 });
 
@@ -153,11 +164,8 @@ groups.get("/api/my/surveys/:surveyId/agent", async (c) => {
   if (gate instanceof Response) return gate;
   const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
   const snapshot = await agent.getSnapshot(surveyId);
-  const rounds = await listRounds(c.env.DB, surveyId);
-  const withAsks = await Promise.all(
-    rounds.map(async (r) => ({ ...r, asks: await roundAsksWithNames(c.env.DB, r.id) }))
-  );
-  return c.json({ ...snapshot, rounds: withAsks, visibility: gate.survey.visibility });
+  const withAsks = await roundsWithAsks(c.env.DB, gate.survey);
+  return c.json({ ...snapshot, rounds: withAsks, visibility: gate.survey.visibility, sponsor: gate.survey.sponsor_name ?? null });
 });
 
 groups.post("/api/my/surveys/:surveyId/agent/digest", async (c) => {
@@ -207,13 +215,23 @@ async function roundAsksWithNames(db: D1Database, roundId: string) {
   }));
 }
 
+/** Every round with its asks; a proposed round also carries what sending it would cost. */
+async function roundsWithAsks(db: D1Database, survey: Survey) {
+  const rounds = await listRounds(db, survey.id);
+  return Promise.all(
+    rounds.map(async (r) => ({
+      ...r,
+      asks: await roundAsksWithNames(db, r.id),
+      cost: r.status === "proposed" ? await roundCost(db, survey, r) : null,
+    }))
+  );
+}
+
 groups.get("/api/my/surveys/:surveyId/rounds", async (c) => {
   const surveyId = c.req.param("surveyId");
   const gate = await requireMember(c, surveyId, true);
   if (gate instanceof Response) return gate;
-  const rounds = await listRounds(c.env.DB, surveyId);
-  const withAsks = await Promise.all(rounds.map(async (r) => ({ ...r, asks: await roundAsksWithNames(c.env.DB, r.id) })));
-  return c.json({ rounds: withAsks });
+  return c.json({ rounds: await roundsWithAsks(c.env.DB, gate.survey) });
 });
 
 groups.post("/api/my/surveys/:surveyId/rounds/propose", async (c) => {
@@ -235,11 +253,25 @@ groups.put("/api/my/surveys/:surveyId/rounds/:roundId", async (c) => {
   if (gate instanceof Response) return gate;
   const round = await getRound(c.env.DB, c.req.param("roundId"));
   if (!round || round.survey_id !== surveyId) return c.json({ error: "Round not found" }, 404);
-  if (round.status !== "proposed") return c.json({ error: "Only a proposed round can be edited" }, 400);
-  const body = await c.req.json<{ asks?: { id: string; text: string; hint?: string | null }[] }>().catch(() => ({} as { asks?: { id: string; text: string; hint?: string | null }[] }));
-  if (!Array.isArray(body.asks)) return c.json({ error: "asks is required" }, 400);
-  await updateRoundAsks(c.env.DB, round.id, body.asks);
-  return c.json({ round: { ...round, asks: await roundAsksWithNames(c.env.DB, round.id) } });
+  type RoundEdit = { asks?: { id: string; text: string; hint?: string | null }[]; rewardCents?: number | null };
+  const body = await c.req.json<RoundEdit>().catch((): RoundEdit => ({}));
+  if (!Array.isArray(body.asks) && body.rewardCents === undefined) return c.json({ error: "asks or rewardCents is required" }, 400);
+  if (Array.isArray(body.asks)) {
+    if (round.status !== "proposed") return c.json({ error: "Only a proposed round can be edited" }, 400);
+    await updateRoundAsks(c.env.DB, round.id, body.asks);
+  }
+  if (body.rewardCents !== undefined) {
+    // The price can also change on a round that is out: it applies to answers from then on.
+    if (round.status !== "proposed" && round.status !== "sent") return c.json({ error: "This round is over" }, 400);
+    const cents = body.rewardCents === null ? null : sanitizeCents(body.rewardCents);
+    if (body.rewardCents !== null && cents === null) return c.json({ error: "rewardCents must be a positive number, or null" }, 400);
+    await setRoundReward(c.env.DB, round.id, cents);
+    trackServerEvent(gate.membership.user_id, "round_reward_set", { surveyId, round: round.number, rewardCents: cents ?? 0 });
+  }
+  const updated = (await getRound(c.env.DB, round.id)) ?? round;
+  return c.json({
+    round: { ...updated, asks: await roundAsksWithNames(c.env.DB, round.id), cost: updated.status === "proposed" ? await roundCost(c.env.DB, gate.survey, updated) : null },
+  });
 });
 
 groups.post("/api/my/surveys/:surveyId/rounds/:roundId/reject", async (c) => {
@@ -269,7 +301,38 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
 
   const asks = await roundAsks(c.env.DB, round.id);
   if (asks.length === 0) return c.json({ error: "This round has no asks" }, 400);
+
+  // A price given with the approval replaces the one on the proposal.
+  const body = await c.req.json<{ rewardCents?: number | null }>().catch(() => ({} as { rewardCents?: number | null }));
+  if (body.rewardCents !== undefined) {
+    const cents = body.rewardCents === null ? null : sanitizeCents(body.rewardCents);
+    if (body.rewardCents !== null && cents === null) return c.json({ error: "rewardCents must be a positive number, or null" }, 400);
+    await setRoundReward(c.env.DB, round.id, cents);
+    round.reward_cents = cents;
+  }
+  // A round that could cost more than the study has left is not sent.
+  const cost = await roundCost(c.env.DB, gate.survey, round);
+  if (!cost.fits) {
+    const currency = gate.survey.reward_currency || "USD";
+    return c.json(
+      {
+        error: `This round could cost up to ${formatMoney(cost.maxCents, currency)} (${cost.reach} ${cost.reach === 1 ? "person" : "people"} × ${formatMoney(cost.rewardCents, currency)}) and the study has ${formatMoney(Math.max(0, cost.remainingCents ?? 0), currency)} left. Lower the reward or raise the budget.`,
+        cost,
+      },
+      409
+    );
+  }
+
   const sent = await sendRound(c.env, gate.survey, round, asks, gate.membership.user_id);
+  // Every steer that was open has now been taken up by this round.
+  await markSteersTakenUp(c.env.DB, surveyId, round.id);
+  await logEvent(c.env.DB, surveyId, {
+    type: "round_sent",
+    actorId: gate.membership.user_id,
+    actorRole: gate.membership.role,
+    roundId: round.id,
+    body: asks[0]?.text ?? null,
+  });
   c.executionCtx.waitUntil(sent.sendMessages());
   // A timed parlo closes this round `timing` from now; the agent holds the alarm.
   if (sent.closesAt) {
@@ -282,7 +345,7 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
   }
   const recipients = sent.recipients;
 
-  trackServerEvent(gate.membership.user_id, "round_approved", { surveyId, round: round.number, kind: round.kind, recipients: recipients.length });
+  trackServerEvent(gate.membership.user_id, "round_approved", { surveyId, round: round.number, kind: round.kind, recipients: recipients.length, rewardCents: cost.rewardCents, maxCents: cost.maxCents });
   return c.json({ ok: true, round: { ...(await getRound(c.env.DB, round.id)), asks: await roundAsksWithNames(c.env.DB, round.id) }, notified: recipients.length });
 });
 

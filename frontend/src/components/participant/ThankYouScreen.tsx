@@ -6,6 +6,7 @@ import { trackEvent } from "@/lib/posthog";
 import { buildShareUrl } from "@/lib/slug";
 import { buildBotChatUrl } from "@/lib/whatsapp";
 import { Button } from "@/components/ui/button";
+import RewardCard from "@/components/participant/RewardCard";
 import { cn } from "@/lib/utils";
 import { stagger, fadeUp, press, popup, transitionSmall, transitionLarge } from "@/lib/animations";
 
@@ -15,6 +16,8 @@ interface ThankYouScreenProps {
   surveyCode: string;
   surveyTitle?: string | null;
   responseCode?: string;
+  /** The member token submit returned (or the personal link's). Shows what this answer paid, if anything. */
+  memberToken?: string | null;
   onRedo?: (questionIndex: number) => void;
   /** Members: open the group's report ("answer to unlock"). */
   onSeeReport?: () => void;
@@ -289,7 +292,7 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
   );
 }
 
-export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, onRedo, onSeeReport }: ThankYouScreenProps) {
+export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, memberToken, onRedo, onSeeReport }: ThankYouScreenProps) {
   const totalMs = answers.reduce((acc, a) => acc + a.durationMs, 0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -346,6 +349,9 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
             Tap any answer to review or redo it
           </p>
         </motion.div>
+
+        {/* What this answer paid: above the answers so nobody has to scroll for it. Renders nothing for an unpaid answer. */}
+        <RewardCard code={surveyCode} token={memberToken ?? null} />
 
         {/* Your responses card */}
         <motion.div

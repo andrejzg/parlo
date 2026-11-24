@@ -125,7 +125,8 @@ export default function ParticipantPage() {
   const flowQuestionsRef = useRef<SurveyQuestion[] | null>(null);
   const flowQuestions = flowQuestionsRef.current ?? survey.questions;
   const mediaMix = getMediaMix(flowQuestions);
-  const vis = visibilityCopy(survey.visibility);
+  // A sponsored study names the sponsor wherever the copy says who hears an answer.
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
   const isMember = !!survey.member;
   const pendingCount = survey.questions.length;
   const [landedOnReport, setLandedOnReport] = useState(false);
@@ -919,6 +920,7 @@ export default function ParticipantPage() {
                 surveyCode={code || "demo"}
                 surveyTitle={survey.title}
                 responseCode={responseCode || undefined}
+                memberToken={isDemo ? null : memberToken}
                 onRedo={(qIdx) => handleRedo(qIdx, "done")}
                 onSeeReport={!isDemo && memberToken ? handleSeeReport : undefined}
               />

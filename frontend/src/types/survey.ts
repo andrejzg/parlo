@@ -14,7 +14,7 @@ export interface SurveyIntro {
 }
 
 export type GroupVisibility = "open" | "private";
-export type GroupRole = "owner" | "admin" | "member";
+export type GroupRole = "owner" | "admin" | "client" | "member";
 
 export interface GroupReportSummary {
   available: boolean;
@@ -43,6 +43,10 @@ export interface Survey {
   member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
   report?: GroupReportSummary;
   memberCount?: number;
+  /** A sponsored study: who, besides the research team, hears the answers. The consent screen says so. */
+  sponsor?: { name: string } | null;
+  /** What answering now pays this visitor; only for someone who arrived by a personal link. */
+  reward?: { amountCents: number; currency: string } | null;
 }
 
 export interface VoiceSegment {

@@ -1,12 +1,22 @@
 import type { Env, Survey, SurveyQuestion, GroupVisibility } from "../types";
 import { generateId } from "./codes";
-import { ensureMember } from "./groups";
+import { ensureMember, getMembership } from "./groups";
+import { createRewardsForResponse, settleRewardsForResponse, type SettledReward } from "./rewards";
 import { notifyManagers } from "./notify";
 import { trackServerEvent } from "./analytics";
 import { ingestIntoAgent, transcribeResponseAnswers } from "./transcription";
 
 export type SubmitOutcome =
-  | { ok: true; responseId: string; surveyId: string; memberToken: string | null; visibility: GroupVisibility; answers: number }
+  | {
+      ok: true;
+      responseId: string;
+      surveyId: string;
+      memberToken: string | null;
+      visibility: GroupVisibility;
+      answers: number;
+      /** Rewards settled inside this call (only when every transcript already existed: the WhatsApp bot). */
+      rewards: SettledReward[];
+    }
   | { ok: false; status: 400 | 404; error: string };
 
 /**
@@ -44,6 +54,10 @@ export async function submitResponse(
     : null;
   const phone = identity?.phone ?? null;
   let memberToken: string | null = null;
+  // Paid only if they were a participant of this study before this answer:
+  // someone who came by a personal link, not by the open one (services/rewards.ts).
+  const before = userId ? await getMembership(db, existing.survey_id, userId) : null;
+  const wasParticipant = before?.role === "member";
   if (userId) {
     const membership = await ensureMember(db, existing.survey_id, userId, "member");
     memberToken = membership.removed_at ? null : membership.access_token;
@@ -52,11 +66,12 @@ export async function submitResponse(
   await db
     .prepare(
       `UPDATE responses
-       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?,
+       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?, sponsor_consent = ?,
            status = 'submitted', submitted_at = datetime('now')
        WHERE id = ?`
     )
-    .bind(phone, who.firstName ?? null, who.lastName ?? null, userId, visibility, responseId)
+    // The consent screen named the sponsor if the study had one when this was submitted.
+    .bind(phone, who.firstName ?? null, who.lastName ?? null, userId, visibility, survey.sponsor_name ? 1 : 0, responseId)
     .run();
 
   // One response_answers row per file that landed in R2 (voice .webm/.wav,
@@ -114,6 +129,9 @@ export async function submitResponse(
     }
   }
   if (inserts.length > 0) await db.batch(inserts);
+  await createRewardsForResponse(env, { id: responseId, survey_id: existing.survey_id }, userId, wasParticipant).catch((err) =>
+    console.error(`[submit] reward rows failed for ${responseId}:`, err)
+  );
 
   trackServerEvent(phone ?? responseId, "response_submitted", {
     responseId,
@@ -139,12 +157,17 @@ export async function submitResponse(
     surveyTitle,
   });
 
+  let rewards: SettledReward[] = [];
   if (pendingCount > 0) {
-    // Web uploads: Whisper in the background, then the agent ingests.
+    // Web uploads: Whisper in the background, then the agent ingests and the rewards settle.
     ctx.waitUntil(transcribeResponseAnswers(env, responseId));
   } else if (inserts.length > 0) {
     // Everything already transcribed (the bot): hand it to the agent now, in the request.
     await ingestIntoAgent(env, responseId).catch((err) => console.error(`[submit] agent ingest failed for ${responseId}:`, err));
+    rewards = await settleRewardsForResponse(env, responseId).catch((err) => {
+      console.error(`[submit] reward settle failed for ${responseId}:`, err);
+      return [];
+    });
   }
-  return { ok: true, responseId, surveyId: existing.survey_id, memberToken, visibility, answers: inserts.length };
+  return { ok: true, responseId, surveyId: existing.survey_id, memberToken, visibility, answers: inserts.length, rewards };
 }

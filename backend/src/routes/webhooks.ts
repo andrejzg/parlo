@@ -13,6 +13,7 @@ import { isWhatsAppPlayableAudio, type WhatsAppClient } from "../services/whatsa
 import { submitResponse } from "../services/responses";
 import { sweepPendingTranscriptions } from "../services/transcription";
 import { transcribeAudio } from "../services/ai";
+import { claimRewardLink, formatMoney } from "../services/rewards";
 
 type InboundMedia = { url: string | null; id: string | null; contentType: string | null };
 type Inbound = { kind: "text" | "audio"; text: string; from: string; contactName: string | null; media: InboundMedia | null };
@@ -192,6 +193,25 @@ async function finishAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<u
     ? `The report so far, and your place in the group: ${link}`
     : `The agent writes the report once the others have answered, and it lands here. Your place in the group: ${link}`;
   await wa.sendText(from, `That's all of them, thank you! You're in "${session.title}" now. ${tail}`);
+
+  // A paid touch: the thank-you arrives in the same thread. The link is made
+  // now and sent once; it is not kept anywhere.
+  for (const settled of result.rewards) {
+    const amount = formatMoney(settled.reward.amount_cents, settled.reward.currency);
+    try {
+      if (settled.reward.status === "sent") {
+        const url = settled.link ?? (await claimRewardLink(env, settled.reward));
+        await wa.sendText(from, `Your ${amount} thank-you is ready. Pick how you'd like it here: ${url}`);
+      } else if (settled.reward.status === "approved") {
+        await wa.sendText(from, `Your ${amount} thank-you is approved. You can claim it from your link once it's ready: ${link}`);
+      } else if (settled.reward.status === "held") {
+        await wa.sendText(from, `Your ${amount} thank-you is with the research team for a quick look. It will show at your link: ${link}`);
+      }
+    } catch (err) {
+      console.error("[webhook] reward message failed", err);
+      await wa.sendText(from, `Your ${amount} thank-you is waiting at your link: ${link}`);
+    }
+  }
 }
 
 function openerSessionKey(from: string) {

@@ -129,7 +129,7 @@ function ParloRow({ survey, index, onTap }: { survey: MySurvey; index: number; o
             {title}
           </p>
           <span className="shrink-0 pt-xxs font-data text-xxs tabular-nums text-muted-foreground">
-            {survey.role === "admin" || survey.role === "member" ? `${survey.role} · ` : null}
+            {survey.role === "admin" || survey.role === "member" || survey.role === "client" ? `${survey.role} · ` : null}
             <time dateTime={row.activityAt}>{formatListTime(row.activityAt)}</time>
           </span>
         </div>

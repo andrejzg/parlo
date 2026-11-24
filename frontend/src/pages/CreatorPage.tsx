@@ -523,7 +523,10 @@ export default function CreatorPage() {
                   setScreenKey((k) => k + 1);
                 }}
                 onOpenSurvey={(survey) => {
-                  if (survey.role === "member") {
+                  if (survey.role === "client") {
+                    // The client's seat is the brief: the questions, the answers, the plan.
+                    navigate(`/study/${survey.id}`);
+                  } else if (survey.role === "member") {
                     // Members go to their personal link: pending asks + the report.
                     navigate(`/s/${survey.code}${survey.memberToken ? `?t=${encodeURIComponent(survey.memberToken)}` : ""}`);
                   } else if (survey.questionCount > 0) {

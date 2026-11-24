@@ -8,6 +8,7 @@ import { getMediaMix } from "@/lib/mediaMix";
 import VoiceNotePill from "@/components/VoiceNotePill";
 import { visibilityCopy } from "@/lib/visibility";
 import { buildBotChatUrl } from "@/lib/whatsapp";
+import { formatMoney } from "@/api/study";
 
 interface WelcomeScreenProps {
   survey: Survey;
@@ -18,11 +19,13 @@ interface WelcomeScreenProps {
 
 export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeScreenProps) {
   const mix = getMediaMix(survey.questions);
-  const vis = visibilityCopy(survey.visibility);
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
   const round = survey.round ?? null;
   const isProbe = round?.kind === "probe" && survey.member;
   const firstName = survey.member?.displayName?.split(" ")[0];
   const hasPending = survey.questions.length > 0;
+  // What answering now pays this visitor (personal links only).
+  const reward = hasPending && survey.reward && survey.reward.amountCents > 0 ? survey.reward : null;
   return (
     <motion.div
       className="flex flex-col items-center justify-between h-full px-l pt-l pb-safe sm:py-xxl text-center"
@@ -102,6 +105,14 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
                 {survey.memberCount} in the group
               </span>
             </>
+          )}
+          {reward && (
+            <span
+              className="inline-flex items-center whitespace-nowrap rounded-full bg-color-1-transparent px-s py-xxs text-xs font-medium text-color-1"
+              data-testid="reward-offer"
+            >
+              {formatMoney(reward.amountCents, reward.currency)} for your answer
+            </span>
           )}
         </motion.div>
 

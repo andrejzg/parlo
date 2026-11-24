@@ -23,6 +23,19 @@ export interface Env {
   API_ORIGIN?: string;
   /** Where the web app lives, for redirects back after OAuth. */
   FRONTEND_ORIGIN?: string;
+  /**
+   * Rewards (services/tremendous.ts). Without a key rewards are still
+   * recorded and approved; they wait as "owed" until one is set.
+   */
+  TREMENDOUS_API_KEY?: string;
+  /** "production" to spend real money; anything else is the sandbox. */
+  TREMENDOUS_ENV?: string;
+  /** Overrides the API base (tests point it at a local stand-in). */
+  TREMENDOUS_API_BASE?: string;
+  /** The campaign whose catalogue recipients choose from; else the account's first campaign. */
+  TREMENDOUS_CAMPAIGN_ID?: string;
+  /** Defaults to BALANCE. */
+  TREMENDOUS_FUNDING_SOURCE_ID?: string;
   AI: any;
 }
 
@@ -43,6 +56,7 @@ export interface User {
   linkedin_photo_url: string | null;
   linkedin_photo_r2_key: string | null;
   linkedin_connected_at: string | null;
+  email?: string | null;
 }
 
 export interface Survey {
@@ -65,11 +79,23 @@ export interface Survey {
   report_updated_at?: string | null;
   /** The third chip row's pick (services/shapes.ts TIMINGS); null = no row or an older parlo. */
   timing?: string | null;
+  /** Who, besides the research team, hears the answers; null = not a sponsored study. */
+  sponsor_name?: string | null;
+  /** Default price per touch for new rounds, in cents. */
+  reward_cents?: number | null;
+  /** The study's reward cap, in cents; null = no cap. */
+  reward_budget_cents?: number | null;
+  reward_currency?: string | null;
 }
 
 // ── Groups ──
 
-export type GroupRole = "owner" | "admin" | "member";
+/**
+ * `owner` and `admin` are the research team (they manage). `client` is the
+ * company that commissioned a study: hears raw answers, shapes the brief and
+ * steers, never approves a round or manages members. `member` is a participant.
+ */
+export type GroupRole = "owner" | "admin" | "client" | "member";
 export type GroupVisibility = "open" | "private";
 
 export interface GroupMember {
@@ -80,6 +106,10 @@ export interface GroupMember {
   joined_at: string;
   invited_by: string | null;
   removed_at: string | null;
+  /** Which group of participants they belong to ("Customer", "Competitor user"). */
+  segment?: string | null;
+  /** One line a researcher knows about them. */
+  descriptor?: string | null;
 }
 
 export type RoundKind = "poll" | "probe";
@@ -99,6 +129,10 @@ export interface Round {
   closes_at?: string | null;
   /** When the close actually ran (ISO). */
   closed_at?: string | null;
+  /** JSON array of the brief item ids this round digs into. */
+  serves?: string | null;
+  /** What this round pays for an accepted answer, in cents; null or 0 = unpaid. */
+  reward_cents?: number | null;
 }
 
 export interface SurveyIntro {
@@ -141,6 +175,8 @@ export interface Response {
   round_id?: string | null;
   /** The group's visibility when this was submitted — never loosened later. */
   visibility_at_submit?: GroupVisibility | null;
+  /** 1 when submitted under a consent line naming the sponsor; the client only hears those. */
+  sponsor_consent?: number | null;
 }
 
 export interface ResponseAnswer {
@@ -283,6 +319,10 @@ export interface SurveyPublicView {
   /** The agent's report. `markdown` is only filled once the visitor has answered. */
   report: { available: boolean; unlocked: boolean; markdown: string | null; updatedAt: string | null };
   memberCount: number;
+  /** Set on a sponsored study: who else hears the answers (for the consent line). */
+  sponsor: { name: string } | null;
+  /** What answering now pays this visitor; null for anyone who did not arrive by a personal link. */
+  reward: { amountCents: number; currency: string } | null;
 }
 
 export interface DashboardView {

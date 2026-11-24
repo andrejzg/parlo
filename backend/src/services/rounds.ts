@@ -108,7 +108,16 @@ export interface ProposedAsk {
 export async function createProposedRound(
   db: D1Database,
   surveyId: string,
-  input: { kind: RoundKind; rationale: string | null; proposedBy: string; asks: ProposedAsk[] }
+  input: {
+    kind: RoundKind;
+    rationale: string | null;
+    proposedBy: string;
+    asks: ProposedAsk[];
+    /** Brief item ids this round digs into. */
+    serves?: string[];
+    /** What the round pays per accepted answer, in cents. */
+    rewardCents?: number | null;
+  }
 ): Promise<{ round: Round; asks: SurveyQuestion[] }> {
   if (input.asks.length === 0) throw new Error("A round needs at least one ask");
 
@@ -131,8 +140,8 @@ export async function createProposedRound(
 
   const inserts: D1PreparedStatement[] = [
     db
-      .prepare("INSERT INTO rounds (id, survey_id, number, kind, status, rationale, proposed_by) VALUES (?, ?, ?, ?, 'proposed', ?, ?)")
-      .bind(roundId, surveyId, number, input.kind, input.rationale, input.proposedBy),
+      .prepare("INSERT INTO rounds (id, survey_id, number, kind, status, rationale, proposed_by, serves, reward_cents) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, ?)")
+      .bind(roundId, surveyId, number, input.kind, input.rationale, input.proposedBy, input.serves?.length ? JSON.stringify(input.serves) : null, input.rewardCents || null),
   ];
   input.asks.forEach((a, i) => {
     const qType = a.type === "photo" ? "photo" : a.type === "video" ? "video" : "voice";
@@ -187,10 +196,11 @@ export async function sendRound(
   const targets = round.kind === "probe" ? new Set(asks.map((a) => a.target_user_id).filter((x): x is string => !!x)) : null;
   const members = await env.DB.prepare(
     `SELECT gm.user_id, gm.access_token, u.phone FROM group_members gm JOIN users u ON u.id = gm.user_id
-     WHERE gm.survey_id = ? AND gm.removed_at IS NULL`
+     WHERE gm.survey_id = ? AND gm.removed_at IS NULL AND gm.role != 'client'`
   )
     .bind(survey.id)
     .all<{ user_id: string; access_token: string; phone: string | null }>();
+  // The client's team is never asked the study's questions.
   const recipients = members.results.filter((m) => m.user_id !== exceptUserId && (!targets || targets.has(m.user_id)));
 
   const title = survey.title ?? "your parlo";
@@ -271,7 +281,7 @@ export async function membersPendingFor(db: D1Database, surveyId: string, round:
     .prepare(
       `SELECT gm.user_id, gm.access_token, u.phone FROM group_members gm
        JOIN users u ON u.id = gm.user_id
-       WHERE gm.survey_id = ? AND gm.removed_at IS NULL
+       WHERE gm.survey_id = ? AND gm.removed_at IS NULL AND gm.role != 'client'
          AND (? = 'probe' OR gm.role != 'owner')
          AND (? = 'poll' OR EXISTS (SELECT 1 FROM survey_questions q WHERE q.round_id = ? AND q.target_user_id = gm.user_id))
          AND NOT EXISTS (
@@ -284,6 +294,11 @@ export async function membersPendingFor(db: D1Database, surveyId: string, round:
     .bind(surveyId, round.kind, round.kind, round.id, round.id)
     .all<PendingMember>();
   return r.results;
+}
+
+/** What a round pays per accepted answer; 0 or null makes it unpaid. Answers already in are not repriced. */
+export async function setRoundReward(db: D1Database, roundId: string, cents: number | null): Promise<void> {
+  await db.prepare("UPDATE rounds SET reward_cents = ? WHERE id = ?").bind(cents || null, roundId).run();
 }
 
 /** Owner edits to a proposed round's ask texts before approving. */

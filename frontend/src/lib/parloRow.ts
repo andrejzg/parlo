@@ -47,6 +47,12 @@ export function describeParlo(s: MySurvey): ParloRow {
     return quiet(report ?? "Waiting for the agent's report");
   }
 
+  if (s.role === "client") {
+    // The client sees the plan and the report; sending a round is the research team's.
+    if (s.proposedRound) return quiet(`Round ${s.proposedRound.number} is planned. Have a look and steer`);
+    return quiet(report ?? "Open the brief to shape what gets asked");
+  }
+
   if (s.proposedRound) {
     return {
       preview: `Agent proposed round ${s.proposedRound.number}`,

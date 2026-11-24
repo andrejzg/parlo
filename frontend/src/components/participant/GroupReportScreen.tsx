@@ -4,6 +4,7 @@ import { Lock, Mic, RefreshCw, Users } from "lucide-react";
 import type { Survey } from "@/types/survey";
 import { Button } from "@/components/ui/button";
 import VoiceNotePill from "@/components/VoiceNotePill";
+import RewardCard from "@/components/participant/RewardCard";
 import { Markdown } from "@/lib/markdown";
 import { visibilityCopy } from "@/lib/visibility";
 import { buildShareUrl } from "@/lib/slug";
@@ -34,7 +35,7 @@ function formatWhen(iso: string | null | undefined) {
  */
 export default function GroupReportScreen({ survey, code, token, pendingCount, onAnswer, onRefresh }: GroupReportScreenProps) {
   const report = survey.report ?? { available: false, unlocked: false, markdown: null, updatedAt: null };
-  const vis = visibilityCopy(survey.visibility);
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
   const isOpen = survey.visibility === "open";
   const [feed, setFeed] = useState<GroupFeedItem[] | null>(null);
   const [feedError, setFeedError] = useState(false);
@@ -99,6 +100,9 @@ export default function GroupReportScreen({ survey, code, token, pendingCount, o
             <span>{vis.label}</span>
           </div>
         </motion.div>
+
+        {/* What this member's answers paid. Renders nothing without a token or a reward. */}
+        <RewardCard code={code} token={token} />
 
         {/* The report */}
         <motion.section variants={fadeUp} className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="group-report-card">
