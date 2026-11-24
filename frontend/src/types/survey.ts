@@ -4,6 +4,14 @@ export interface SurveyQuestion {
   hint?: string;
   audioUrl?: string;
   type?: "voice" | "photo" | "video"; // defaults to voice
+  /**
+   * 'testimonial': a line meant for public use. The ask shows who may use the
+   * recording (`Survey.testimonialNotice`), recording it is the consent, and
+   * the participant may decline it. Never probed.
+   */
+  purpose?: "testimonial";
+  /** What this ask's round pays, in cents (for a testimonial, the bonus). Only for a participant on a personal link. */
+  rewardCents?: number;
 }
 
 /** The creator's voice hello, played on the welcome screen. */
@@ -53,6 +61,8 @@ export interface Survey {
    * publication consent.
    */
   study?: boolean;
+  /** Shown on a testimonial ask before recording: who may use the recording. */
+  testimonialNotice?: string;
 }
 
 export interface VoiceSegment {

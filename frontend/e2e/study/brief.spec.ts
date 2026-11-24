@@ -132,6 +132,55 @@ async function mockStudyApi(page: Page, role: "owner" | "client", calls: Calls) 
     calls.approvals.push(route.request().postDataJSON());
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, round: {}, notified: 2 }) });
   });
+  await page.route(`**/api/my/surveys/${SURVEY_ID}/clips`, async (route: Route) => {
+    if (role !== "owner") return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "Only the research team can do that" }) });
+    const answer = boardFixture("owner").items[0].evidence[0] as { answer: Record<string, unknown> };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        currency: "USD",
+        clips: [
+          {
+            ...answer.answer,
+            id: "clip1",
+            who: "Dana Whitfield",
+            segment: "Customer",
+            roundNumber: 3,
+            questionText: "What would you tell a peer about Acme's reporting?",
+            transcription: "Acme's reporting gave me my Fridays back.",
+            publishConsent: "voice",
+            verdict: "answered",
+            verdictNote: null,
+            probes: [],
+            purpose: "testimonial",
+            testimonial: true,
+            incentivised: true,
+            bonusCents: 1500,
+            notice: "Acme Projects may use this recording in its marketing.",
+            audioUsable: true,
+          },
+          {
+            ...answer.answer,
+            id: "clip2",
+            who: "Priya Raman",
+            segment: "Customer",
+            transcription: "The renewal notice was two weeks. That is not enough.",
+            publishConsent: "quote",
+            verdict: "answered",
+            verdictNote: null,
+            probes: [],
+            purpose: null,
+            testimonial: false,
+            incentivised: false,
+            bonusCents: 0,
+            notice: null,
+            audioUsable: false,
+          },
+        ],
+      }),
+    });
+  });
   await page.route("https://api.example.test/**", async (route: Route) => route.fulfill({ status: 200, contentType: "audio/wav", body: "" }));
 }
 
@@ -183,6 +232,19 @@ for (const deviceName of ["iPhone SE", "Desktop Chrome"] as const) {
     await page.getByTestId("round-send").click();
     await expect.poll(() => calls.approvals.length).toBe(1);
     expect(calls.approvals[0]).toEqual({ rewardCents: 1500 });
+
+    // Clips: what may be used in public, with what was paid for it.
+    await page.getByTestId("study-tab-clips").click();
+    const clips = page.getByTestId("clip");
+    await expect(clips).toHaveCount(2);
+    await expect(clips.nth(0)).toContainText("Acme's reporting gave me my Fridays back.");
+    await expect(clips.nth(0)).toContainText("Recorded for a $15 bonus. Say so wherever it is published.");
+    await expect(clips.nth(0)).toContainText("Acme Projects may use this recording in its marketing.");
+    await expect(clips.nth(0).getByTestId("clip-download")).toHaveAttribute("href", /dl=Dana%20Whitfield-testimonial/);
+    // Words only: no recording to hand out.
+    await expect(clips.nth(1)).toContainText("Words only");
+    await expect(clips.nth(1).getByTestId("clip-download")).toHaveCount(0);
+    await page.screenshot({ path: path.join(out, "03-clips.png"), fullPage: true });
     await browser.close();
   });
 
@@ -196,7 +258,9 @@ for (const deviceName of ["iPhone SE", "Desktop Chrome"] as const) {
     await expect(page.getByText("Marcus Oyelaran")).toHaveCount(0);
     await expect(page.getByText("Dana Whitfield")).toHaveCount(0);
 
-    // No price, no send, no way into the dashboard.
+    // No price, no send, no way into the dashboard, no clips.
+    await expect(page.getByTestId("study-tab-clips")).toHaveCount(0);
+    await expect(page.getByTestId("testimonial-plan")).toHaveCount(0);
     await expect(page.getByTestId("round-price")).toHaveCount(0);
     await expect(page.getByTestId("round-send")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open the dashboard" })).toHaveCount(0);

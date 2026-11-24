@@ -8,7 +8,7 @@
  * everything around it.
  *
  *   pending  → the answer is in, its transcript is not
- *   held     → a researcher has to look: too short, off topic, over budget
+ *   held     → a researcher has to look: too short, an ask left unanswered, over budget
  *   approved → owed; the provider has not been asked yet (or is not connected)
  *   sent     → the provider holds it; the member claims it by link
  *   failed   → the provider refused; `error` says why, a researcher retries
@@ -18,17 +18,24 @@
  * study before this answer, that is, someone who arrived by a personal
  * link. An answer that came in over the open share link joins the group and
  * is never paid for that touch: a paid open link is a fraud magnet.
+ *
+ * What is paid: an answer, not an attempt. Each spoken answer carries a
+ * verdict (`services/answerJudge.ts`), set after the agent has had its two
+ * follow-ups inside the sitting. A round where an ask stayed unanswered is
+ * held with that ask named, and a researcher pays or voids it. The judge is
+ * a model: it can hold a reward, it never refuses one, and an answer it
+ * could not judge is paid.
  */
 
 import type { Env, Round } from "../types";
 import { generateId } from "./codes";
 import { displayNameFor } from "./groups";
 import { trackServerEvent } from "./analytics";
-import { systemOne } from "./typesafe";
 import { createLinkReward, generateRewardLink, tremendousConfigured, tremendousMode, TremendousError } from "./tremendous";
 
 export type RewardStatus = "pending" | "held" | "approved" | "sent" | "failed" | "void";
-export type HoldReason = "too_short" | "off_topic" | "over_budget";
+/** `off_topic` is the pre-verdict name of `unanswered`; rows held before 2026-11-24 may carry it. */
+export type HoldReason = "too_short" | "unanswered" | "off_topic" | "over_budget";
 
 export interface RewardRow {
   id: string;
@@ -40,6 +47,8 @@ export interface RewardRow {
   currency: string;
   status: RewardStatus;
   hold_reason: HoldReason | null;
+  /** The ask that went unanswered, in words. */
+  hold_note?: string | null;
   provider: string | null;
   provider_order_id: string | null;
   provider_reward_id: string | null;
@@ -52,8 +61,6 @@ export interface RewardRow {
 
 /** A spoken answer shorter than this is not an answer. */
 const MIN_WORDS = 8;
-/** TypeSafe's probability that the answer is in earnest; below this a person looks. */
-const OFF_TOPIC_BELOW = 0.35;
 export const MAX_REWARD_CENTS = 50_000;
 
 export function sanitizeCents(value: unknown, max = MAX_REWARD_CENTS): number | null {
@@ -201,18 +208,21 @@ export async function createRewardsForResponse(
   return created;
 }
 
-type Verdict = { kind: "wait" } | { kind: "pass" } | { kind: "hold"; reason: HoldReason };
+type Verdict = { kind: "wait" } | { kind: "pass" } | { kind: "hold"; reason: HoldReason; note?: string };
 
-/** Is this an answer worth paying for? Deterministic floor first, then a typed judgment when TypeSafe is set. */
+/**
+ * Is this a round worth paying for? A floor on words, then the verdict each
+ * answer was given when its transcript landed, then the budget.
+ */
 async function judge(env: Env, reward: RewardRow): Promise<Verdict> {
   const answers = await env.DB
     .prepare(
-      `SELECT ra.transcription, ra.transcription_status, ra.image_r2_key, q.text, q.question_type
+      `SELECT ra.transcription, ra.transcription_status, ra.verdict, q.text, q.question_type
        FROM response_answers ra JOIN survey_questions q ON q.id = ra.question_id
        WHERE ra.response_id = ? AND q.round_id = ?`
     )
     .bind(reward.response_id, reward.round_id)
-    .all<{ transcription: string | null; transcription_status: string; image_r2_key: string | null; text: string; question_type: string }>();
+    .all<{ transcription: string | null; transcription_status: string; verdict: string | null; text: string; question_type: string }>();
   if (answers.results.length === 0) return { kind: "hold", reason: "too_short" };
   if (answers.results.some((a) => a.transcription_status === "pending")) return { kind: "wait" };
 
@@ -221,31 +231,11 @@ async function judge(env: Env, reward: RewardRow): Promise<Verdict> {
     const words = spoken.reduce((n, a) => n + (a.transcription?.trim().split(/\s+/).filter(Boolean).length ?? 0), 0);
     if (words < MIN_WORDS) return { kind: "hold", reason: "too_short" };
 
-    if (env.TYPESAFE_API_KEY) {
-      try {
-        const result = await systemOne(
-          env.TYPESAFE_API_KEY,
-          {
-            context: "A research participant answered by voice. These are the questions they were asked and the transcripts of what they said.",
-            answers: spoken.map((a) => ({ question: a.text, transcript: (a.transcription ?? "").slice(0, 3000) })),
-          },
-          {
-            earnest: {
-              type: "noul",
-              instructions: "Did the participant give a real answer to what they were asked?",
-              criteria: {
-                true: "They speak to the question in their own words, even briefly or critically.",
-                false: "Silence, noise, a test phrase, a refusal, unrelated talk, or text read out that has nothing to do with the question.",
-              },
-            },
-          },
-          { timeoutMs: 5000, properties: { purpose: "reward-gate", rewardId: reward.id } }
-        );
-        if ((result.answers.earnest?.noul ?? 1) < OFF_TOPIC_BELOW) return { kind: "hold", reason: "off_topic" };
-      } catch (err) {
-        // A judge that is down never blocks someone's pay; the word floor stands.
-        console.error("[rewards] TypeSafe gate failed, passing on the word floor:", err);
-      }
+    // An ask the participant did not answer, after the agent's follow-ups: a
+    // person decides. "partial" and an unjudged answer (verdict NULL) are paid.
+    const unanswered = spoken.filter((a) => a.verdict === "unanswered");
+    if (unanswered.length > 0) {
+      return { kind: "hold", reason: "unanswered", note: unanswered.map((a) => a.text.replace(/\s+/g, " ")).join(" · ").slice(0, 400) };
     }
   }
 
@@ -258,10 +248,15 @@ async function judge(env: Env, reward: RewardRow): Promise<Verdict> {
   return { kind: "pass" };
 }
 
-async function setStatus(db: D1Database, rewardId: string, status: RewardStatus, extra: { holdReason?: HoldReason | null; error?: string | null } = {}) {
+async function setStatus(
+  db: D1Database,
+  rewardId: string,
+  status: RewardStatus,
+  extra: { holdReason?: HoldReason | null; holdNote?: string | null; error?: string | null } = {}
+) {
   await db
-    .prepare("UPDATE rewards SET status = ?, hold_reason = ?, error = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(status, extra.holdReason ?? null, extra.error ?? null, rewardId)
+    .prepare("UPDATE rewards SET status = ?, hold_reason = ?, hold_note = ?, error = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(status, extra.holdReason ?? null, extra.holdNote ?? null, extra.error ?? null, rewardId)
     .run();
 }
 
@@ -332,7 +327,7 @@ export async function settleRewardsForResponse(env: Env, responseId: string): Pr
     const verdict = await judge(env, reward);
     if (verdict.kind === "wait") continue;
     if (verdict.kind === "hold") {
-      await setStatus(env.DB, reward.id, "held", { holdReason: verdict.reason });
+      await setStatus(env.DB, reward.id, "held", { holdReason: verdict.reason, holdNote: verdict.note ?? null });
       trackServerEvent(reward.user_id, "reward_held", { surveyId: reward.survey_id, roundId: reward.round_id, reason: verdict.reason });
       out.push({ reward: (await getReward(env.DB, reward.id)) as RewardRow, link: null });
       continue;
@@ -463,6 +458,8 @@ export async function listRewards(db: D1Database, surveyId: string) {
     currency: r.currency,
     status: r.status,
     holdReason: r.hold_reason,
+    /** For `unanswered`: the ask (or asks) that went unanswered. */
+    holdNote: r.hold_note ?? null,
     error: r.error,
     createdAt: r.created_at,
     sentAt: r.sent_at,

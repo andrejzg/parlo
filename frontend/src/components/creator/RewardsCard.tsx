@@ -37,6 +37,11 @@ function reasonFor(reward: LedgerReward): string {
   switch (reward.holdReason) {
     case "too_short":
       return "The answer was only a few words";
+    case "unanswered": {
+      // The note names the ask (or asks) that stayed unanswered.
+      const note = reward.holdNote?.trim();
+      return note ? `Didn't answer: ${note}` : "An ask went unanswered after the agent's follow-ups";
+    }
     case "off_topic":
       return "The answer didn't speak to the question";
     case "over_budget":

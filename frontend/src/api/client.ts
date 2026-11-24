@@ -573,6 +573,13 @@ export interface SubmitResponsePayload {
   proof?: string;
   /** A study's consent screen: may these words (quote) or this recording (voice) be used in public material? Default none. */
   publishConsent?: PublishConsent;
+  /**
+   * Ids of the testimonial asks in this response that were shown with their
+   * notice and then recorded. Recording under the notice is the consent to
+   * public use, and the server counts it for these ids only. Leave out when
+   * there are none.
+   */
+  testimonialAck?: string[];
 }
 
 /** none: nothing leaves the study. quote: words may be quoted publicly, unnamed. voice: the recording may be used too. */
@@ -593,6 +600,68 @@ export function useSubmitResponse() {
       return apiFetch<SubmitResponseResult>(`/responses/${responseId}/submit`, apiKey ? authed(apiKey, init) : init);
     },
   });
+}
+
+// ── Probing: did that answer the question? ───────────────────────────
+
+export interface ProbeResult {
+  /** answered | partial | unanswered; null when it was not judged (not a study, or the judge was unavailable). */
+  verdict: "answered" | "partial" | "unanswered" | null;
+  /** Everything heard for this answer so far; send it back as `transcriptSoFar` with the next clip. */
+  transcript: string;
+  /** A follow-up to put to the participant now, or null. */
+  probe: { text: string } | null;
+  /** The agent has asked what it may and is moving on without a full answer. */
+  letGo: boolean;
+}
+
+/**
+ * Right after a voice answer is recorded on a study: was the question
+ * answered, and if not, what does the agent ask next? Send the take (or, after
+ * a follow-up, just the newest clip with `transcriptSoFar`). Takes a few
+ * seconds (speech-to-text, then a judgment). Never throws for the caller to
+ * handle: on any failure it resolves to "nothing to ask", so a sitting is
+ * never blocked by it.
+ */
+export async function probeAnswer(responseId: string, input: { questionId: string; blob: Blob; transcriptSoFar?: string }, timeoutMs = 9000): Promise<ProbeResult> {
+  const nothing: ProbeResult = { verdict: null, transcript: input.transcriptSoFar ?? "", probe: null, letGo: false };
+  const form = new FormData();
+  form.append("audio", input.blob, "answer");
+  form.append("questionId", input.questionId);
+  if (input.transcriptSoFar) form.append("transcriptSoFar", input.transcriptSoFar);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/responses/${responseId}/probe`, { method: "POST", body: form, signal: controller.signal });
+    if (!res.ok) return nothing;
+    const data = (await res.json()) as Partial<ProbeResult>;
+    return { verdict: data.verdict ?? null, transcript: data.transcript ?? nothing.transcript, probe: data.probe ?? null, letGo: !!data.letGo };
+  } catch {
+    return nothing;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The follow-up is on the participant's screen. The server keeps, with the
+ * answer, only the follow-ups it was told were seen (one that came back too
+ * late to show is not one the participant was asked). Fire and forget.
+ */
+export function markProbeShown(responseId: string, questionId: string, text: string): void {
+  fetch(`${API_BASE}/responses/${responseId}/probe/shown`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ questionId, text }),
+    keepalive: true,
+  }).catch(() => {
+    // Not recorded: the answer then shows one follow-up fewer than was asked.
+  });
+}
+
+/** "I'd rather not" to a testimonial ask: it stops being asked of this participant. Personal link only. */
+export function declineAsk(code: string, token: string, questionId: string) {
+  return apiFetch<{ ok: boolean }>(`/s/${code}/asks/${questionId}/decline?t=${encodeURIComponent(token)}`, { method: "POST", body: "{}" });
 }
 
 // ── WhatsApp OTP ─────────────────────────────────────────────────────
@@ -633,6 +702,8 @@ interface APISurveyResponse {
     text: string;
     hint: string | null;
     question_type?: "voice" | "photo" | "video";
+    round_purpose?: string | null;
+    round_reward_cents?: number | null;
   }[];
   audioKeys: { questionKey: string; audioR2Key: string }[];
   intro: { audioUrl: string; durationMs: number; transcript: string | null } | null;
@@ -644,6 +715,7 @@ interface APISurveyResponse {
   sponsor?: { name: string } | null;
   reward?: { amountCents: number; currency: string } | null;
   study?: boolean;
+  testimonialNotice?: string;
 }
 
 export function useGetSurvey(code: string, token?: string | null) {
@@ -656,6 +728,8 @@ export function useGetSurvey(code: string, token?: string | null) {
         text: q.text,
         hint: q.hint ?? undefined,
         type: q.question_type ?? "voice",
+        ...(q.round_purpose === "testimonial" ? { purpose: "testimonial" as const } : {}),
+        ...(q.round_reward_cents ? { rewardCents: q.round_reward_cents } : {}),
       }));
       const mix = getMediaMix(questions);
       return {
@@ -682,6 +756,7 @@ export function useGetSurvey(code: string, token?: string | null) {
         sponsor: data.sponsor ?? null,
         reward: data.reward ?? null,
         study: data.study ?? false,
+        testimonialNotice: data.testimonialNotice,
       };
     },
     enabled: !!code,

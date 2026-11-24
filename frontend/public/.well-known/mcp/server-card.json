@@ -42,7 +42,9 @@
     "refresh_study_report",
     "get_rewards",
     "set_reward_settings",
-    "review_reward"
+    "review_reward",
+    "plan_testimonial_round",
+    "get_clips"
   ],
   "alternatives": {
     "http_api_no_auth": "POST https://api.parlo.me/api/agent/parlos",

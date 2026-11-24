@@ -29,6 +29,7 @@ import {
   addItem,
   ensureSeeded,
   eventsSince,
+  listClips,
   getItem,
   listAnswers,
   listItems,
@@ -263,6 +264,15 @@ study.get("/api/my/surveys/:surveyId/answers", async (c) => {
   const result = await listAnswers(c.env, gate.survey, gate.membership, baseUrlOf(c), { limit, offset });
   if (gate.membership.role === "client") trackServerEvent(gate.membership.user_id, "client_answers_opened", { surveyId: gate.survey.id, offset });
   return c.json(result);
+});
+
+/** Lines and recordings their speakers allowed to be used in public. Research team only: they clear a clip before it goes anywhere. */
+study.get("/api/my/surveys/:surveyId/clips", async (c) => {
+  const gate = await requireSeat(c, c.req.param("surveyId"), "manage");
+  if (gate instanceof Response) return gate;
+  const clips = await listClips(c.env, gate.survey, baseUrlOf(c));
+  trackServerEvent(gate.membership.user_id, "clips_opened", { surveyId: gate.survey.id, clips: clips.length });
+  return c.json({ clips, currency: gate.survey.reward_currency || "USD" });
 });
 
 // ── Participants ─────────────────────────────────────────────────────

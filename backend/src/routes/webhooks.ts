@@ -14,6 +14,7 @@ import { submitResponse } from "../services/responses";
 import { sweepPendingTranscriptions } from "../services/transcription";
 import { transcribeAudio } from "../services/ai";
 import { claimRewardLink, formatMoney } from "../services/rewards";
+import { testimonialNotice } from "../services/briefBoard";
 
 type InboundMedia = { url: string | null; id: string | null; contentType: string | null };
 type Inbound = { kind: "text" | "audio"; text: string; from: string; contactName: string | null; media: InboundMedia | null };
@@ -62,7 +63,10 @@ type AnswerSession = {
   title: string;
   responseId: string;
   userId: string | null;
-  questions: { id: string; text: string; hint: string | null }[];
+  /** `testimonial`: a line asked for public use. The bot says so (`notice`, `bonus`) before the mic, and "skip" declines it for good. */
+  questions: { id: string; text: string; hint: string | null; testimonial?: boolean; bonus?: string | null }[];
+  /** What a testimonial ask says before the mic (names the sponsor when there is one). */
+  notice?: string;
   index: number;
   answered: number;
   /** Transcripts by question id, made on receipt; also marks which slots are taken. */
@@ -91,15 +95,23 @@ function questionText(session: AnswerSession, lead: string): string {
   const q = session.questions[session.index];
   const n = session.index + 1;
   const hint = q.hint && !/^question\s+\d+\s+of\s+\d+$/i.test(q.hint.trim()) ? `\n${q.hint}` : "";
+  if (q.testimonial) {
+    // Recording this is the consent to use it, so the notice comes before the
+    // ask, every time it is shown. Keep it in step with the web page's
+    // TestimonialNotice (the answer is stamped 'voice' either way).
+    const notice = session.notice ?? "This recording may be used in public marketing material.";
+    const bonus = q.bonus ? ` It pays a ${q.bonus} bonus.` : "";
+    return `${lead}Question ${n} of ${session.questions.length} · optional\n${notice}${bonus} Recording it is your yes; send "skip" if you'd rather not.\n\n${q.text}${hint}`;
+  }
   return `${lead}Question ${n} of ${session.questions.length}\n${q.text}${hint}`;
 }
 
 async function startAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }, wa: WhatsAppClient, from: string, contactName: string | null, code: string): Promise<void> {
   const db = env.DB;
   const survey = await db
-    .prepare("SELECT id, code, title, visibility, intro_r2_key, intro_transcript, report_md, sponsor_name FROM surveys WHERE code = ? AND status = 'active'")
+    .prepare("SELECT id, code, title, visibility, intro_r2_key, intro_transcript, report_md, sponsor_name, reward_currency FROM surveys WHERE code = ? AND status = 'active'")
     .bind(code)
-    .first<{ id: string; code: string; title: string | null; visibility: string | null; intro_r2_key: string | null; intro_transcript: string | null; report_md: string | null; sponsor_name: string | null }>();
+    .first<{ id: string; code: string; title: string | null; visibility: string | null; intro_r2_key: string | null; intro_transcript: string | null; report_md: string | null; sponsor_name: string | null; reward_currency: string | null }>();
   if (!survey) {
     await wa.sendText(from, `No parlo found with code "${code}". Check the link and try again.`);
     return;
@@ -150,7 +162,15 @@ async function startAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<un
     title,
     responseId,
     userId: user?.id ?? null,
-    questions: voice.map((q) => ({ id: q.id, text: q.text, hint: q.hint ?? null })),
+    questions: voice.map((q) => ({
+      id: q.id,
+      text: q.text,
+      hint: q.hint ?? null,
+      ...(q.round_purpose === "testimonial"
+        ? { testimonial: true, bonus: q.round_reward_cents ? formatMoney(q.round_reward_cents, survey.reward_currency || "USD") : null }
+        : {}),
+    })),
+    notice: testimonialNotice(survey.sponsor_name),
     index: 0,
     answered: 0,
   };
@@ -190,7 +210,15 @@ async function finishAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<u
   }
   const phone = phoneFromWa(from);
   const user = await upsertUserByPhone(db, phone, { waName: contactName });
-  const result = await submitResponse(env, ctx, session.responseId, { userId: user.id }, "whatsapp", session.transcripts ?? {});
+  const result = await submitResponse(
+    env,
+    ctx,
+    session.responseId,
+    // Every testimonial ask in a bot session was sent with its notice (questionText).
+    { userId: user.id, testimonialAck: session.questions.filter((q) => q.testimonial).map((q) => q.id) },
+    "whatsapp",
+    session.transcripts ?? {}
+  );
   if (!result.ok) {
     await wa.sendText(from, `Something went wrong saving your answers (${result.error}). Send "answer ${session.code}" to try again.`);
     return;
@@ -344,6 +372,12 @@ webhooks.post("/api/webhooks/whatsapp", async (c) => {
           continue;
         }
         if (word === "skip" || word === "next") {
+          // Skipping a testimonial ask is "I'd rather not": it is not asked again.
+          const skipped = session.questions[session.index];
+          if (skipped?.testimonial && session.userId) {
+            await c.env.DB.prepare("INSERT OR IGNORE INTO ask_declines (question_id, user_id) VALUES (?, ?)").bind(skipped.id, session.userId).run();
+            trackServerEvent(session.userId, "testimonial_declined", { surveyId: session.surveyId, source: "whatsapp" });
+          }
           session.index += 1;
           if (session.index >= session.questions.length) {
             await finishAnswerSession(c.env, c.executionCtx, wa, from, contactName, session);

@@ -42,6 +42,7 @@ import { OPENER_TOKEN_TTL_SECONDS, introKey, openerTokenKey, saveIntroFromUrl } 
 import { buildBotChatUrl } from "../services/whatsapp";
 import { trackServerEvent } from "../services/analytics";
 import { rewardOfferFor } from "../services/rewards";
+import { testimonialNotice } from "../services/briefBoard";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
@@ -747,6 +748,7 @@ surveys.get("/api/s/:code", async (c) => {
     memberCount: memberCountRow?.n ?? 0,
     sponsor: survey.sponsor_name ? { name: survey.sponsor_name } : null,
     study: survey.kind === "study" || !!survey.sponsor_name,
+    testimonialNotice: testimonialNotice(survey.sponsor_name),
     // Only someone who arrived by a personal link is offered money (services/rewards.ts).
     reward: await rewardOfferFor(db, survey, member),
   };

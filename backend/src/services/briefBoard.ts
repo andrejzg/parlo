@@ -280,6 +280,21 @@ export async function briefForAgent(db: D1Database, surveyId: string): Promise<s
   ];
 }
 
+/** What a testimonial ask tells the participant before they record: who may use the recording. */
+export function testimonialNotice(sponsor: string | null | undefined): string {
+  const who = sponsor?.trim();
+  return who && !/^the company that commissioned/i.test(who)
+    ? `${who} may use this recording in its marketing.`
+    : "This recording may be used in public marketing material.";
+}
+
+/** The stronger of the response's consent and the answer's own (a testimonial is 'voice' by recording it). */
+export function effectiveConsent(response: string | null | undefined, answer: string | null | undefined): "none" | "quote" | "voice" {
+  const rank = (v: string | null | undefined) => (v === "voice" ? 2 : v === "quote" ? 1 : 0);
+  const best = Math.max(rank(response), rank(answer));
+  return best === 2 ? "voice" : best === 1 ? "quote" : "none";
+}
+
 // ── Who a participant is, to whom ──────────────────────────────────────
 
 export interface ParticipantLabel {
@@ -359,6 +374,12 @@ interface AnswerJoinRow {
   r_last: string | null;
   sponsor_consent: number | null;
   publish_consent: string | null;
+  answer_consent: string | null;
+  verdict: string | null;
+  verdict_note: string | null;
+  probes: string | null;
+  round_purpose: string | null;
+  round_reward_cents: number | null;
   submitted_at: string | null;
   round_number: number | null;
   question_id: string;
@@ -367,8 +388,10 @@ interface AnswerJoinRow {
 }
 
 const ANSWER_SELECT = `SELECT ra.id, ra.audio_r2_key, ra.video_r2_key, ra.image_r2_key, ra.transcription, ra.transcription_status, ra.duration_ms,
+        ra.publish_consent AS answer_consent, ra.verdict, ra.verdict_note, ra.probes,
         r.id AS response_id, r.user_id, r.first_name AS r_first, r.last_name AS r_last, r.sponsor_consent, r.publish_consent, r.submitted_at,
-        rd.number AS round_number, q.id AS question_id, q.text AS question_text, q.question_type
+        rd.number AS round_number, rd.purpose AS round_purpose, rd.reward_cents AS round_reward_cents,
+        q.id AS question_id, q.text AS question_text, q.question_type
  FROM response_answers ra
  JOIN responses r ON r.id = ra.response_id
  JOIN survey_questions q ON q.id = ra.question_id
@@ -394,7 +417,14 @@ async function presentAnswer(env: Env, baseUrl: string, viewerRole: GroupRole, l
     transcriptionStatus: a.transcription_status,
     durationMs: a.duration_ms,
     /** What may leave the study: none | quote (words, unnamed) | voice (the recording too). */
-    publishConsent: a.publish_consent === "quote" || a.publish_consent === "voice" ? a.publish_consent : ("none" as const),
+    publishConsent: effectiveConsent(a.publish_consent, a.answer_consent),
+    /** How well it answered its question: answered | partial | unanswered; null = not judged. */
+    verdict: a.verdict === "answered" || a.verdict === "partial" || a.verdict === "unanswered" ? a.verdict : null,
+    verdictNote: a.verdict_note,
+    /** The follow-ups the agent asked in the sitting before it let go. */
+    probes: parseStrings(a.probes),
+    /** 'testimonial' when the ask was for a line meant for public use. */
+    purpose: a.round_purpose === "testimonial" ? ("testimonial" as const) : null,
     submittedAt: toIso(a.submitted_at),
     audioUrl: await sign(a.audio_r2_key || null),
     videoUrl: await sign(a.video_r2_key),
@@ -436,6 +466,15 @@ export async function listAnswers(
 }
 
 // ── The board ──────────────────────────────────────────────────────────
+
+function parseStrings(json: string | null | undefined): string[] {
+  try {
+    const v = JSON.parse(json ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function parseIds(json: string | null | undefined): string[] {
   try {
@@ -547,6 +586,7 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
       id: proposed.id,
       number: proposed.number,
       kind: proposed.kind,
+      purpose: proposed.purpose === "testimonial" ? ("testimonial" as const) : null,
       rationale: redact(proposed.rationale),
       createdAt: toIso(proposed.created_at),
       serves: parseIds(proposed.serves).filter((id) => itemText.has(id)),
@@ -570,6 +610,7 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
       id: live.id,
       number: live.number,
       kind: live.kind,
+      purpose: live.purpose === "testimonial" ? ("testimonial" as const) : null,
       sentAt: toIso(live.sent_at),
       closesAt: live.closes_at ?? null,
       serves: parseIds(live.serves).filter((id) => itemText.has(id)),
@@ -593,6 +634,7 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
       title: survey.title,
       sponsor: survey.sponsor_name ?? null,
       study: survey.kind === "study" || !!survey.sponsor_name,
+      testimonialNotice: testimonialNotice(survey.sponsor_name),
       // The dashboard code opens names and phone numbers; the client never gets it.
       dashboardCode: manager ? survey.dashboard_code : null,
     },
@@ -632,6 +674,47 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
 }
 
 export type BriefBoard = Awaited<ReturnType<typeof loadBoard>>;
+
+/**
+ * What may be used in public: every answer whose speaker said yes, to their
+ * words ('quote') or to the recording ('voice'). For the research team, with
+ * names: they are the ones who clear a clip before it goes anywhere. Each
+ * clip says whether it was recorded for a bonus, because a paid line is an
+ * incentivised endorsement and whoever publishes it has to be able to say so.
+ */
+export async function listClips(env: Env, survey: Survey, baseUrl: string) {
+  const [rows, labels] = await Promise.all([
+    env.DB
+      .prepare(
+        `${ANSWER_SELECT}
+         WHERE r.survey_id = ? AND r.status != 'in_progress' AND ra.transcription_status = 'completed'
+           AND (ra.publish_consent IN ('quote', 'voice') OR r.publish_consent IN ('quote', 'voice'))
+         ORDER BY (rd.purpose = 'testimonial') DESC, r.submitted_at DESC LIMIT 200`
+      )
+      .bind(survey.id)
+      .all<AnswerJoinRow>(),
+    participantLabels(env.DB, survey.id),
+  ]);
+  const notice = testimonialNotice(survey.sponsor_name);
+  return Promise.all(
+    rows.results.map(async (a) => {
+      const answer = await presentAnswer(env, baseUrl, "owner", labels, a);
+      const testimonial = a.round_purpose === "testimonial";
+      const bonusCents = testimonial ? a.round_reward_cents ?? 0 : 0;
+      return {
+        ...answer,
+        testimonial,
+        /** Paid extra to record this line: disclose it wherever the clip is published. */
+        incentivised: testimonial && bonusCents > 0,
+        bonusCents,
+        /** What the participant was told on the ask before recording; null for an ordinary answer covered by their consent choice. */
+        notice: testimonial ? notice : null,
+        /** The recording may be used only with 'voice'; with 'quote' the words may be, unnamed. */
+        audioUsable: answer.publishConsent === "voice" && !!answer.audioUrl,
+      };
+    })
+  );
+}
 
 /**
  * What changed on the brief since a moment, oldest first: for an agent that

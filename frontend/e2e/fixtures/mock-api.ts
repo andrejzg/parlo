@@ -132,6 +132,18 @@ export async function setupApiMocks(
     });
   });
 
+  // POST /api/responses/:id/probe — on a study the page asks, after each voice
+  // answer, whether it answered the question. Default: nothing to ask, so a
+  // sitting runs as it always did. A spec that wants a follow-up registers its
+  // own route after this one.
+  await page.route(`**/api/responses/*/probe`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ verdict: null, transcript: "", probe: null, letGo: false }),
+    });
+  });
+
   // POST /api/responses/:id/refresh-urls
   await page.route(
     `**/api/responses/*/refresh-urls`,
