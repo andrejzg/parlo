@@ -3,7 +3,7 @@
  * raw answers, and rewards. Shapes mirror `backend/src/services/briefBoard.ts`,
  * `routes/study.ts` and `routes/rewards.ts`; check there before changing a field.
  */
-import { apiFetch, authed, type GroupRole, type PhoneProof, type RoundCost, type RoundKind } from "@/api/client";
+import { apiFetch, authed, type GroupRole, type PhoneProof, type PublishConsent, type RoundCost, type RoundKind } from "@/api/client";
 
 // ── The brief board ────────────────────────────────────────────────────
 
@@ -23,6 +23,8 @@ export interface StudyAnswer {
   transcription: string | null;
   transcriptionStatus: string;
   durationMs: number;
+  /** What may leave the study: none | quote (their words, unnamed) | voice (the recording too). */
+  publishConsent: PublishConsent;
   submittedAt: string | null;
   audioUrl: string | null;
   videoUrl: string | null;
@@ -87,6 +89,8 @@ export interface BriefEvent {
   itemText: string | null;
   by: string;
   role: string;
+  /** Someone's AI agent made this change for them, through the MCP server. */
+  viaAgent?: boolean;
   roundNumber: number | null;
   at: string | null;
 }
@@ -106,7 +110,7 @@ export interface RewardSummary {
 }
 
 export interface BriefBoard {
-  survey: { id: string; code: string; title: string | null; sponsor: string | null; dashboardCode: string | null };
+  survey: { id: string; code: string; title: string | null; sponsor: string | null; study: boolean; dashboardCode: string | null };
   you: { userId: string; role: GroupRole; canManage: boolean };
   goal: string;
   items: BriefItem[];
@@ -142,6 +146,8 @@ export interface BriefBoard {
   report: { markdown: string | null; updatedAt: string | null };
   voices: number;
   answers: number;
+  /** People brought in as participants, whether or not they have answered. */
+  participants: number;
   team: { userId: string; role: GroupRole; name: string }[];
   rewards: RewardSummary;
 }
@@ -163,8 +169,41 @@ export const steerBrief = (apiKey: string, surveyId: string, note: string, itemI
 /** Research team only: have the agent plan the next round now. */
 export const replanBrief = (apiKey: string, surveyId: string) => apiFetch<BriefBoard>(`${base(surveyId)}/brief/replan`, post(apiKey));
 
+/** What you hand your own AI agent so it can work on the study with your seat. */
+export const fetchAgentAccess = (apiKey: string, surveyId: string) =>
+  apiFetch<{ mcpUrl: string; inviteLink: string; seat: string; studyId: string }>(`${base(surveyId)}/agent-access`, authed(apiKey));
+
 export const fetchStudyAnswers = (apiKey: string, surveyId: string, offset = 0, limit = 30) =>
   apiFetch<{ answers: StudyAnswer[]; total: number; hasMore: boolean }>(`${base(surveyId)}/answers?limit=${limit}&offset=${offset}`, authed(apiKey));
+
+// ── Starting a study ───────────────────────────────────────────────────
+
+export interface CreateStudyInput {
+  /** What the study is for, who it should hear from, what the team needs to learn. At least 20 characters. */
+  brief: string;
+  title?: string;
+  /** Who commissioned it; shown on the participant's consent screen. Leave out for an internal study. */
+  sponsorName?: string;
+  /** Default reward per answer and the study's cap, in cents. */
+  rewardCents?: number | null;
+  budgetCents?: number | null;
+  currency?: string;
+  /** The team's own round-1 questions; left out, the agent writes them from the brief. */
+  questions?: string[];
+}
+export interface CreatedStudy {
+  surveyId: string;
+  code: string;
+  dashboardCode: string;
+  title: string;
+  sponsor: string | null;
+  questions: { text: string; hint: string; type: string }[];
+  studyLink: string;
+  dashboardLink: string;
+  shareLink: string;
+}
+/** One call from a brief to a study that is ready to work on. Takes a few seconds: a model writes round 1. */
+export const createStudy = (apiKey: string, input: CreateStudyInput) => apiFetch<CreatedStudy>("/studies", post(apiKey, input));
 
 // ── Invites and joining ────────────────────────────────────────────────
 

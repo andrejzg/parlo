@@ -35,7 +35,7 @@ interface AgentDashboardProps {
   data: DashboardData;
   dashboardCode: string;
   /** Open on this tab instead of Responses (the home list sends "agent" for a pending round). */
-  initialTab?: "responses" | "agent";
+  initialTab?: "responses" | "agent" | "members";
 }
 
 type SortMode = "latest" | "by-question";
@@ -411,6 +411,12 @@ export default function AgentDashboard({
       setMembersLoading(false);
     }
   }, [survey.id]);
+
+  // Opened straight on Members (from the study page): nothing has switched tabs, so load them here.
+  useEffect(() => {
+    if (initialTab === "members") void loadMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleTabChange = useCallback(
     async (tab: DashboardTab) => {

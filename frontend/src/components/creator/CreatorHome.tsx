@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import type { MySurvey, LinkedInProfile, ParloFace } from "@/api/client";
+import { Button } from "@/components/ui/button";
 import { fadeUp, press, transitionLarge } from "@/lib/animations";
 import { describeParlo, formatListTime, initialsFor, sortParlos } from "@/lib/parloRow";
 import BottomTabBar from "./BottomTabBar";
@@ -186,9 +188,15 @@ export default function CreatorHome({
               className="w-9 h-9 rounded-full object-cover shrink-0"
             />
           ) : null}
-          <h1 className="font-brand text-l sm:text-xl font-heavy text-foreground">
+          <h1 className="min-w-0 flex-1 font-brand text-l sm:text-xl font-heavy text-foreground">
             {displayName ? `Hey, ${displayName}` : "Your parlos"}
           </h1>
+          {/* The research way in: a brief instead of a voice opener. Quiet, so "+" stays the main action. */}
+          <Button asChild variant="secondary" size="sm" className="shrink-0">
+            <Link to="/study/new" data-testid="home-start-study">
+              Start a study
+            </Link>
+          </Button>
         </motion.div>
       </div>
 

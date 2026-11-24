@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Env, Survey, SurveyQuestion, StartResponseResponse, SubmitResponseRequest, GroupVisibility } from "../types";
+import { asPublishConsent, type Env, type Survey, type SurveyQuestion, type StartResponseResponse, type SubmitResponseRequest, type GroupVisibility } from "../types";
 import { generateId, generateCode } from "../services/codes";
 import { extractCode } from "../services/slug";
 import { generatePresignedUploadUrl, generateUploadToken } from "../services/r2";
@@ -121,7 +121,13 @@ responses.post("/api/responses/:id/submit", async (c) => {
     await updateUserNames(db, userId, body.firstName ?? null, body.lastName ?? null);
   }
 
-  const result = await submitResponse(c.env, c.executionCtx, responseId, { userId, firstName: body.firstName ?? null, lastName: body.lastName ?? null }, "web");
+  const result = await submitResponse(
+    c.env,
+    c.executionCtx,
+    responseId,
+    { userId, firstName: body.firstName ?? null, lastName: body.lastName ?? null, publishConsent: asPublishConsent(body.publishConsent) },
+    "web"
+  );
   if (!result.ok) return c.json({ error: result.error }, result.status);
   return c.json({ success: true, id: responseId, memberToken: result.memberToken, visibility: result.visibility });
 });

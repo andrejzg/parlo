@@ -227,6 +227,10 @@ export interface MySurvey {
   createdAt: string;
   /** Your role in this parlo. */
   role?: GroupRole;
+  /** A research study: its home is /study/:id. */
+  study?: boolean;
+  /** Who commissioned it, for the research team and the client. */
+  sponsor?: string | null;
   /** Your personal-link token for /s/:code?t= */
   memberToken?: string;
   questionCount: number;
@@ -567,7 +571,12 @@ export interface SubmitResponsePayload {
   /** Or the proof from this session's OTP. Without either, the answer stays anonymous. */
   idToken?: string;
   proof?: string;
+  /** A study's consent screen: may these words (quote) or this recording (voice) be used in public material? Default none. */
+  publishConsent?: PublishConsent;
 }
+
+/** none: nothing leaves the study. quote: words may be quoted publicly, unnamed. voice: the recording may be used too. */
+export type PublishConsent = "none" | "quote" | "voice";
 
 export interface SubmitResponseResult {
   success: boolean;
@@ -634,6 +643,7 @@ interface APISurveyResponse {
   memberCount?: number;
   sponsor?: { name: string } | null;
   reward?: { amountCents: number; currency: string } | null;
+  study?: boolean;
 }
 
 export function useGetSurvey(code: string, token?: string | null) {
@@ -671,6 +681,7 @@ export function useGetSurvey(code: string, token?: string | null) {
         memberCount: data.memberCount ?? 0,
         sponsor: data.sponsor ?? null,
         reward: data.reward ?? null,
+        study: data.study ?? false,
       };
     },
     enabled: !!code,

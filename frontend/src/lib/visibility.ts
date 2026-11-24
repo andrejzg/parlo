@@ -26,8 +26,17 @@ export interface VisibilityCopy {
  * sponsor hears the answers alongside the research team, so a private parlo
  * has to name them wherever it says who hears an answer. Participant screens
  * pass it; without it the copy is the plain private or open copy.
+ *
+ * `options.study` is `survey.study`: a private study with no sponsor is still
+ * a research team and its participants, not an organiser and a group, so it
+ * gets its own wording. Participant screens pass it; an open parlo reads the
+ * same either way.
  */
-export function visibilityCopy(visibility: GroupVisibility | undefined, sponsorName?: string | null): VisibilityCopy {
+export function visibilityCopy(
+  visibility: GroupVisibility | undefined,
+  sponsorName?: string | null,
+  options: { study?: boolean } = {},
+): VisibilityCopy {
   if (visibility === "open") {
     return {
       label: "Open group",
@@ -44,6 +53,14 @@ export function visibilityCopy(visibility: GroupVisibility | undefined, sponsorN
       short: `Private study. The research team and ${sponsor} hear your answers.`,
       consent: `The research team and ${sponsor} hear your answers. The sponsor hears your voice but is not shown your name. Everyone who answers gets the agent's report.`,
       settingDescription: `Only the research team, ${sponsor} and the agent hear raw answers. Everyone who answers gets the report.`,
+    };
+  }
+  if (options.study) {
+    return {
+      label: "Private study",
+      short: "Private study. Only the research team hears your answers.",
+      consent: "Only the research team and the agent hear your answers. Everyone who answers gets the agent's report.",
+      settingDescription: "Only the research team and the agent hear raw answers. Everyone who answers gets the report.",
     };
   }
   return {

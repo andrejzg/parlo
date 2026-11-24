@@ -12,7 +12,7 @@
  * like any other answer, and nobody is asked it again.
  */
 
-import type { Env, Survey } from "../types";
+import { asPublishConsent, type Env, type PublishConsent, type Survey } from "../types";
 import { generateCode, generateId } from "./codes";
 import { displayNameFor, ensureMember, findUserByPhone } from "./groups";
 import { normalizePhone } from "./phone";
@@ -25,6 +25,8 @@ export interface ParticipantInput {
   segment?: string;
   descriptor?: string;
   transcript?: string;
+  /** What this person agreed to when the imported interview was held: none (default) | quote | voice. */
+  publishConsent?: string;
 }
 
 export interface ImportedParticipant {
@@ -106,7 +108,7 @@ async function importAsks(db: D1Database, surveyId: string, parts: number): Prom
   return ids.slice(0, parts);
 }
 
-async function importTranscript(env: Env, survey: Survey, userId: string, name: string | null, transcript: string): Promise<boolean> {
+async function importTranscript(env: Env, survey: Survey, userId: string, name: string | null, transcript: string, publish: PublishConsent): Promise<boolean> {
   const db = env.DB;
   const already = await db
     .prepare(
@@ -125,10 +127,10 @@ async function importTranscript(env: Env, survey: Survey, userId: string, name: 
   await db.batch([
     db
       .prepare(
-        `INSERT INTO responses (id, code, survey_id, user_id, round_id, first_name, last_name, status, submitted_at, visibility_at_submit, sponsor_consent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', datetime('now'), ?, ?)`
+        `INSERT INTO responses (id, code, survey_id, user_id, round_id, first_name, last_name, status, submitted_at, visibility_at_submit, sponsor_consent, publish_consent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', datetime('now'), ?, ?, ?)`
       )
-      .bind(responseId, generateCode(10), survey.id, userId, round.id, first, last, survey.visibility === "open" ? "open" : "private", survey.sponsor_name ? 1 : 0),
+      .bind(responseId, generateCode(10), survey.id, userId, round.id, first, last, survey.visibility === "open" ? "open" : "private", survey.sponsor_name ? 1 : 0, publish),
     ...parts.map((text, i) =>
       db
         .prepare("INSERT INTO response_answers (id, response_id, question_id, audio_r2_key, duration_ms, transcription, transcription_status) VALUES (?, ?, ?, '', 0, ?, 'completed')")
@@ -149,6 +151,8 @@ export async function importParticipants(
   const origin = (env.FRONTEND_ORIGIN ?? "https://parlo.me").replace(/\/+$/, "");
   const participants: ImportedParticipant[] = [];
   const skipped: { row: number; reason: string }[] = [];
+  // Bringing named participants in is what makes a parlo a study.
+  await db.prepare("UPDATE surveys SET kind = 'study' WHERE id = ? AND kind IS NULL").bind(survey.id).run();
 
   for (const [index, raw] of inputs.slice(0, MAX_IMPORT).entries()) {
     const name = clean(raw.name, 120);
@@ -193,7 +197,7 @@ export async function importParticipants(
     }
 
     const transcript = typeof raw.transcript === "string" && raw.transcript.trim().length > 40 ? raw.transcript : null;
-    const transcriptImported = transcript ? await importTranscript(env, survey, userId, name, transcript) : false;
+    const transcriptImported = transcript ? await importTranscript(env, survey, userId, name, transcript, asPublishConsent(raw.publishConsent)) : false;
 
     const user = await db
       .prepare("SELECT first_name, last_name, wa_name, linkedin_name, phone FROM users WHERE id = ?")

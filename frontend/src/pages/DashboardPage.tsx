@@ -8,7 +8,9 @@ export default function DashboardPage() {
   const { dashboardCode } = useParams<{ dashboardCode: string }>();
   // The home list deep-links straight to the Agent tab when a round is waiting for approval.
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") === "agent" ? "agent" : undefined;
+  const tabParam = searchParams.get("tab");
+  // "members" is where participants are added and the client is invited; the study page links there.
+  const initialTab = tabParam === "agent" ? "agent" : tabParam === "members" ? "members" : undefined;
 
   const { data, isLoading, isError, error, refetch } = useGetDashboard(
     dashboardCode ?? ""

@@ -2,14 +2,15 @@
   "$comment": "MCP server card (draft SEP-1649 shape; experimental). The MCP server itself is at the url below.",
   "name": "parlo",
   "title": "Parlo",
-  "description": "Group chats, run by an agent. Create a parlo from a person's brief or voice note, read the answers and the agent's report, approve follow-up rounds.",
+  "description": "Group chats and research studies, run by an agent. Create a parlo from a brief or a voice note; or work on a research study with the seat of the person you act for: read the brief and the answers, add and steer the questions it must answer, and (research team) plan, price and send rounds.",
   "url": "https://mcp.parlo.me/mcp",
   "transport": "streamable-http",
   "authorization": {
     "type": "oauth2",
     "resource_metadata": "https://mcp.parlo.me/.well-known/oauth-protected-resource/mcp",
     "authorization_server": "https://mcp.parlo.me/.well-known/oauth-authorization-server",
-    "dynamic_client_registration": true
+    "dynamic_client_registration": true,
+    "api_key_as_bearer": "A Parlo API key (pk_…) is accepted as the bearer token directly."
   },
   "tools": [
     "create_parlo",
@@ -19,7 +20,29 @@
     "get_survey_stats",
     "get_survey",
     "get_share_links",
-    "update_questions"
+    "update_questions",
+    "list_studies",
+    "get_study",
+    "get_study_answers",
+    "get_study_report",
+    "get_study_changes",
+    "add_study_question",
+    "update_study_question",
+    "review_agent_suggestion",
+    "steer_study",
+    "set_study_goal",
+    "join_study",
+    "create_study",
+    "plan_next_round",
+    "edit_round",
+    "send_round",
+    "dismiss_round",
+    "add_participants",
+    "create_invite",
+    "refresh_study_report",
+    "get_rewards",
+    "set_reward_settings",
+    "review_reward"
   ],
   "alternatives": {
     "http_api_no_auth": "POST https://api.parlo.me/api/agent/parlos",

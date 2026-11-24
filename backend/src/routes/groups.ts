@@ -332,6 +332,7 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
     actorRole: gate.membership.role,
     roundId: round.id,
     body: asks[0]?.text ?? null,
+    via: (c.req.header("X-Parlo-Client") ?? "").toLowerCase().startsWith("mcp") ? "agent" : null,
   });
   c.executionCtx.waitUntil(sent.sendMessages());
   // A timed parlo closes this round `timing` from now; the agent holds the alarm.

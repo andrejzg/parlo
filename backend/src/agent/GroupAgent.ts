@@ -107,6 +107,8 @@ export interface IngestResponseInput {
   userId: string | null;
   displayName: string | null;
   submittedAt: string | null;
+  /** What the participant allowed beyond the study: none | quote | voice. */
+  publishConsent?: string | null;
   answers: IngestAnswer[];
 }
 
@@ -417,7 +419,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
     const answers = await db
       .prepare(
         `SELECT ra.id, ra.question_id, ra.transcription, ra.transcription_status, ra.image_r2_key, ra.video_r2_key,
-                r.id AS response_id, r.user_id, r.first_name AS r_first, r.last_name AS r_last, r.submitted_at,
+                r.id AS response_id, r.user_id, r.first_name AS r_first, r.last_name AS r_last, r.submitted_at, r.publish_consent,
                 q.text AS question_text, q.question_type, rd.number AS round_number,
                 u.first_name, u.last_name, u.wa_name, u.linkedin_name, u.phone
          FROM response_answers ra
@@ -431,7 +433,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
       .bind(surveyId)
       .all<{
         id: string; question_id: string; transcription: string | null; transcription_status: string; image_r2_key: string | null; video_r2_key: string | null;
-        response_id: string; user_id: string | null; r_first: string | null; r_last: string | null; submitted_at: string | null;
+        response_id: string; user_id: string | null; r_first: string | null; r_last: string | null; submitted_at: string | null; publish_consent: string | null;
         question_text: string; question_type: "voice" | "photo" | "video"; round_number: number | null;
         first_name: string | null; last_name: string | null; wa_name: string | null; linkedin_name: string | null; phone: string | null;
       }>();
@@ -452,6 +454,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
           kind: a.question_type,
           transcript: a.transcription,
           submittedAt: a.submitted_at,
+          publishConsent: a.publish_consent,
         })
       );
       newAnswers++;
@@ -477,6 +480,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
     kind: string;
     transcript: string | null;
     submittedAt: string | null;
+    publishConsent?: string | null;
   }) {
     const body =
       a.transcript?.trim() ||
@@ -489,6 +493,8 @@ export class GroupAgent extends Agent<Env, GroupState> {
       `kind: ${a.kind}`,
       `answered: ${a.submittedAt ?? "unknown"}`,
       `response: ${a.responseId}`,
+      // What may leave the study: none, quote (their words, unnamed) or voice (the recording too).
+      `publish: ${a.publishConsent === "quote" || a.publishConsent === "voice" ? a.publishConsent : "none"}`,
       "---",
       body.slice(0, MAX_ANSWER_CHARS),
     ].join("\n");
@@ -514,6 +520,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
           kind: a.kind,
           transcript: a.transcript,
           submittedAt: input.submittedAt,
+          publishConsent: input.publishConsent,
         })
       );
       filed++;
@@ -933,6 +940,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "Raw answers are private to the owner, admins and you. The report goes to every member, so write it for them: what the group said, where people agree, where they differ, memorable lines (quote briefly, attribute by first name only if the group is open, otherwise keep quotes unattributed), and what is still unclear.",
         "The brief says what should come back to the group (a post, testimonials, whether an idea holds up, why customers chose them, feedback, a decision, ideas…): give the report that shape, and make the opening paragraph answer it directly.",
         "When it asks for a post, the report opens with that post, ready to copy to LinkedIn: a hook line, the best lines from the answers, under 1,300 characters, no hashtags. The usual summary and sections follow it.",
+        "Each answer file carries a `publish:` line. Anything written to be published outside the group (a post, a testimonial, a public quote) may only quote answers marked `publish: quote` or `publish: voice`; an answer marked `publish: none` informs the report and is never quoted in public material.",
         "Write in the creator's language and tone. Markdown, headed sections, under 500 words. Start with a one-paragraph summary.",
         "If the brief has a section \"Questions this study must answer\", this is a research study: after the summary give one section per question (the question as the heading) saying what was found, from how many people, and where segments differ, then a last section \"Not yet known\" listing what the answers cannot settle. Up to 800 words then. If the brief says the study is sponsored, never name a participant; refer to them by segment.",
         "Also keep /memory.md: your own running notes about this group (threads to follow, who has not answered, hypotheses). Replace it each time; keep it under 300 words.",

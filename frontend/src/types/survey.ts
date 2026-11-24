@@ -47,6 +47,12 @@ export interface Survey {
   sponsor?: { name: string } | null;
   /** What answering now pays this visitor; only for someone who arrived by a personal link. */
   reward?: { amountCents: number; currency: string } | null;
+  /**
+   * A research study: the participant page drops its group furniture (member
+   * count, "Invite someone", share prompts) and the consent screen asks for
+   * publication consent.
+   */
+  study?: boolean;
 }
 
 export interface VoiceSegment {

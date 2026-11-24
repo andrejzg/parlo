@@ -9,6 +9,7 @@ import PublicResultsPage from "@/pages/PublicResultsPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ClaimPage from "@/pages/ClaimPage";
 import StudyPage from "@/pages/StudyPage";
+import StudyNewPage from "@/pages/StudyNewPage";
 import JoinPage from "@/pages/JoinPage";
 import AdminPage from "@/pages/AdminPage";
 import NotFound from "@/pages/NotFound";
@@ -66,6 +67,9 @@ const App = () => (
 
           {/* The claim link an agent hands the person it created a parlo for */}
           <Route path="/claim/:token" element={<ClaimPage />} />
+
+          {/* Start a study: paste a brief, get a study (ranked above the :surveyId route) */}
+          <Route path="/study/new" element={<StudyNewPage />} />
 
           {/* A study's brief: the research team and the client work on it together */}
           <Route path="/study/:surveyId" element={<StudyPage />} />

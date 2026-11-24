@@ -523,8 +523,9 @@ export default function CreatorPage() {
                   setScreenKey((k) => k + 1);
                 }}
                 onOpenSurvey={(survey) => {
-                  if (survey.role === "client") {
-                    // The client's seat is the brief: the questions, the answers, the plan.
+                  if (survey.role === "client" || (survey.study && survey.role !== "member")) {
+                    // A study's home is its brief (the questions, the answers, the plan),
+                    // for the research team and the client alike. The client's seat is always there.
                     navigate(`/study/${survey.id}`);
                   } else if (survey.role === "member") {
                     // Members go to their personal link: pending asks + the report.

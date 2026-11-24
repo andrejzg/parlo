@@ -53,14 +53,29 @@ function originLine(item: BriefItem): string | null {
   return "From the original brief";
 }
 
+/** What the participant allowed beyond the study. Nothing shows for "none": staying inside the study is the default. */
+export function PublishChip({ consent }: { consent: "none" | "quote" | "voice" }) {
+  if (consent === "none") return null;
+  return (
+    <span
+      className="shrink-0 inline-flex items-center rounded-full bg-success-transparent px-xs py-xxs text-xxs font-medium text-success"
+      title={consent === "voice" ? "They agreed their recorded voice can be used in public material" : "They agreed their words can be quoted in public material, without their name"}
+      data-testid="publish-chip"
+    >
+      {consent === "voice" ? "Voice can be used" : "Can be quoted"}
+    </span>
+  );
+}
+
 function Quote({ quote, answer }: BriefItem["evidence"][number]) {
   return (
     <li className="rounded-s bg-muted p-s flex flex-col gap-xs">
       <p className="text-s text-foreground">“{quote}”</p>
       <div className="flex items-center justify-between gap-s">
         <p className="min-w-0 truncate text-xs text-muted-foreground">
-          {answer.who} · round {answer.roundNumber}
+          {answer.who} · {answer.roundNumber === 0 ? "interview" : `round ${answer.roundNumber}`}
         </p>
+        <PublishChip consent={answer.publishConsent} />
       </div>
       {answer.audioUrl && <VoiceNotePill url={answer.audioUrl} durationMs={answer.durationMs} className="bg-background" />}
     </li>

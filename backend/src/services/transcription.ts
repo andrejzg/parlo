@@ -130,7 +130,7 @@ export async function ingestIntoAgent(env: Env, responseId: string): Promise<voi
   const db = env.DB;
   const response = await db
     .prepare(
-      `SELECT r.id, r.survey_id, r.user_id, r.first_name, r.last_name, r.submitted_at,
+      `SELECT r.id, r.survey_id, r.user_id, r.first_name, r.last_name, r.submitted_at, r.publish_consent,
               u.first_name AS u_first, u.last_name AS u_last, u.wa_name, u.linkedin_name, u.phone
        FROM responses r LEFT JOIN users u ON u.id = r.user_id WHERE r.id = ?`
     )
@@ -142,6 +142,7 @@ export async function ingestIntoAgent(env: Env, responseId: string): Promise<voi
       first_name: string | null;
       last_name: string | null;
       submitted_at: string | null;
+      publish_consent: string | null;
       u_first: string | null;
       u_last: string | null;
       wa_name: string | null;
@@ -175,6 +176,7 @@ export async function ingestIntoAgent(env: Env, responseId: string): Promise<voi
     userId: response.user_id,
     displayName: displayName || null,
     submittedAt: response.submitted_at,
+    publishConsent: response.publish_consent,
     answers: answers.results.map((a) => ({
       questionId: a.question_id,
       questionText: a.question_text,

@@ -18,6 +18,15 @@ export async function bearerAuthMiddleware(c: Context<Env>, next: Next) {
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice(7);
 
+    // A Parlo API key (`pk_…`) is accepted as the bearer itself, so an agent
+    // that already holds its person's key (from the one-call API, or from
+    // joining a study) connects without the OAuth dance. The backend checks
+    // the key on every call; a bad one fails there with 401.
+    if (/^pk_[a-z0-9]{16,64}$/.test(token)) {
+      c.set("apiKey", token);
+      return next();
+    }
+
     const store = new OAuthStore(c.env.OAUTH_KV);
     const storedToken = await store.getAccessToken(token);
 

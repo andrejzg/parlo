@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronLeft, LayoutDashboard, LoaderCircle } from "lucide-react";
+import { Check, ChevronLeft, LayoutDashboard, LoaderCircle } from "lucide-react";
 import { fetchBrief, type BriefBoard as Board } from "@/api/study";
 import AnswersList from "@/components/study/AnswersList";
 import BriefBoard, { labelClass } from "@/components/study/BriefBoard";
@@ -33,6 +33,59 @@ function Team({ board }: { board: Board }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The first steps of a new study, for the research team: the people to hear
+ * from, then the client. Gone once both are done. The client is invited
+ * before answers are collected because it only ever hears answers given
+ * after the consent screen named it.
+ */
+function GettingStarted({ board, onGo }: { board: Board; onGo: () => void }) {
+  if (!board.you.canManage || !board.survey.dashboardCode) return null;
+  const hasPeople = board.participants > 0;
+  const hasClient = board.team.some((t) => t.role === "client");
+  if (hasPeople && hasClient) return null;
+  const steps = [
+    {
+      done: hasClient,
+      title: hasClient ? "The client is in" : "Invite the client",
+      body: hasClient ? null : "Do this first. The client only hears answers given after participants are told who commissioned the study.",
+      action: "Invite the client",
+    },
+    {
+      done: hasPeople,
+      title: hasPeople ? `${board.participants} ${board.participants === 1 ? "person is" : "people are"} in the study` : "Bring in the people to hear from",
+      body: hasPeople ? null : "Each gets a personal link. Paste an earlier interview with them and the agent reads it as their first answer.",
+      action: "Add participants",
+    },
+  ];
+  return (
+    <section className="rounded-m bg-card shadow-edge-accent p-m flex flex-col gap-s" data-testid="study-getting-started">
+      <h2 className={labelClass}>Get this study going</h2>
+      <ol className="flex flex-col gap-s">
+        {steps.map((s) => (
+          <li key={s.action} className="flex items-start gap-s">
+            <span
+              className={`mt-xxs flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${s.done ? "bg-success-transparent text-success" : "shadow-edge"}`}
+              aria-hidden
+            >
+              {s.done && <Check size={12} />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className={`text-s font-medium ${s.done ? "text-muted-foreground" : "text-foreground"}`}>{s.title}</p>
+              {s.body && <p className="text-xs text-muted-foreground">{s.body}</p>}
+            </div>
+            {!s.done && (
+              <Button type="button" size="sm" variant="secondary" className="shrink-0" onClick={onGo}>
+                {s.action}
+              </Button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -155,7 +208,10 @@ export default function StudyPage() {
 
         {tab === "brief" && (
           <div className="flex flex-col gap-m lg:grid lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start lg:gap-l">
-            <BriefBoard board={board} apiKey={apiKey} onBoard={setBoard} />
+            <div className="flex flex-col gap-m">
+              <GettingStarted board={board} onGo={() => navigate(`/d/${board.survey.dashboardCode}?tab=members`)} />
+              <BriefBoard board={board} apiKey={apiKey} onBoard={setBoard} />
+            </div>
             <aside className="lg:sticky lg:top-l">
               <PlanPanel board={board} apiKey={apiKey} onBoard={setBoard} reload={load} />
             </aside>
