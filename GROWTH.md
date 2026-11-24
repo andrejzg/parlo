@@ -86,6 +86,25 @@ Statuses: `idea` → `planned` → `running` → `kept` / `killed`.
 
 Newest first. Each entry: context, what was discussed, where we lean, what it forces, what's still open.
 
+### 2026-11-24 · A study starts from a brief, and agents sit at the table
+
+**Context.** Andrej, an hour after the study workspace shipped: "yes do (1,2,3,5)" (a Start a study screen, tidy the participant page for studies, publication consent, fix the stale participant tests), and "we need a cracked MCP that will allow both our AI agents and client AI agents to collab on the research and read/set/create/update stuff".
+
+**Built.**
+- *Start a study* (`/study/new`): paste the brief, optionally who commissioned it, a reward and a budget, and your own round-1 questions; the study opens on its brief with two first steps waiting, in this order: invite the client, then bring people in. The order is the lesson from the consent rule: the client only hears answers given after the consent screen named them.
+- *The participant's page for a study*: no member count, no "Invite someone", no "Share this parlo"; the consent sentence says the recording goes to the research team.
+- *Publication consent*: "Can we quote you?", optional and off: words (unnamed), then voice. It travels with each answer to the board (a chip on every quote), the CSV, the agent's files and the MCP tools. This is the precondition for the asset producers: a quote may go into a public post only if its speaker said yes.
+- *The MCP server, for both seats*: 22 study tools. The research team's agent and the client's agent use the same ones; the backend enforces the seat. An agent gets a seat the way a person does, with the invite link (`join_study`); the study page gives each person "Copy instructions for your agent". Whatever an agent changes is logged as "<name>'s agent" and the other side is told.
+- *The stale participant tests*, failing since October, pass: they seeded a sign-in record the app clears on load and never answered the LinkedIn check.
+
+**How the agent table works, in one run (local, two keys on two seats).** The researcher's agent called `create_study` with a brief and a sponsor, `add_participants` (one with a prior interview marked quotable) and `create_invite`. The client's agent, on a fresh account, was refused ("You have no seat on this study… take the seat with join_study"), joined with the link as "Maria Chen", read the study (participants as "Customer 1", the quote marked "may be published: quote"), added a question and steered. Half a minute later its `get_study` showed three questions moved to *emerging* from the imported interview and round 2 planned around the steer. Its `send_round` was refused with the reason. The researcher's agent read `get_study_changes` ("Maria Chen's agent (client) steered on …"), priced the round at $15 and sent it.
+
+**Where we lean.** Agents relay links and drop asks (2026-10-25); the same holds here, so a seat for an agent is a link, not a setting. And the agent table is the same table: no separate permissions, no agent-only surface. An agent that can steer but not send is exactly a client; that symmetry is why one tool set works.
+
+**Found on the way.** An imported transcript carries the speaker's name on every line, so the client's view now takes participant names out of transcripts and quotes as well as the agent's text. The WhatsApp bot stamped sponsored answers as consented without ever naming the sponsor; it says the line now. The frontend's CI typecheck had been checking no files.
+
+**Open.** Publication consent is asked per response; whether it should be asked once per person. Agents can send rounds and release rewards when their person holds a research seat: the tools say so loudly, nothing enforces "your person asked". No WhatsApp path for publication consent. S39's events gain `via` (app or agent), so the first study can say how much of the steering was done by agents.
+
 ### 2026-11-24 · Built: the study workspace (client seat, living brief, paid touches)
 
 **Context.** Andrej, after the research-studio discussion below: "Yes, build it" (rewards), then "and build the rest too. Specifically, we'll need a really nice, intuitive way for the research brief to develop over time, both parties, the G2 researchers and the client researchers, working together and steering this research as we speak to people." Built the same day on `feature/research-studio`; nothing is deployed and nothing is committed as this is written.
