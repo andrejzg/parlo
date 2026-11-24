@@ -41,6 +41,7 @@ import { sanitizeOutputs } from "../services/outputs";
 import { OPENER_TOKEN_TTL_SECONDS, introKey, openerTokenKey, saveIntroFromUrl } from "../services/intro";
 import { buildBotChatUrl } from "../services/whatsapp";
 import { trackServerEvent } from "../services/analytics";
+import { rewardOfferFor } from "../services/rewards";
 import type { AuthVariables } from "../middleware/auth";
 import { claimOwnership, claimOwnershipForUser, displayNameFor, ensureApiKey, ensureMember, findUserByPhone, getMemberByToken, normalizePhone, upsertUserByPhone } from "../services/groups";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
@@ -697,7 +698,7 @@ surveys.get("/api/s/:code", async (c) => {
   const [questions, round, memberCountRow] = await Promise.all([
     pendingAsksFor(db, survey.id, member?.user_id ?? null),
     latestSentRound(db, survey.id),
-    db.prepare("SELECT COUNT(*) AS n FROM group_members WHERE survey_id = ? AND removed_at IS NULL").bind(survey.id).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM group_members WHERE survey_id = ? AND removed_at IS NULL AND role != 'client'").bind(survey.id).first<{ n: number }>(),
   ]);
 
   let memberView: SurveyPublicView["member"] = null;
@@ -714,7 +715,7 @@ surveys.get("/api/s/:code", async (c) => {
     hasAnswered = !!answered;
     memberView = { role: member.role, displayName: user ? displayNameFor(user) : null, hasAnswered };
   }
-  const unlocked = !!member && (hasAnswered || member.role === "owner" || member.role === "admin");
+  const unlocked = !!member && (hasAnswered || member.role === "owner" || member.role === "admin" || member.role === "client");
 
   // Creator's voice hello — signed read URL, 1h TTL like dashboard audio.
   let intro: SurveyPublicView["intro"] = null;
@@ -744,6 +745,9 @@ surveys.get("/api/s/:code", async (c) => {
       updatedAt: survey.report_updated_at ?? null,
     },
     memberCount: memberCountRow?.n ?? 0,
+    sponsor: survey.sponsor_name ? { name: survey.sponsor_name } : null,
+    // Only someone who arrived by a personal link is offered money (services/rewards.ts).
+    reward: await rewardOfferFor(db, survey, member),
   };
 
   return c.json(view);
@@ -1214,7 +1218,7 @@ surveys.get("/api/my/surveys", async (c) => {
       created_at: string;
       report_updated_at: string | null;
       report_head: string | null;
-      role: "owner" | "admin" | "member";
+      role: "owner" | "admin" | "client" | "member";
       access_token: string;
       question_count: number;
       member_count: number;
@@ -1236,11 +1240,14 @@ surveys.get("/api/my/surveys", async (c) => {
       const open = detail[i * 3].results[0] as unknown as OpenRoundRow | undefined;
       const proposed = detail[i * 3 + 1].results[0] as unknown as ProposedRoundRow | undefined;
       const faces = (detail[i * 3 + 2].results as unknown as FaceRow[]).map((f) => toFace(f, baseUrl));
-      const manager = r.role !== "member";
+      const manager = r.role === "owner" || r.role === "admin";
+      // The client sees the plan and the report like the research team, but
+      // never the dashboard code: that opens names and phone numbers.
+      const onTeam = manager || r.role === "client";
       // Owners and admins never answered round 1 themselves, so "pending asks"
       // would always be non-zero for them; the signal only means something
       // for members.
-      const pendingAsks = manager ? 0 : (await pendingAsksFor(db, r.id, userId)).length;
+      const pendingAsks = onTeam ? 0 : (await pendingAsksFor(db, r.id, userId)).length;
 
       const round = open
         ? {
@@ -1262,7 +1269,7 @@ surveys.get("/api/my/surveys", async (c) => {
           r.report_updated_at,
           // Round 1 is sent the moment the parlo is created; only later rounds are news.
           open && open.number > 1 ? open.sent_at : null,
-          manager && proposed ? proposed.created_at : null,
+          onTeam && proposed ? proposed.created_at : null,
         ]) ?? new Date().toISOString();
 
       return {
@@ -1286,7 +1293,7 @@ surveys.get("/api/my/surveys", async (c) => {
         lastActivityAt,
         round,
         // Proposals are the owner's and admins' business; members only ever see sent rounds.
-        proposedRound: manager && proposed ? { number: proposed.number, kind: proposed.kind, createdAt: toIso(proposed.created_at) ?? proposed.created_at } : null,
+        proposedRound: onTeam && proposed ? { number: proposed.number, kind: proposed.kind, createdAt: toIso(proposed.created_at) ?? proposed.created_at } : null,
         pendingAsks,
         faces,
       };

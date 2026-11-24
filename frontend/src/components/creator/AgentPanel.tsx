@@ -12,14 +12,20 @@ import {
   removeConnection,
   runAgentDigest,
   runAgentExport,
+  setRoundReward,
   updateAgentSettings,
   updateGroupSettings,
   type AgentConnection,
   type AgentSnapshot,
   type GroupRound,
   type GroupVisibility,
+  type RoundCost,
   type RoundKind,
 } from "@/api/client";
+import { apiErrorMessage, formatMoney } from "@/api/study";
+import { MoneyInput } from "@/components/creator/MoneyInput";
+import RewardsCard from "@/components/creator/RewardsCard";
+import { centsToDollars, dollarsToCents } from "@/components/creator/studyUi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,17 +62,20 @@ function kindLabel(kind: RoundKind) {
   return kind === "probe" ? "Probe · personal follow-ups" : "Poll · same ask for everyone";
 }
 
-/** `apiFetch` throws "API 400: {json}"; show the server's sentence, not the envelope. */
-function apiErrorMessage(err: unknown, fallback: string) {
-  if (!(err instanceof Error)) return fallback;
-  const m = err.message.match(/^API \d+: (.*)$/s);
-  if (!m) return err.message || fallback;
-  try {
-    const parsed = JSON.parse(m[1]) as { error?: string };
-    return parsed.error || fallback;
-  } catch {
-    return fallback;
-  }
+/**
+ * What a proposed round could cost at this price, in a line. The server's
+ * `cost` gives who the round can pay and what the study has left; the price
+ * is whatever is in the field right now.
+ */
+function describeRoundCost(cents: number | null, cost: RoundCost | null | undefined, currency: string): { text: string; overBudget: boolean } {
+  if (!cents) return { text: "Unpaid round", overBudget: false };
+  if (!cost) return { text: `${formatMoney(cents, currency)} per answer`, overBudget: false };
+  if (cost.reach === 0) return { text: "Nobody in this round is a paid participant yet", overBudget: false };
+  const maxCents = cents * cost.reach;
+  const sum = `Up to ${cost.reach} ${cost.reach === 1 ? "person" : "people"} × ${formatMoney(cents, currency)} = ${formatMoney(maxCents, currency)}`;
+  if (cost.remainingCents === null) return { text: `${sum} · no budget set`, overBudget: false };
+  const left = `${formatMoney(Math.max(0, cost.remainingCents), currency)} of ${formatMoney(cost.budgetCents ?? 0, currency)} left`;
+  return { text: `${sum} · ${left}`, overBudget: maxCents > cost.remainingCents };
 }
 
 function connectionDot(state: AgentConnection["state"]) {
@@ -113,15 +122,29 @@ function ConnectionRow({ connection, busy, onRemove }: { connection: AgentConnec
 function RoundCard({
   round,
   busy,
+  currency,
   onApprove,
   onReject,
+  onPriceCommit,
 }: {
   round: GroupRound;
   busy: boolean;
-  onApprove?: () => void;
+  currency: string;
+  /** Send the round at this price per answer; null = unpaid. */
+  onApprove?: (rewardCents: number | null) => void;
   onReject?: () => void;
+  /** The price field lost focus with a new value: keep it on the proposal. */
+  onPriceCommit?: (rewardCents: number | null) => void;
 }) {
   const proposed = round.status === "proposed";
+  const savedCents = round.reward_cents || null;
+  // null = untouched: the field shows the proposal's price, and a poll may refresh it.
+  const [priceDraft, setPriceDraft] = useState<string | null>(null);
+  const price = priceDraft ?? centsToDollars(savedCents);
+  // Empty or zero is an unpaid round.
+  const priceCents = dollarsToCents(price) || null;
+  const cost = describeRoundCost(priceCents, round.cost, currency);
+  const inputId = `round-reward-${round.id}`;
   return (
     <motion.div
       layout
@@ -143,7 +166,7 @@ function RoundCard({
             {round.status === "proposed"
               ? "Waiting for your approval"
               : round.status === "sent"
-              ? `Sent ${formatWhen(round.sent_at)}${describeDeadline(round.closes_at) ? ` · ${describeDeadline(round.closes_at)}` : ""}`
+              ? `Sent ${formatWhen(round.sent_at)}${describeDeadline(round.closes_at) ? ` · ${describeDeadline(round.closes_at)}` : ""}${savedCents ? ` · ${formatMoney(savedCents, currency)} per answer` : ""}`
               : round.status === "closed"
               ? `Closed ${formatWhen(round.closed_at ?? round.closes_at)}`
               : round.status}
@@ -171,12 +194,39 @@ function RoundCard({
       </ul>
 
       {proposed && (
+        <div className="flex flex-col gap-xs">
+          <div className="flex items-center gap-s">
+            <Label htmlFor={inputId} className="flex-1">
+              Reward per answer
+            </Label>
+            <MoneyInput
+              id={inputId}
+              currency={currency}
+              value={price}
+              onValueChange={setPriceDraft}
+              onBlur={() => {
+                if (priceCents !== savedCents) onPriceCommit?.(priceCents);
+              }}
+              placeholder="0"
+              className="w-28 shrink-0"
+              disabled={busy}
+              aria-describedby={`${inputId}-cost`}
+              data-testid="round-reward-input"
+            />
+          </div>
+          <p id={`${inputId}-cost`} className={`text-xs ${cost.overBudget ? "text-error" : "text-muted-foreground"}`} data-testid="round-cost" aria-live="polite">
+            {cost.text}
+          </p>
+        </div>
+      )}
+
+      {proposed && (
         <div className="flex gap-s pt-xxs">
           <Button type="button" variant="secondary" className="flex-1" onClick={onReject} disabled={busy}>
             <X aria-hidden />
             Not now
           </Button>
-          <Button type="button" className="flex-1" onClick={onApprove} disabled={busy} data-testid="round-approve">
+          <Button type="button" className="flex-1" onClick={() => onApprove?.(priceCents)} disabled={busy || cost.overBudget} data-testid="round-approve">
             <Send aria-hidden />
             Send round
           </Button>
@@ -197,6 +247,8 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
   const [proposing, setProposing] = useState(false);
   const [acting, setActing] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
+  // The study's currency, reported by the Rewards card once it has loaded.
+  const [currency, setCurrency] = useState("USD");
   // Exports
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -267,16 +319,28 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
     }
   };
 
-  const handleApprove = async (round: GroupRound) => {
+  const handleApprove = async (round: GroupRound, rewardCents: number | null) => {
     setActing(true);
     try {
-      const r = await approveRound(apiKey, surveyId, round.id);
+      const r = await approveRound(apiKey, surveyId, round.id, rewardCents);
       toast.success(r.notified > 0 ? `Round ${round.number} sent to ${r.notified} ${r.notified === 1 ? "person" : "people"}.` : `Round ${round.number} is open.`);
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't send the round.");
+      // A round that no longer fits the budget answers 409 with the sum in a sentence.
+      toast.error(apiErrorMessage(err, "Couldn't send the round."));
+      await load();
     } finally {
       setActing(false);
+    }
+  };
+
+  /** Keep a price typed on a proposal, so it is still there after a tab change or a reload. */
+  const handleRoundPrice = async (round: GroupRound, rewardCents: number | null) => {
+    try {
+      await setRoundReward(apiKey, surveyId, round.id, rewardCents);
+      await load();
+    } catch {
+      // "Send round" carries the price itself, so nothing is lost if this fails.
     }
   };
 
@@ -393,7 +457,7 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
 
   const proposed = snap.rounds.filter((r) => r.status === "proposed");
   const sent = snap.rounds.filter((r) => r.status === "sent").sort((a, b) => b.number - a.number);
-  const vis = visibilityCopy(snap.visibility);
+  const vis = visibilityCopy(snap.visibility, snap.sponsor);
   const answersOnFile = snap.files.filter((f) => f.path.startsWith("/answers/")).length;
   const connections = snap.connections ?? [];
   const readyConnections = connections.filter((c) => c.state === "ready").length;
@@ -421,7 +485,15 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
       {/* Proposed rounds */}
       <AnimatePresence initial={false}>
         {proposed.map((round) => (
-          <RoundCard key={round.id} round={round} busy={acting} onApprove={() => handleApprove(round)} onReject={() => handleReject(round)} />
+          <RoundCard
+            key={round.id}
+            round={round}
+            busy={acting}
+            currency={currency}
+            onApprove={(cents) => handleApprove(round, cents)}
+            onReject={() => handleReject(round)}
+            onPriceCommit={(cents) => handleRoundPrice(round, cents)}
+          />
         ))}
       </AnimatePresence>
 
@@ -473,6 +545,9 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
         </div>
         <Switch id="open-group" checked={snap.visibility === "open"} onCheckedChange={handleVisibility} data-testid="open-group-switch" />
       </div>
+
+      {/* Rewards */}
+      <RewardsCard apiKey={apiKey} surveyId={surveyId} onCurrency={setCurrency} onChanged={load} />
 
       {/* Exports */}
       <div className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="agent-exports">
@@ -574,7 +649,7 @@ export default function AgentPanel({ apiKey, surveyId, surveyCode, onVisibilityC
         <div className="flex flex-col gap-s">
           <p className="font-brand text-xs font-medium tracking-xl uppercase text-muted-foreground px-xxs">Rounds</p>
           {sent.map((round) => (
-            <RoundCard key={round.id} round={round} busy={acting} />
+            <RoundCard key={round.id} round={round} busy={acting} currency={currency} />
           ))}
         </div>
       )}

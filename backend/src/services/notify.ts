@@ -12,7 +12,8 @@ export type NotificationType =
   | "round_proposed"
   | "report_ready"
   | "role_changed"
-  | "parlo_invite";
+  | "parlo_invite"
+  | "brief_update";
 
 export interface NotificationInput {
   type: NotificationType;

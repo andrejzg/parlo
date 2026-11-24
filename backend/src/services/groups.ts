@@ -9,6 +9,9 @@
  *     owner or other admins
  *   - answering a parlo makes you a member ("answering is joining");
  *     a removed member stays removed even if they answer again
+ *   - a client (the company that commissioned a study) hears raw answers,
+ *     shapes the brief and steers; it never approves a round, sees a phone
+ *     number or manages members, and is never asked the study's questions
  */
 
 import type { GroupMember, GroupRole, User } from "../types";
@@ -45,6 +48,11 @@ export function displayNameFor(u: Pick<User, "first_name" | "last_name" | "wa_na
 
 export function canManage(role: GroupRole | null | undefined): boolean {
   return role === "owner" || role === "admin";
+}
+
+/** The research team and the client: everyone who works on the brief. */
+export function canSteer(role: GroupRole | null | undefined): boolean {
+  return role === "owner" || role === "admin" || role === "client";
 }
 
 /**
@@ -142,18 +150,22 @@ export interface MemberRow {
   linkedinEmail: string | null;
   joinedAt: string;
   responseCount: number;
+  segment: string | null;
+  descriptor: string | null;
+  /** The secret in this member's personal link; only ever sent to managers. */
+  accessToken: string;
 }
 
 export async function listMembers(db: D1Database, surveyId: string): Promise<MemberRow[]> {
   const result = await db
     .prepare(
-      `SELECT gm.user_id, gm.role, gm.joined_at,
+      `SELECT gm.user_id, gm.role, gm.joined_at, gm.segment, gm.descriptor, gm.access_token,
               u.phone, u.first_name, u.last_name, u.wa_name, u.linkedin_name, u.linkedin_photo_url, u.linkedin_email,
               (SELECT COUNT(*) FROM responses r WHERE r.survey_id = gm.survey_id AND r.user_id = gm.user_id AND r.status != 'in_progress') AS response_count
        FROM group_members gm
        JOIN users u ON u.id = gm.user_id
        WHERE gm.survey_id = ? AND gm.removed_at IS NULL
-       ORDER BY CASE gm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, gm.joined_at ASC`
+       ORDER BY CASE gm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'client' THEN 2 ELSE 3 END, gm.joined_at ASC`
     )
     .bind(surveyId)
     .all<{
@@ -168,6 +180,9 @@ export async function listMembers(db: D1Database, surveyId: string): Promise<Mem
       linkedin_photo_url: string | null;
       linkedin_email: string | null;
       response_count: number;
+      segment: string | null;
+      descriptor: string | null;
+      access_token: string;
     }>();
 
   return result.results.map((r) => ({
@@ -182,6 +197,9 @@ export async function listMembers(db: D1Database, surveyId: string): Promise<Mem
     linkedinEmail: r.linkedin_email,
     joinedAt: r.joined_at,
     responseCount: r.response_count,
+    segment: r.segment,
+    descriptor: r.descriptor,
+    accessToken: r.access_token,
   }));
 }
 
@@ -207,6 +225,7 @@ export async function setMemberRole(
   const target = await getMembership(db, surveyId, targetUserId);
   if (!target) throw new GroupPermissionError("Member not found", 404);
   if (target.role === "owner") throw new GroupPermissionError("The owner's role can only change by transferring ownership", 400);
+  if (target.role === "client") throw new GroupPermissionError("A client's seat doesn't change role; remove them instead", 400);
   if (actor.role === "admin" && newRole === "member") {
     throw new GroupPermissionError("Only the owner can demote an admin");
   }
@@ -236,6 +255,7 @@ export async function transferOwnership(db: D1Database, surveyId: string, actor:
   if (toUserId === actor.user_id) throw new GroupPermissionError("You already own this parlo", 400);
   const target = await getMembership(db, surveyId, toUserId);
   if (!target) throw new GroupPermissionError("New owner must be a member of this parlo", 404);
+  if (target.role === "client") throw new GroupPermissionError("A client can't own the study", 400);
   await db.batch([
     db.prepare("UPDATE group_members SET role = 'admin' WHERE survey_id = ? AND user_id = ?").bind(surveyId, actor.user_id),
     db.prepare("UPDATE group_members SET role = 'owner' WHERE survey_id = ? AND user_id = ?").bind(surveyId, toUserId),

@@ -1,7 +1,8 @@
 /**
  * Copy for the two visibility states. Private is the default: you speak to
  * the agent in private and the agent reports back to the group. Open means
- * everyone in the group hears everyone, with names.
+ * everyone in the group hears everyone, with names. A sponsored study is
+ * still private, with one more listener to name: the sponsor.
  *
  * Keep every sentence that explains who hears an answer in here so the
  * welcome, consent, dashboard and settings screens never drift apart.
@@ -20,7 +21,13 @@ export interface VisibilityCopy {
   settingDescription: string;
 }
 
-export function visibilityCopy(visibility: GroupVisibility | undefined): VisibilityCopy {
+/**
+ * `sponsorName` is set for a sponsored study (`survey.sponsor?.name`): the
+ * sponsor hears the answers alongside the research team, so a private parlo
+ * has to name them wherever it says who hears an answer. Participant screens
+ * pass it; without it the copy is the plain private or open copy.
+ */
+export function visibilityCopy(visibility: GroupVisibility | undefined, sponsorName?: string | null): VisibilityCopy {
   if (visibility === "open") {
     return {
       label: "Open group",
@@ -28,6 +35,15 @@ export function visibilityCopy(visibility: GroupVisibility | undefined): Visibil
       consent:
         "This is an open group: everyone in it can hear your answers, with your name. The agent also uses them to write the group's report.",
       settingDescription: "Members hear each other's answers, with names. Applies to rounds from now on.",
+    };
+  }
+  const sponsor = sponsorName?.trim();
+  if (sponsor) {
+    return {
+      label: "Private study",
+      short: `Private study. The research team and ${sponsor} hear your answers.`,
+      consent: `The research team and ${sponsor} hear your answers. The sponsor hears your voice but is not shown your name. Everyone who answers gets the agent's report.`,
+      settingDescription: `Only the research team, ${sponsor} and the agent hear raw answers. Everyone who answers gets the report.`,
     };
   }
   return {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, ChevronUp, Crown, LoaderCircle, MoreHorizontal, Shield, Trash2 } from "lucide-react";
+import { Briefcase, ChevronLeft, ChevronUp, Crown, LoaderCircle, MoreHorizontal, Shield, Trash2 } from "lucide-react";
 import type {
   DashboardData,
   DashboardResponse,
@@ -21,6 +21,8 @@ import {
   markSurveyRead,
 } from "@/api/client";
 import AgentPanel from "@/components/creator/AgentPanel";
+import BringPeopleIn from "@/components/creator/BringPeopleIn";
+import { copyText } from "@/components/creator/studyUi";
 import { toast } from "@/components/ui/sonner";
 import { buildShareUrl } from "@/lib/slug";
 import { useNavigate } from "react-router-dom";
@@ -255,7 +257,7 @@ function RoleBadge({ role }: { role: GroupRole }) {
   if (role === "member") return null;
   return (
     <span className="inline-flex items-center gap-xxs rounded-full bg-muted px-xs py-xxs font-brand text-xxs font-medium tracking-xl uppercase text-neutral-8">
-      {role === "owner" ? <Crown size={10} aria-hidden /> : <Shield size={10} aria-hidden />}
+      {role === "owner" ? <Crown size={10} aria-hidden /> : role === "client" ? <Briefcase size={10} aria-hidden /> : <Shield size={10} aria-hidden />}
       {role}
     </span>
   );
@@ -293,6 +295,11 @@ function MemberRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-xs">
             <p className="text-s font-medium text-foreground truncate">{displayName}</p>
+            {member.segment && (
+              <span className="shrink-0 max-w-[45%] truncate rounded-full bg-muted px-xs py-xxs text-xxs font-medium text-neutral-8" data-testid="member-segment">
+                {member.segment}
+              </span>
+            )}
             <RoleBadge role={member.role} />
           </div>
           <p className="text-xs text-muted-foreground truncate">
@@ -430,9 +437,19 @@ export default function AgentDashboard({
           setMemberBusy(false);
         }
       };
-      const name = m.displayName || "this member";
+      const name = m.displayName || (m.role === "client" ? "The client" : "this member");
       const actions: MemberAction[] = [];
       if (m.role === "owner") return actions;
+      // The client seat is not a step on the member → admin ladder: the owner can take it away, nothing else.
+      if (m.role === "client") {
+        if (you.role === "owner") actions.push({ label: "Remove", destructive: true, run: wrap(() => removeMember(key, survey.id, m.userId), `${name} was removed`) });
+        return actions;
+      }
+      // A participant's personal link is what makes their answers payable.
+      if (m.role === "member" && m.accessToken && (you.role === "owner" || you.role === "admin")) {
+        const link = `${buildShareUrl(survey.title, survey.code, window.location.origin)}?t=${encodeURIComponent(m.accessToken)}`;
+        actions.push({ label: "Copy personal link", run: () => copyText(link) });
+      }
       if (you.role === "owner") {
         if (m.role === "member") actions.push({ label: "Make admin", run: wrap(() => setMemberRole(key, survey.id, m.userId, "admin"), `${name} is now an admin`) });
         if (m.role === "admin") actions.push({ label: "Remove admin", run: wrap(() => setMemberRole(key, survey.id, m.userId, "member"), `${name} is now a member`) });
@@ -446,8 +463,11 @@ export default function AgentDashboard({
       }
       return actions;
     },
-    [you, apiKey, survey.id, loadMembers],
+    [you, apiKey, survey.id, survey.title, survey.code, loadMembers],
   );
+
+  /** The research team: they bring people in and see personal links. */
+  const canManage = you?.role === "owner" || you?.role === "admin";
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -665,8 +685,17 @@ export default function AgentDashboard({
           </Button>
         </div>
 
-        {/* Tab switcher */}
-        <div className="flex gap-xs mb-xs">
+        {/* Tab switcher. Four chips do not fit one row on a 320px phone, so they may wrap. */}
+        <div className="flex flex-wrap gap-xs mb-xs">
+          {/* The brief has its own page: this chip goes there instead of switching tabs. */}
+          <button
+            type="button"
+            onClick={() => navigate(`/study/${survey.id}`)}
+            className={`${chipClass} ${chipTone(false)}`}
+            data-testid="dashboard-tab-brief"
+          >
+            Brief
+          </button>
           {(["responses", "members", "agent"] as const).map((tab) => (
             <button
               key={tab}
@@ -736,23 +765,32 @@ export default function AgentDashboard({
             <div className="flex justify-center py-xxl">
               <Spinner />
             </div>
-          ) : members.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-xs py-xxl text-center">
-              <p className="text-m font-medium text-foreground">
-                No members yet
-              </p>
-              <p className="text-s text-muted-foreground">
-                Answering is joining: everyone who responds becomes a member. Owners and admins can promote or remove people here.
-              </p>
-            </div>
           ) : (
             <div className="space-y-xs">
-              {members.map((member) => (
-                <MemberRow key={member.userId} member={member} actions={actionsFor(member)} busy={memberBusy} />
-              ))}
-              <p className="text-xxs text-muted-foreground px-xxs pt-xs">
-                Owner can hand over the parlo and manage admins. Admins can add admins and remove members. Nobody can remove the owner.
-              </p>
+              {canManage && apiKey && (
+                <div className="pb-xs">
+                  <BringPeopleIn apiKey={apiKey} surveyId={survey.id} onPeopleChanged={loadMembers} />
+                </div>
+              )}
+              {members.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-xs py-xxl text-center">
+                  <p className="text-m font-medium text-foreground">
+                    No members yet
+                  </p>
+                  <p className="text-s text-muted-foreground">
+                    Answering is joining: everyone who responds becomes a member. Owners and admins can promote or remove people here.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {members.map((member) => (
+                    <MemberRow key={member.userId} member={member} actions={actionsFor(member)} busy={memberBusy} />
+                  ))}
+                  <p className="text-xxs text-muted-foreground px-xxs pt-xs">
+                    Owner can hand over the parlo and manage admins. Admins can add admins and remove members. Nobody can remove the owner. The client hears answers and shapes the brief, and only the owner can remove them.
+                  </p>
+                </>
+              )}
             </div>
           )
         ) : !hasReplies ? (

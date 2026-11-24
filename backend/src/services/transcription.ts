@@ -8,6 +8,7 @@ import { getAgentByName } from "agents";
 import type { Env, ResponseAnswer } from "../types";
 import { transcribeAudio } from "./ai";
 import { displayNameFor } from "./groups";
+import { settleRewardsForResponse } from "./rewards";
 
 export async function transcribeResponseAnswers(
   env: Env,
@@ -85,6 +86,10 @@ export async function transcribeResponseAnswers(
 
   await ingestIntoAgent(env, responseId).catch((err) => {
     console.error(`[transcription] Agent ingest failed for ${responseId}:`, err);
+  });
+  // The transcripts exist now: judge the answer and pay what it earned.
+  await settleRewardsForResponse(env, responseId).catch((err) => {
+    console.error(`[transcription] Reward settle failed for ${responseId}:`, err);
   });
 }
 

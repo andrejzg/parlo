@@ -7,7 +7,9 @@
  * only ever sees transcripts and metadata (audio and video stay in R2).
  *
  * Files the agent keeps:
- *   /brief.md                 — the creator's brief + clarifications
+ *   /brief.md                 — the creator's brief + clarifications, and for a
+ *                               study the living brief: the questions it must
+ *                               answer with their status, and the team's open steers
  *   /questions.md             — every round's asks
  *   /members.md               — who is in the group (names and roles, no phones)
  *   /answers/round-N/<who>/<questionId>.md — one transcript per answer
@@ -19,6 +21,9 @@
  *   - ingestResponse(): called after transcription; schedules a digest
  *   - runDigest(): reads new answers, rewrites /report.md and /memory.md
  *   - proposeRound(): plans the next round (poll or probe) for owner approval
+ *   - readBrief(): after a digest, reads the answers against the brief's
+ *     questions (open / emerging / answered, with quotes) and suggests new ones
+ *   - scheduleReplan(): the brief moved or someone steered; re-plan the next round
  *   - nightly cron at 03:00 UTC digests anything the debounce missed
  */
 
@@ -28,11 +33,12 @@ import { sweepPendingTranscriptions } from "../services/transcription";
 import { generateText, tool, stepCountIs } from "ai";
 import { z } from "zod";
 import type { Env, GroupRole, Round, RoundKind, SurveyQuestion } from "../types";
-import { pickAgentModel } from "./model";
+import { pickAgentModel, runOnAgentModel } from "./model";
 import { initAnalytics, trackServerEvent } from "../services/analytics";
 import { closesAtFor, repeatsOnClose, shapeReport, timingSpec } from "../services/shapes";
 import { outputsAgentSection, parseOutputs } from "../services/outputs";
 import { closeRound, createProposedRound, getRound, membersPendingFor, overdueRounds, roundAsks, sendRound, type ProposedAsk } from "../services/rounds";
+import { applyAgentReading, briefForAgent, listItems, LIVE_STATUSES, logEvent, type AgentReading } from "../services/briefBoard";
 import { notifyManagers, notifyUsers } from "../services/notify";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { displayNameFor } from "../services/groups";
@@ -141,6 +147,10 @@ const MAX_LOOP_STEPS = 14;
 /** Reports are capped at ~500 words, but the loop also carries tool chatter. */
 const MAX_OUTPUT_TOKENS = 4096;
 const DIGEST_DEBOUNCE_SECONDS = 180;
+/** A steer or a brief change re-plans the next round this long after the first one. */
+const REPLAN_DEBOUNCE_SECONDS = 20;
+/** How much answer text one reading of the brief may carry. */
+const BRIEF_READ_CHARS = 70_000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -303,9 +313,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
   private async syncFromD1(surveyId: string): Promise<{ answerFiles: number; newAnswers: number }> {
     const db = this.env.DB;
     const survey = await db
-      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape, outputs, timing FROM surveys WHERE id = ?")
+      .prepare("SELECT id, title, dashboard_code, brief, brief_clarifications, visibility, intro_transcript, output_shape, outputs, timing, sponsor_name FROM surveys WHERE id = ?")
       .bind(surveyId)
-      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null; outputs: string | null; timing: string | null }>();
+      .first<{ id: string; title: string | null; dashboard_code: string; brief: string | null; brief_clarifications: string | null; visibility: string; intro_transcript: string | null; output_shape: string | null; outputs: string | null; timing: string | null; sponsor_name: string | null }>();
     if (!survey) throw new Error("Parlo not found");
 
     // /brief.md
@@ -316,16 +326,24 @@ export class GroupAgent extends Agent<Env, GroupState> {
     } catch {
       clarifications = "";
     }
+    const livingBrief = await briefForAgent(db, surveyId);
     this.writeFile(
       "/brief.md",
       [
         `# ${survey.title ?? "Untitled parlo"}`,
         "",
         `Visibility: ${survey.visibility === "open" ? "open group (members hear each other, with names)" : "private (only the owner, admins and the agent hear raw answers; members get the report)"}`,
+        ...(survey.sponsor_name
+          ? [
+              "",
+              `Sponsored study: ${survey.sponsor_name} commissioned it and their team also hears the raw answers. In everything you write, never name a participant: refer to people by their segment ("a customer", "two competitor users").`,
+            ]
+          : []),
         "",
         "## The creator's brief",
         survey.brief?.trim() || "(no brief recorded)",
         "",
+        ...(livingBrief.length ? [...livingBrief, ""] : []),
         "## What should come back to the group",
         shapeReport(survey.output_shape) ?? "A report on what the group said.",
         "",
@@ -370,21 +388,28 @@ export class GroupAgent extends Agent<Env, GroupState> {
     // /members.md — names and roles only, never phones
     const members = await db
       .prepare(
-        `SELECT gm.user_id, gm.role, gm.joined_at, u.first_name, u.last_name, u.wa_name, u.linkedin_name, u.phone,
+        `SELECT gm.user_id, gm.role, gm.joined_at, gm.segment, gm.descriptor, u.first_name, u.last_name, u.wa_name, u.linkedin_name, u.phone,
                 (SELECT COUNT(*) FROM responses r WHERE r.survey_id = gm.survey_id AND r.user_id = gm.user_id AND r.status != 'in_progress') AS n
          FROM group_members gm JOIN users u ON u.id = gm.user_id
          WHERE gm.survey_id = ? AND gm.removed_at IS NULL ORDER BY gm.joined_at ASC`
       )
       .bind(surveyId)
-      .all<{ user_id: string; role: GroupRole; joined_at: string; first_name: string | null; last_name: string | null; wa_name: string | null; linkedin_name: string | null; phone: string | null; n: number }>();
+      .all<{ user_id: string; role: GroupRole; joined_at: string; segment: string | null; descriptor: string | null; first_name: string | null; last_name: string | null; wa_name: string | null; linkedin_name: string | null; phone: string | null; n: number }>();
+    const cell = (v: string | null) => (v ?? "").replace(/\|/g, "/").replace(/\n/g, " ");
+    const clientTeam = members.results.filter((m) => m.role === "client");
     this.writeFile(
       "/members.md",
       [
         "# Members",
         "",
-        "| id | name | role | answers | joined |",
-        "|---|---|---|---|---|",
-        ...members.results.map((m) => `| ${m.user_id} | ${displayNameFor(m) ?? "(no name yet)"} | ${m.role} | ${m.n} | ${m.joined_at.slice(0, 10)} |`),
+        "| id | name | role | segment | about | answers | joined |",
+        "|---|---|---|---|---|---|---|",
+        ...members.results
+          .filter((m) => m.role !== "client")
+          .map((m) => `| ${m.user_id} | ${cell(displayNameFor(m)) || "(no name yet)"} | ${m.role} | ${cell(m.segment)} | ${cell(m.descriptor)} | ${m.n} | ${m.joined_at.slice(0, 10)} |`),
+        ...(clientTeam.length
+          ? ["", "## The client's team", "They commissioned the study and steer it. They are not participants: never aim an ask at them.", ...clientTeam.map((m) => `- ${displayNameFor(m) ?? "(no name yet)"}`)]
+          : []),
       ].join("\n")
     );
 
@@ -762,7 +787,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
    */
   async runExport(surveyId: string, opts: { instruction?: string; trigger?: "manual" | "auto" } = {}): Promise<ExportResult> {
     this.bind(surveyId);
-    const picked = pickAgentModel(this.env);
+    let picked = pickAgentModel(this.env);
     const started = Date.now();
     const trigger = opts.trigger ?? "manual";
     let destinations: string[] = [];
@@ -803,14 +828,18 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "Export now.",
       ].join("\n");
 
-      const result = await generateText({
-        model: picked.model,
-        system,
-        prompt,
-        tools,
-        stopWhen: stepCountIs(MAX_LOOP_STEPS),
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-      });
+      const ran = await runOnAgentModel(this.env, (m) =>
+        generateText({
+          model: m.model,
+          system,
+          prompt,
+          tools,
+          stopWhen: stepCountIs(MAX_LOOP_STEPS),
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+        })
+      );
+      const result = ran.result;
+      picked = ran.picked;
 
       const toolCalls = result.steps.reduce((n, st) => n + st.toolCalls.filter((tc) => tc.toolName in mcpTools).length, 0);
       const ok = toolCalls > 0;
@@ -878,7 +907,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
 
   async runDigest(): Promise<DigestResult> {
     const surveyId = this.requireSurveyId();
-    const picked = pickAgentModel(this.env);
+    let picked = pickAgentModel(this.env);
     const started = Date.now();
     try {
       const { answerFiles } = await this.syncFromD1(surveyId);
@@ -905,6 +934,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "The brief says what should come back to the group (a post, testimonials, whether an idea holds up, why customers chose them, feedback, a decision, ideas…): give the report that shape, and make the opening paragraph answer it directly.",
         "When it asks for a post, the report opens with that post, ready to copy to LinkedIn: a hook line, the best lines from the answers, under 1,300 characters, no hashtags. The usual summary and sections follow it.",
         "Write in the creator's language and tone. Markdown, headed sections, under 500 words. Start with a one-paragraph summary.",
+        "If the brief has a section \"Questions this study must answer\", this is a research study: after the summary give one section per question (the question as the heading) saying what was found, from how many people, and where segments differ, then a last section \"Not yet known\" listing what the answers cannot settle. Up to 800 words then. If the brief says the study is sponsored, never name a participant; refer to them by segment.",
         "Also keep /memory.md: your own running notes about this group (threads to follow, who has not answered, hypotheses). Replace it each time; keep it under 300 words.",
       ].join("\n");
 
@@ -922,14 +952,18 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "Now: read the answers (all of them if there are fewer than 40, otherwise the newest rounds first and search for themes), write /report.md, then write /memory.md. Finish with one sentence saying what changed.",
       ].join("\n");
 
-      const result = await generateText({
-        model: picked.model,
-        system,
-        prompt,
-        tools,
-        stopWhen: stepCountIs(MAX_LOOP_STEPS),
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-      });
+      const ran = await runOnAgentModel(this.env, (m) =>
+        generateText({
+          model: m.model,
+          system,
+          prompt,
+          tools,
+          stopWhen: stepCountIs(MAX_LOOP_STEPS),
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+        })
+      );
+      const result = ran.result;
+      picked = ran.picked;
 
       console.log(
         `[GroupAgent] digest steps=${result.steps.length} toolCalls=${result.steps.reduce((n, st) => n + st.toolCalls.length, 0)} wroteReport=${wroteReport} textChars=${result.text.length}`
@@ -964,6 +998,12 @@ export class GroupAgent extends Agent<Env, GroupState> {
       await this.env.DB.prepare("UPDATE surveys SET report_md = ?, report_updated_at = ? WHERE id = ?")
         .bind(report?.content ?? null, report?.updatedAt ?? null, surveyId)
         .run();
+      // The living brief: what each question's status is now, with quotes.
+      try {
+        await this.readBrief(surveyId);
+      } catch (err) {
+        console.error("[agent] readBrief failed", { surveyId, err });
+      }
       // Members who answered on WhatsApp (or verified a phone) get the report
       // in their thread, once per round. Fails quietly until the template is approved.
       if (report?.content) {
@@ -1032,7 +1072,7 @@ export class GroupAgent extends Agent<Env, GroupState> {
 
   async proposeRound(surveyId: string, opts: { preferKind?: RoundKind; hint?: string } = {}): Promise<ProposalResult> {
     this.bind(surveyId);
-    const picked = pickAgentModel(this.env);
+    let picked = pickAgentModel(this.env);
     const started = Date.now();
     try {
       await this.syncFromD1(surveyId);
@@ -1044,12 +1084,26 @@ export class GroupAgent extends Agent<Env, GroupState> {
       const answerPaths = this.listFiles("/answers/").map((f) => f.path);
 
       const memberRows = await this.env.DB.prepare(
-        `SELECT gm.user_id FROM group_members gm WHERE gm.survey_id = ? AND gm.removed_at IS NULL
+        `SELECT gm.user_id FROM group_members gm WHERE gm.survey_id = ? AND gm.removed_at IS NULL AND gm.role != 'client'
          AND EXISTS (SELECT 1 FROM responses r WHERE r.survey_id = gm.survey_id AND r.user_id = gm.user_id AND r.status != 'in_progress')`
       )
         .bind(surveyId)
         .all<{ user_id: string }>();
       const answeredIds = new Set(memberRows.results.map((m) => m.user_id));
+
+      // Participants by segment, so a round can be aimed at one ("segment:Customer").
+      const segmentRows = await this.env.DB.prepare(
+        "SELECT user_id, segment FROM group_members WHERE survey_id = ? AND removed_at IS NULL AND role = 'member' AND segment IS NOT NULL AND trim(segment) != ''"
+      )
+        .bind(surveyId)
+        .all<{ user_id: string; segment: string }>();
+      const bySegment = new Map<string, string[]>();
+      for (const r of segmentRows.results) {
+        const key = r.segment.trim().toLowerCase();
+        bySegment.set(key, [...(bySegment.get(key) ?? []), r.user_id]);
+      }
+      const liveItemIds = new Set((await listItems(this.env.DB, surveyId)).filter((i) => LIVE_STATUSES.includes(i.status)).map((i) => i.id));
+      const pricing = await this.env.DB.prepare("SELECT reward_cents FROM surveys WHERE id = ?").bind(surveyId).first<{ reward_cents: number | null }>();
 
       const tools = this.buildTools({ readOnly: true });
 
@@ -1057,7 +1111,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "You are the agent running a Parlo: a group conversation where members answer by voice. You plan the next ROUND of asks for the owner to approve.",
         "Two kinds of round: a POLL sends the same 1–3 asks to everyone (comparable answers, good for aggregating); a PROBE sends one personal follow-up each to specific members who already answered (depth). Pick whichever moves the creator's goal forward most.",
         "Asks are spoken aloud by the member, so write them warm, conversational, one idea each, under 25 words. Never repeat an ask already on file. A probe must reference something that member actually said.",
-        "Respond ONLY with JSON: {\"kind\":\"poll\"|\"probe\",\"rationale\":\"one or two sentences for the owner\",\"asks\":[{\"text\":\"…\",\"hint\":\"short nudge or null\",\"target\":\"all\"|\"<member id>\"}]}. Poll asks use target \"all\"; probe asks use a member id from /members.md who has answered.",
+        "When the brief lists \"Questions this study must answer\" (each with an id in square brackets and a status) and steers from the team that no round has taken up: aim this round at the steers first, then at the open and emerging questions. Leave answered questions alone unless a steer says otherwise. Say in the rationale which steer or question the round follows, and list the ids of the questions it digs into in \"serves\".",
+        "Members may carry a segment in /members.md. To ask one segment only, give an ask the target \"segment:<name>\" with the name exactly as written there; everyone in that segment gets it, whether or not they have answered before.",
+        "Respond ONLY with JSON: {\"kind\":\"poll\"|\"probe\",\"rationale\":\"one or two sentences for the owner\",\"serves\":[\"<brief question id>\"],\"asks\":[{\"text\":\"…\",\"hint\":\"short nudge or null\",\"target\":\"all\"|\"<member id>\"|\"segment:<name>\"}]}. Poll asks use target \"all\"; probe asks use a member id from /members.md who has answered, or a segment.",
       ].join("\n");
 
       const prompt = [
@@ -1083,42 +1139,61 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "Plan the next round and reply with the JSON only.",
       ].join("\n");
 
-      const result = await generateText({
-        model: picked.model,
-        system,
-        prompt,
-        tools,
-        stopWhen: stepCountIs(10),
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-      });
+      const ran = await runOnAgentModel(this.env, (m) =>
+        generateText({
+          model: m.model,
+          system,
+          prompt,
+          tools,
+          stopWhen: stepCountIs(10),
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+        })
+      );
+      const result = ran.result;
+      picked = ran.picked;
 
       const parsed = JSON.parse(extractJson(result.text)) as {
         kind?: string;
         rationale?: string;
+        serves?: unknown;
         asks?: { text?: string; hint?: string | null; target?: string }[];
       };
-      const kind: RoundKind = parsed.kind === "probe" ? "probe" : "poll";
-      const asks: ProposedAsk[] = (parsed.asks ?? [])
-        .filter((a) => typeof a.text === "string" && a.text.trim())
-        .map((a) => {
-          const target = a.target && a.target !== "all" ? a.target.trim() : null;
-          return {
-            text: a.text!.trim().slice(0, 500),
-            hint: typeof a.hint === "string" && a.hint.trim() ? a.hint.trim().slice(0, 120) : null,
-            type: "voice" as const,
-            targetUserId: kind === "probe" && target && answeredIds.has(target) ? target : null,
-          };
-        })
-        .filter((a) => (kind === "probe" ? !!a.targetUserId : true))
-        .slice(0, kind === "probe" ? 20 : 3);
+      // One ask per person it is aimed at: a member id, or everyone in a segment.
+      const drafted: ProposedAsk[] = [];
+      for (const a of parsed.asks ?? []) {
+        if (typeof a.text !== "string" || !a.text.trim()) continue;
+        const base = {
+          text: a.text.trim().slice(0, 500),
+          hint: typeof a.hint === "string" && a.hint.trim() ? a.hint.trim().slice(0, 120) : null,
+          type: "voice" as const,
+        };
+        const target = a.target && a.target !== "all" ? a.target.trim() : null;
+        const segment = target?.match(/^segment:\s*(.+)$/i)?.[1]?.trim().toLowerCase();
+        if (segment) {
+          for (const userId of bySegment.get(segment) ?? []) drafted.push({ ...base, targetUserId: userId });
+        } else {
+          drafted.push({ ...base, targetUserId: target && answeredIds.has(target) ? target : null });
+        }
+      }
+      const targeted = drafted.filter((a) => !!a.targetUserId);
+      // Anything aimed at someone makes the round a probe; a probe carries only aimed asks.
+      const kind: RoundKind = parsed.kind === "probe" || (targeted.length > 0 && targeted.length === drafted.length) ? "probe" : "poll";
+      const asks: ProposedAsk[] = kind === "probe" ? targeted.slice(0, 60) : drafted.map((a) => ({ ...a, targetUserId: null })).slice(0, 3);
       if (asks.length === 0) throw new Error("The agent did not produce any usable asks");
+      const serves = Array.isArray(parsed.serves) ? parsed.serves.filter((id): id is string => typeof id === "string" && liveItemIds.has(id)).slice(0, 8) : [];
 
       const created = await createProposedRound(this.env.DB, surveyId, {
         kind,
         rationale: typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 600) : null,
         proposedBy: "agent",
         asks,
+        serves,
+        // The study's default price per touch; a researcher changes it before sending.
+        rewardCents: pricing?.reward_cents ?? null,
       });
+      if (liveItemIds.size > 0) {
+        await logEvent(this.env.DB, surveyId, { type: "round_proposed", actorRole: "agent", roundId: created.round.id, body: created.round.rationale });
+      }
       this.writeFile(
         `/rounds/${created.round.number}-proposal.json`,
         JSON.stringify({ round: created.round, asks: created.asks, proposedAt: nowIso(), provider: picked.provider, model: picked.modelId }, null, 2)
@@ -1164,6 +1239,146 @@ export class GroupAgent extends Agent<Env, GroupState> {
         surveyId,
       });
       return { ok: false, error: message };
+    }
+  }
+
+  // ── The living brief ───────────────────────────────────────────────
+
+  /** The brief moved, or someone steered: re-plan the next round shortly (several changes in a row make one plan). */
+  async scheduleReplan(surveyId: string): Promise<{ scheduled: true }> {
+    this.bind(surveyId);
+    await this.schedule(REPLAN_DEBOUNCE_SECONDS, "replan", undefined, { idempotent: true });
+    return { scheduled: true };
+  }
+
+  async replan() {
+    const surveyId = this.requireSurveyId();
+    // A question added a moment ago has not been read against the answers yet.
+    await this.readBrief(surveyId).catch((err) => console.error("[GroupAgent] readBrief before replan failed", err));
+    const result = await this.proposeRound(surveyId, {});
+    if (!result.ok) console.error("[GroupAgent] replan failed", result.error);
+  }
+
+  /**
+   * Read the answers against the brief. For every question the study must
+   * answer: is it open, emerging or answered, what is the answer in a
+   * sentence, who spoke to it, and up to three verbatim quotes. Also: what
+   * do people keep raising that the brief does not ask? One JSON call, no
+   * tools, so it behaves the same on every model the agent can fall back to.
+   */
+  async readBrief(surveyId: string): Promise<{ ok: boolean; moved: number; suggested: number; error?: string }> {
+    this.bind(surveyId);
+    const db = this.env.DB;
+    const items = (await listItems(db, surveyId)).filter((i) => LIVE_STATUSES.includes(i.status));
+    if (items.length === 0) return { ok: true, moved: 0, suggested: 0 };
+
+    const rows = await db
+      .prepare(
+        `SELECT ra.id, ra.transcription, r.id AS response_id, r.user_id, q.text AS question_text, rd.number AS round_number, gm.segment
+         FROM response_answers ra
+         JOIN responses r ON r.id = ra.response_id
+         JOIN survey_questions q ON q.id = ra.question_id
+         LEFT JOIN rounds rd ON rd.id = q.round_id
+         LEFT JOIN group_members gm ON gm.survey_id = r.survey_id AND gm.user_id = r.user_id
+         WHERE r.survey_id = ? AND r.status != 'in_progress' AND ra.transcription_status = 'completed'
+           AND ra.transcription IS NOT NULL AND length(trim(ra.transcription)) > 0
+         ORDER BY r.submitted_at DESC, q.sort_order ASC LIMIT 240`
+      )
+      .bind(surveyId)
+      .all<{ id: string; transcription: string; response_id: string; user_id: string | null; question_text: string; round_number: number | null; segment: string | null }>();
+    if (rows.results.length === 0) return { ok: true, moved: 0, suggested: 0 };
+
+    // Short handles the model can cite: A7 is an answer, P3 a person.
+    const refToAnswer = new Map<string, string>();
+    const personOf = new Map<string, string>();
+    const lines: string[] = [];
+    let chars = 0;
+    for (const a of rows.results) {
+      const personKey = a.user_id ?? `anon-${a.response_id}`;
+      if (!personOf.has(personKey)) personOf.set(personKey, `P${personOf.size + 1}`);
+      const ref = `A${refToAnswer.size + 1}`;
+      const line = `${ref} | ${personOf.get(personKey)}${a.segment ? ` (${a.segment})` : ""} | round ${a.round_number ?? 1} | asked: ${a.question_text.replace(/\s+/g, " ").slice(0, 200)} | said: ${a.transcription.replace(/\s+/g, " ").slice(0, 1500)}`;
+      if (chars + line.length > BRIEF_READ_CHARS) break;
+      chars += line.length;
+      refToAnswer.set(ref, a.id);
+      lines.push(line);
+    }
+
+    let picked = pickAgentModel(this.env);
+    const started = Date.now();
+    const system = [
+      "You are the analyst on a research study. The team keeps a short list of the questions the study must answer. Your job is to say, honestly, how far the answers collected so far go on each one.",
+      "Be strict. \"answered\": several people speak to it and they agree, or they split in a way you can describe. \"emerging\": a pattern with thin support, one to three people. \"open\": nothing solid yet.",
+      "Never invent. A finding is one plain sentence a client could read aloud; where segments differ, say how. Quotes are verbatim from the answer you cite, under 25 words.",
+      "A suggestion is a question the brief does not ask yet that at least two people raised without being asked. None is fine.",
+      "Respond ONLY with JSON.",
+    ].join("\n");
+    const prompt = [
+      "## The questions (id, current status, text)",
+      ...items.map((i) => `[${i.id}] (${i.status}) ${i.text}`),
+      "",
+      `## Answers (${lines.length}; ref | person (segment) | round | asked | said)`,
+      ...lines,
+      "",
+      'Reply with JSON: {"items":[{"id":"<question id>","status":"open"|"emerging"|"answered","finding":"one sentence, or null when open with nothing to say","people":["P1","P4"],"evidence":[{"ref":"A3","quote":"verbatim, short"}]}],"suggestions":[{"text":"a question worth adding","why":"one sentence","people":["P2","P5"]}]}',
+      "Every question appears once in items. At most three pieces of evidence each.",
+    ].join("\n");
+
+    try {
+      const ran = await runOnAgentModel(this.env, (m) => generateText({ model: m.model, system, prompt, maxOutputTokens: MAX_OUTPUT_TOKENS }));
+      const result = ran.result;
+      picked = ran.picked;
+      const parsed = JSON.parse(extractJson(result.text)) as {
+        items?: { id?: string; status?: string; finding?: string | null; people?: unknown; evidence?: { ref?: string; quote?: string }[] }[];
+        suggestions?: { text?: string; why?: string; people?: unknown }[];
+      };
+      const people = (v: unknown) => (Array.isArray(v) ? new Set(v.filter((p): p is string => typeof p === "string" && /^P\d+$/.test(p))).size : 0);
+      const known = new Set(items.map((i) => i.id));
+      const reading: AgentReading = {
+        items: (parsed.items ?? [])
+          .filter((i) => typeof i.id === "string" && known.has(i.id))
+          .map((i) => ({
+            id: i.id as string,
+            status: i.status === "answered" ? "answered" : i.status === "emerging" ? "emerging" : "open",
+            finding: typeof i.finding === "string" && i.finding.trim() ? i.finding.trim() : null,
+            voices: people(i.people),
+            evidence: (i.evidence ?? [])
+              .map((e) => ({ answerId: e.ref ? refToAnswer.get(e.ref.trim()) : undefined, quote: typeof e.quote === "string" ? e.quote.trim().slice(0, 300) : "" }))
+              .filter((e): e is { answerId: string; quote: string } => !!e.answerId && e.quote.length > 0),
+          })),
+        suggestions: (parsed.suggestions ?? [])
+          .filter((s) => typeof s.text === "string" && people(s.people) >= 2)
+          .map((s) => ({ text: (s.text as string).trim().slice(0, 280), why: typeof s.why === "string" ? s.why.trim() : null, voices: people(s.people) })),
+      };
+      const applied = await applyAgentReading(db, surveyId, reading);
+
+      trackServerEvent("parlo-ai", "$ai_generation", {
+        $ai_trace_id: `agent-brief-${surveyId}-${started}`,
+        $ai_model: picked.modelId,
+        $ai_provider: picked.provider,
+        $ai_input: `[brief reading: ${items.length} questions, ${lines.length} answers]`,
+        $ai_output_choices: [{ message: { content: result.text.slice(0, 4000) } }],
+        $ai_latency: (Date.now() - started) / 1000,
+        $ai_input_tokens: result.usage?.inputTokens,
+        $ai_output_tokens: result.usage?.outputTokens,
+        $ai_is_error: false,
+        surveyId,
+      });
+      trackServerEvent(surveyId, "agent_brief_read", { surveyId, questions: items.length, answers: lines.length, ...applied });
+      return { ok: true, ...applied };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[GroupAgent] brief reading failed", message);
+      trackServerEvent("parlo-ai", "$ai_generation", {
+        $ai_trace_id: `agent-brief-${surveyId}-${started}`,
+        $ai_model: picked.modelId,
+        $ai_provider: picked.provider,
+        $ai_is_error: true,
+        $ai_error: message,
+        $ai_latency: (Date.now() - started) / 1000,
+        surveyId,
+      });
+      return { ok: false, moved: 0, suggested: 0, error: message };
     }
   }
 

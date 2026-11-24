@@ -4,7 +4,7 @@ import { getMediaMix } from "@/lib/mediaMix";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
@@ -212,7 +212,8 @@ export function claimByToken(token: string, auth: PhoneProof | { apiKey: string 
   return apiFetch<ClaimByTokenResult>(path, { method: "POST", body: JSON.stringify(auth) });
 }
 
-export type GroupRole = "owner" | "admin" | "member";
+/** owner and admin are the research team; client commissioned the study; member is a participant. */
+export type GroupRole = "owner" | "admin" | "client" | "member";
 export type GroupVisibility = "open" | "private";
 
 export interface MySurvey {
@@ -275,6 +276,11 @@ export interface SurveyMember {
   linkedinEmail: string | null;
   joinedAt: string;
   responseCount: number;
+  /** Which group of participants they belong to ("Customer", "Competitor user"). */
+  segment?: string | null;
+  descriptor?: string | null;
+  /** Their personal-link token; empty unless you are on the research team. */
+  accessToken?: string;
 }
 
 export function fetchSurveyMembers(apiKey: string, surveyId: string) {
@@ -285,7 +291,7 @@ export function fetchSurveyMembers(apiKey: string, surveyId: string) {
 
 // ── Groups: roles, settings ──────────────────────────────────────────
 
-function authed(apiKey: string, init: RequestInit = {}): RequestInit {
+export function authed(apiKey: string, init: RequestInit = {}): RequestInit {
   return { ...init, headers: { "X-Parlo-Api-Key": apiKey, ...(init.headers ?? {}) } };
 }
 
@@ -332,7 +338,22 @@ export interface GroupRound {
   sent_at: string | null;
   closes_at?: string | null;
   closed_at?: string | null;
+  /** What the round pays per accepted answer, in cents; null or 0 = unpaid. */
+  reward_cents?: number | null;
   asks: RoundAsk[];
+  /** On a proposed round: what sending it could cost against the study's budget. */
+  cost?: RoundCost | null;
+}
+
+export interface RoundCost {
+  rewardCents: number;
+  /** How many participants the round can pay. */
+  reach: number;
+  maxCents: number;
+  budgetCents: number | null;
+  committedCents: number;
+  remainingCents: number | null;
+  fits: boolean;
 }
 
 export interface AgentState {
@@ -376,6 +397,8 @@ export interface AgentSnapshot {
   memory: string | null;
   rounds: GroupRound[];
   visibility: GroupVisibility;
+  /** Set on a sponsored study: the client's team also hears raw answers. */
+  sponsor?: string | null;
   connections: AgentConnection[];
 }
 
@@ -454,8 +477,17 @@ export function proposeRound(apiKey: string, surveyId: string, input: { kind?: R
   return apiFetch<{ round: GroupRound }>(`/my/surveys/${surveyId}/rounds/propose`, authed(apiKey, { method: "POST", body: JSON.stringify(input) }));
 }
 
-export function approveRound(apiKey: string, surveyId: string, roundId: string) {
-  return apiFetch<{ ok: boolean; round: GroupRound; notified: number }>(`/my/surveys/${surveyId}/rounds/${roundId}/approve`, authed(apiKey, { method: "POST" }));
+/** Approve = send. `rewardCents` (optional) sets what the round pays before it goes out; a round that cannot fit the budget answers 409. */
+export function approveRound(apiKey: string, surveyId: string, roundId: string, rewardCents?: number | null) {
+  return apiFetch<{ ok: boolean; round: GroupRound; notified: number }>(
+    `/my/surveys/${surveyId}/rounds/${roundId}/approve`,
+    authed(apiKey, { method: "POST", body: JSON.stringify(rewardCents === undefined ? {} : { rewardCents }) })
+  );
+}
+
+/** Set what a proposed (or still open) round pays per accepted answer. */
+export function setRoundReward(apiKey: string, surveyId: string, roundId: string, rewardCents: number | null) {
+  return apiFetch<{ round: GroupRound }>(`/my/surveys/${surveyId}/rounds/${roundId}`, authed(apiKey, { method: "PUT", body: JSON.stringify({ rewardCents }) }));
 }
 
 export function rejectRound(apiKey: string, surveyId: string, roundId: string) {
@@ -600,6 +632,8 @@ interface APISurveyResponse {
   member?: { role: GroupRole; displayName: string | null; hasAnswered: boolean } | null;
   report?: { available: boolean; unlocked: boolean; markdown: string | null; updatedAt: string | null };
   memberCount?: number;
+  sponsor?: { name: string } | null;
+  reward?: { amountCents: number; currency: string } | null;
 }
 
 export function useGetSurvey(code: string, token?: string | null) {
@@ -635,6 +669,8 @@ export function useGetSurvey(code: string, token?: string | null) {
         member: data.member ?? null,
         report: data.report ?? { available: false, unlocked: false, markdown: null, updatedAt: null },
         memberCount: data.memberCount ?? 0,
+        sponsor: data.sponsor ?? null,
+        reward: data.reward ?? null,
       };
     },
     enabled: !!code,

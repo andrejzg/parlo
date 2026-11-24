@@ -16,6 +16,8 @@ import linkedin from "./routes/linkedin";
 import feed from "./routes/feed";
 import audience from "./routes/audience";
 import groups from "./routes/groups";
+import study from "./routes/study";
+import rewards from "./routes/rewards";
 
 // Durable Object class must be exported from the Worker entry point.
 export { GroupAgent } from "./agent/GroupAgent";
@@ -57,6 +59,8 @@ app.route("/", linkedin);
 app.route("/", feed);
 app.route("/", audience);
 app.route("/", groups);
+app.route("/", study);
+app.route("/", rewards);
 
 // ── Error handler — forward unhandled exceptions to PostHog ──
 app.onError((err, c) => {
