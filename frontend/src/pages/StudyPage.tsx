@@ -4,6 +4,7 @@ import { Check, ChevronLeft, LayoutDashboard, LoaderCircle } from "lucide-react"
 import { fetchBrief, type BriefBoard as Board } from "@/api/study";
 import AnswersList from "@/components/study/AnswersList";
 import BriefBoard, { labelClass } from "@/components/study/BriefBoard";
+import ClipsList from "@/components/study/ClipsList";
 import PlanPanel from "@/components/study/PlanPanel";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/lib/markdown";
@@ -11,7 +12,8 @@ import { trackEvent } from "@/lib/posthog";
 import { getDeviceAuth } from "@/lib/sessionStore";
 import { initialsFor } from "@/lib/parloRow";
 
-type Tab = "brief" | "answers" | "report";
+type Tab = "brief" | "answers" | "report" | "clips";
+const TAB_LABEL: Record<Tab, string> = { brief: "Brief", answers: "Answers", report: "Report", clips: "Clips" };
 const POLL_MS = 6000;
 
 const chip = "rounded-full px-m py-xs font-ui text-xs font-medium tracking-l transition-colors";
@@ -98,7 +100,9 @@ export default function StudyPage() {
   const { surveyId = "" } = useParams();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const tab: Tab = params.get("tab") === "answers" ? "answers" : params.get("tab") === "report" ? "report" : "brief";
+  const tabParam = params.get("tab");
+  // What the URL asks for. Whether this seat has that tab is settled once the board is in.
+  const requestedTab: Tab = tabParam === "answers" || tabParam === "report" || tabParam === "clips" ? tabParam : "brief";
 
   const [apiKey, setApiKey] = useState<string | null | undefined>(undefined);
   const [board, setBoard] = useState<Board | null>(null);
@@ -171,6 +175,11 @@ export default function StudyPage() {
     );
   }
 
+  // Clips carry names and are the research team's to clear, so the client has no such tab:
+  // a client landing on ?tab=clips gets the brief.
+  const tabs: Tab[] = board.you.canManage ? ["brief", "answers", "report", "clips"] : ["brief", "answers", "report"];
+  const tab: Tab = tabs.includes(requestedTab) ? requestedTab : "brief";
+
   const title = board.survey.title || "Untitled study";
   const facts = [
     board.survey.sponsor ? `For ${board.survey.sponsor}` : null,
@@ -197,10 +206,11 @@ export default function StudyPage() {
               </Button>
             )}
           </div>
-          <nav className="flex gap-xs" aria-label="Study sections">
-            {(["brief", "answers", "report"] as const).map((t) => (
+          {/* Four chips do not fit one row on a 320px phone, so they may wrap. */}
+          <nav className="flex flex-wrap gap-xs" aria-label="Study sections">
+            {tabs.map((t) => (
               <button key={t} type="button" onClick={() => setTab(t)} aria-pressed={tab === t} className={`${chip} ${chipTone(tab === t)}`} data-testid={`study-tab-${t}`}>
-                {t === "brief" ? "Brief" : t === "answers" ? "Answers" : "Report"}
+                {TAB_LABEL[t]}
               </button>
             ))}
           </nav>
@@ -221,6 +231,12 @@ export default function StudyPage() {
         {tab === "answers" && (
           <div className="lg:max-w-2xl">
             <AnswersList apiKey={apiKey} surveyId={board.survey.id} isClient={board.you.role === "client"} sponsor={board.survey.sponsor} />
+          </div>
+        )}
+
+        {tab === "clips" && (
+          <div className="lg:max-w-2xl">
+            <ClipsList apiKey={apiKey} surveyId={board.survey.id} />
           </div>
         )}
 

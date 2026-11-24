@@ -2,6 +2,7 @@ import { asPublishConsent, type Env, type Survey, type SurveyQuestion, type Grou
 import { generateId } from "./codes";
 import { ensureMember, getMembership } from "./groups";
 import { createRewardsForResponse, settleRewardsForResponse, type SettledReward } from "./rewards";
+import { judgeResponseAnswers, probesShown } from "./answerJudge";
 import { notifyManagers } from "./notify";
 import { trackServerEvent } from "./analytics";
 import { ingestIntoAgent, transcribeResponseAnswers } from "./transcription";
@@ -31,7 +32,19 @@ export async function submitResponse(
   env: Env,
   ctx: { waitUntil(promise: Promise<unknown>): void },
   responseId: string,
-  who: { userId: string | null; firstName?: string | null; lastName?: string | null; publishConsent?: PublishConsent },
+  who: {
+    userId: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    publishConsent?: PublishConsent;
+    /**
+     * Testimonial asks the client showed with their marketing notice before the
+     * mic. Only these are stamped as consented for public use: a client that
+     * does not know what a testimonial ask is (an old page, a script) sends
+     * none, and its answer stays under the response's own consent.
+     */
+    testimonialAck?: string[];
+  },
   source: "web" | "whatsapp",
   /** Transcripts already made (the WhatsApp bot transcribes each voice note on receipt), by question id. */
   pretranscribed: Record<string, string> = {}
@@ -130,6 +143,35 @@ export async function submitResponse(
     }
   }
   if (inserts.length > 0) await db.batch(inserts);
+
+  if (inserts.length > 0 && (survey.kind === "study" || survey.sponsor_name)) {
+    // The follow-ups the agent asked inside this sitting, kept with each answer.
+    for (const q of questions.results) {
+      if (q.question_type === "photo") continue;
+      // Kept with the answer: the follow-ups the participant saw, not every one written.
+      const asked = await probesShown(env.KV, responseId, q.id);
+      if (asked.length) {
+        await db.prepare("UPDATE response_answers SET probes = ? WHERE response_id = ? AND question_id = ?").bind(JSON.stringify(asked), responseId, q.id).run();
+      }
+    }
+    // A testimonial ask shows its notice on the ask; recording it is the yes.
+    // The yes only counts where the client says the notice was on screen.
+    const acked = [...new Set((who.testimonialAck ?? []).filter((id) => typeof id === "string" && id.length > 0 && id.length <= 64))].slice(0, 50);
+    if (acked.length > 0) {
+      const testimonials = await db
+        .prepare(
+          `UPDATE response_answers SET publish_consent = 'voice'
+           WHERE response_id = ? AND question_id IN (${acked.map(() => "?").join(", ")}) AND question_id IN (
+             SELECT q.id FROM survey_questions q JOIN rounds r ON r.id = q.round_id WHERE q.survey_id = ? AND r.purpose = 'testimonial'
+           )`
+        )
+        .bind(responseId, ...acked, existing.survey_id)
+        .run();
+      if ((testimonials.meta?.changes ?? 0) > 0) {
+        trackServerEvent(userId ?? responseId, "testimonial_recorded", { surveyId: existing.survey_id, responseId, clips: testimonials.meta?.changes ?? 0, source });
+      }
+    }
+  }
   await createRewardsForResponse(env, { id: responseId, survey_id: existing.survey_id }, userId, wasParticipant).catch((err) =>
     console.error(`[submit] reward rows failed for ${responseId}:`, err)
   );
@@ -165,6 +207,7 @@ export async function submitResponse(
   } else if (inserts.length > 0) {
     // Everything already transcribed (the bot): hand it to the agent now, in the request.
     await ingestIntoAgent(env, responseId).catch((err) => console.error(`[submit] agent ingest failed for ${responseId}:`, err));
+    await judgeResponseAnswers(env, responseId).catch((err) => console.error(`[submit] answer judging failed for ${responseId}:`, err));
     rewards = await settleRewardsForResponse(env, responseId).catch((err) => {
       console.error(`[submit] reward settle failed for ${responseId}:`, err);
       return [];

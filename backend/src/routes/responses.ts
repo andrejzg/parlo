@@ -12,6 +12,8 @@ import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import type { AuthVariables } from "../middleware/auth";
 import { latestSentRound, pendingAsksFor } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
+import { judgeAnswers, MAX_PROBES, probeKey, probeShownKey, probesAsked, probesShown, warmUpProbe, wordCount, writeProbe } from "../services/answerJudge";
+import { transcribeAudio } from "../services/ai";
 
 const responses = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
@@ -76,6 +78,10 @@ responses.post("/api/s/:code/responses", async (c) => {
 
   const uploadUrls = await uploadUrlsFor(c, responseId, questions);
 
+  // A study follows up on answers: have speech-to-text and the judge warm by
+  // the time the first one is recorded (see warmUpProbe).
+  if (survey.kind === "study" || survey.sponsor_name) c.executionCtx.waitUntil(warmUpProbe(c.env));
+
   trackServerEvent(responseId, "response_started", {
     surveyId: survey.id,
     surveyCode: code,
@@ -125,7 +131,13 @@ responses.post("/api/responses/:id/submit", async (c) => {
     c.env,
     c.executionCtx,
     responseId,
-    { userId, firstName: body.firstName ?? null, lastName: body.lastName ?? null, publishConsent: asPublishConsent(body.publishConsent) },
+    {
+      userId,
+      firstName: body.firstName ?? null,
+      lastName: body.lastName ?? null,
+      publishConsent: asPublishConsent(body.publishConsent),
+      testimonialAck: Array.isArray(body.testimonialAck) ? body.testimonialAck.filter((id): id is string => typeof id === "string") : [],
+    },
     "web"
   );
   if (!result.ok) return c.json({ error: result.error }, result.status);
@@ -153,6 +165,132 @@ responses.post("/api/responses/:id/refresh-urls", async (c) => {
   const uploadUrls = await uploadUrlsFor(c, responseId, questions);
 
   return c.json({ uploadUrls });
+});
+
+// ── POST /api/responses/:id/probe ── Did that answer the question? If not, one follow-up
+//
+// Called by the participant page right after a voice answer is recorded, on a
+// study. Multipart: `audio` (the take, or just the newest clip after a
+// follow-up), `questionId`, and `transcriptSoFar` (what earlier clips of the
+// same answer said). Whisper, then the answer judge; when the answer falls
+// short and the agent has follow-ups left, it writes one. After MAX_PROBES it
+// lets go. Nothing here decides pay: the verdict that counts is taken from the
+// stored transcript when the response is submitted (services/answerJudge.ts).
+const MAX_PROBE_BYTES = 12 * 1024 * 1024;
+
+responses.post("/api/responses/:id/probe", async (c) => {
+  const responseId = c.req.param("id");
+  const db = c.env.DB;
+  const none = { verdict: null, transcript: "", probe: null, letGo: false };
+  const response = await db
+    .prepare(
+      `SELECT r.id, r.status, r.survey_id, s.kind, s.sponsor_name FROM responses r JOIN surveys s ON s.id = r.survey_id WHERE r.id = ?`
+    )
+    .bind(responseId)
+    .first<{ id: string; status: string; survey_id: string; kind: string | null; sponsor_name: string | null }>();
+  if (!response) return c.json({ error: "Response not found" }, 404);
+  if (response.status !== "in_progress") return c.json({ error: "Response already submitted" }, 400);
+  // Probing is a study's instrument; a group parlo takes the answer as it comes.
+  if (response.kind !== "study" && !response.sponsor_name) return c.json(none);
+  if (!(await checkRateLimit(c.env.KV, "probe", responseId, 40))) return c.json(none);
+
+  const form = await c.req.formData().catch(() => null);
+  const file = form?.get("audio") as unknown;
+  const questionId = String(form?.get("questionId") ?? "");
+  const soFar = String(form?.get("transcriptSoFar") ?? "").slice(0, 8000);
+  if (!file || typeof file !== "object" || !("arrayBuffer" in file) || !questionId) return c.json({ error: "audio and questionId are required" }, 400);
+  const question = await db
+    .prepare("SELECT q.id, q.text, q.question_type, r.purpose FROM survey_questions q LEFT JOIN rounds r ON r.id = q.round_id WHERE q.id = ? AND q.survey_id = ?")
+    .bind(questionId, response.survey_id)
+    .first<{ id: string; text: string; question_type: string; purpose: string | null }>();
+  if (!question) return c.json({ error: "That question is not in this parlo" }, 404);
+  // A testimonial is a line the person chose to give; it is not interrogated.
+  if (question.question_type !== "voice" || question.purpose === "testimonial") return c.json(none);
+
+  const buf = await (file as Blob).arrayBuffer();
+  if (buf.byteLength === 0) return c.json(none);
+  if (buf.byteLength > MAX_PROBE_BYTES) return c.json({ error: "Audio too large" }, 413);
+
+  let heard = "";
+  try {
+    heard = ((await transcribeAudio(c.env.AI, buf, `probe-${responseId}`)) ?? "").trim();
+  } catch (err) {
+    console.error("[probe] transcription failed", err);
+    return c.json(none);
+  }
+  const transcript = [soFar.trim(), heard].filter(Boolean).join(" ").trim();
+  // `written`: every follow-up made for this answer. `asked`: the ones the
+  // participant saw (the page says so, POST …/probe/shown). The limit counts
+  // what was seen; a follow-up that came back too late to show does not use
+  // one up. Writing stops regardless once four have been made.
+  const [written, asked] = await Promise.all([probesAsked(c.env.KV, responseId, question.id), probesShown(c.env.KV, responseId, question.id)]);
+
+  const [judged] = wordCount(transcript) === 0 ? [{ verdict: "unanswered" as const, score: 0 }] : await judgeAnswers(c.env, [{ question: question.text, transcript }], "probe-judge");
+  if (!judged) return c.json({ ...none, transcript });
+  if (judged.verdict === "answered") {
+    if (asked.length > 0) trackServerEvent(responseId, "probe_answered", { surveyId: response.survey_id, questionId: question.id, probes: asked.length });
+    return c.json({ verdict: judged.verdict, transcript, probe: null, letGo: false });
+  }
+  if (asked.length >= MAX_PROBES) {
+    trackServerEvent(responseId, "probe_let_go", { surveyId: response.survey_id, questionId: question.id, verdict: judged.verdict });
+    return c.json({ verdict: judged.verdict, transcript, probe: null, letGo: true });
+  }
+  // "Partly" is worth one follow-up, not two: the second is kept for an answer that is still missing.
+  if (judged.verdict === "partial" && asked.length >= 1) return c.json({ verdict: judged.verdict, transcript, probe: null, letGo: true });
+  if (written.length >= MAX_PROBES + 2) return c.json({ verdict: judged.verdict, transcript, probe: null, letGo: true });
+
+  const probe = await writeProbe(c.env, { question: question.text, transcript, earlier: written });
+  if (!probe) return c.json({ verdict: judged.verdict, transcript, probe: null, letGo: false });
+  await c.env.KV.put(probeKey(responseId, question.id), JSON.stringify([...written, probe]), { expirationTtl: 2 * 24 * 3600 });
+  trackServerEvent(responseId, "probe_asked", { surveyId: response.survey_id, questionId: question.id, n: asked.length + 1, verdict: judged.verdict });
+  return c.json({ verdict: judged.verdict, transcript, probe: { text: probe }, letGo: false, remaining: MAX_PROBES - asked.length - 1 });
+});
+
+// ── POST /api/responses/:id/probe/shown ── The participant saw this follow-up
+//
+// Body `{questionId, text}`. Only a follow-up this server wrote for that
+// answer can be marked, so the list kept with the answer is the agent's own
+// words and nothing a client made up.
+responses.post("/api/responses/:id/probe/shown", async (c) => {
+  const responseId = c.req.param("id");
+  const body = await c.req.json<{ questionId?: unknown; text?: unknown }>().catch(() => ({} as { questionId?: unknown; text?: unknown }));
+  const questionId = typeof body.questionId === "string" ? body.questionId : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!questionId || !text) return c.json({ error: "questionId and text are required" }, 400);
+  const response = await c.env.DB.prepare("SELECT status FROM responses WHERE id = ?").bind(responseId).first<{ status: string }>();
+  if (!response) return c.json({ error: "Response not found" }, 404);
+  if (response.status !== "in_progress") return c.json({ ok: true });
+  const [written, shown] = await Promise.all([probesAsked(c.env.KV, responseId, questionId), probesShown(c.env.KV, responseId, questionId)]);
+  if (!written.includes(text)) return c.json({ error: "That follow-up was not asked here" }, 404);
+  if (!shown.includes(text)) {
+    await c.env.KV.put(probeShownKey(responseId, questionId), JSON.stringify([...shown, text]), { expirationTtl: 2 * 24 * 3600 });
+  }
+  return c.json({ ok: true });
+});
+
+// ── POST /api/s/:code/asks/:questionId/decline ── "I'd rather not" to a testimonial ask
+//
+// Only a testimonial ask can be declined: it stops being pending for that
+// person and they are not asked it again. Personal link only.
+responses.post("/api/s/:code/asks/:questionId/decline", async (c) => {
+  const code = extractCode(c.req.param("code"));
+  const db = c.env.DB;
+  const survey = await db.prepare("SELECT id FROM surveys WHERE code = ? AND status = 'active'").bind(code).first<{ id: string }>();
+  if (!survey) return c.json({ error: "Parlo not found" }, 404);
+  const member = await getMemberByToken(db, survey.id, c.req.query("t"));
+  if (!member) return c.json({ error: "This link isn't valid for this parlo" }, 403);
+  const question = await db
+    .prepare(
+      `SELECT q.id, q.target_user_id, r.purpose, r.id AS round_id FROM survey_questions q JOIN rounds r ON r.id = q.round_id
+       WHERE q.id = ? AND q.survey_id = ? AND r.status = 'sent'`
+    )
+    .bind(c.req.param("questionId"), survey.id)
+    .first<{ id: string; target_user_id: string | null; purpose: string | null; round_id: string }>();
+  if (!question || (question.target_user_id && question.target_user_id !== member.user_id)) return c.json({ error: "That ask isn't waiting for you" }, 404);
+  if (question.purpose !== "testimonial") return c.json({ error: "Only a testimonial ask can be declined" }, 400);
+  await db.prepare("INSERT OR IGNORE INTO ask_declines (question_id, user_id) VALUES (?, ?)").bind(question.id, member.user_id).run();
+  trackServerEvent(member.user_id, "testimonial_declined", { surveyId: survey.id, roundId: question.round_id });
+  return c.json({ ok: true });
 });
 
 export default responses;

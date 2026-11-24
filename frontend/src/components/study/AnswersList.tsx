@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { CornerDownRight, LoaderCircle } from "lucide-react";
 import { fetchStudyAnswers, type StudyAnswer } from "@/api/study";
 import { Button } from "@/components/ui/button";
 import VoiceNotePill from "@/components/VoiceNotePill";
-import { PublishChip } from "@/components/study/BriefBoard";
+import { PublishChip, TestimonialTag, VerdictChip } from "@/components/study/BriefBoard";
 
 function when(iso: string | null): string {
   if (!iso) return "";
@@ -11,18 +11,39 @@ function when(iso: string | null): string {
 }
 
 function AnswerCard({ answer }: { answer: StudyAnswer }) {
+  // The follow-ups the agent asked inside the sitting, before it let the question go.
+  const probes = answer.probes ?? [];
   return (
     <li className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="study-answer">
       <div className="flex items-center justify-between gap-s">
         <p className="min-w-0 truncate text-s font-medium text-foreground">{answer.who}</p>
-        <p className="shrink-0 font-data text-xs tabular-nums text-muted-foreground">
-          {answer.roundNumber === 0 ? "Interview" : `Round ${answer.roundNumber}`} · {when(answer.submittedAt)}
-        </p>
+        <div className="flex shrink-0 items-center gap-xs">
+          {answer.purpose === "testimonial" && <TestimonialTag />}
+          <p className="font-data text-xs tabular-nums text-muted-foreground">
+            {answer.roundNumber === 0 ? "Interview" : `Round ${answer.roundNumber}`} · {when(answer.submittedAt)}
+          </p>
+        </div>
       </div>
-      <div className="flex items-center justify-between gap-s">
+      <div className="flex items-start justify-between gap-s">
         <p className="min-w-0 text-xs text-muted-foreground">{answer.questionText}</p>
-        <PublishChip consent={answer.publishConsent} />
+        <div className="flex shrink-0 flex-col items-end gap-xxs empty:hidden">
+          <VerdictChip verdict={answer.verdict} note={answer.verdictNote} />
+          <PublishChip consent={answer.publishConsent} />
+        </div>
       </div>
+      {probes.length > 0 && (
+        <div className="flex flex-col gap-xxs" data-testid="answer-probes">
+          <p className="text-xs text-muted-foreground">The agent followed up:</p>
+          <ul className="flex flex-col gap-xxs">
+            {probes.map((probe, i) => (
+              <li key={i} className="flex items-start gap-xs text-xs text-neutral-8">
+                <CornerDownRight size={14} className="mt-xxs shrink-0 text-color-1" aria-hidden />
+                <span className="min-w-0">{probe}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {answer.audioUrl && <VoiceNotePill url={answer.audioUrl} durationMs={answer.durationMs} className="bg-muted" />}
       {answer.videoUrl && <video src={answer.videoUrl} controls playsInline className="w-full rounded-s" />}
       {answer.imageUrl && <img src={answer.imageUrl} alt="" className="w-full rounded-s" />}

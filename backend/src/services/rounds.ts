@@ -70,7 +70,7 @@ export async function pendingAsksFor(db: D1Database, surveyId: string, userId: s
   if (!userId) {
     const r = await db
       .prepare(
-        `SELECT q.* FROM survey_questions q
+        `SELECT q.*, r.purpose AS round_purpose FROM survey_questions q
          JOIN rounds r ON r.id = q.round_id
          WHERE q.survey_id = ? AND r.status = 'sent' AND q.target_user_id IS NULL
          ORDER BY r.number ASC, q.sort_order ASC`
@@ -81,10 +81,11 @@ export async function pendingAsksFor(db: D1Database, surveyId: string, userId: s
   }
   const r = await db
     .prepare(
-      `SELECT q.* FROM survey_questions q
+      `SELECT q.*, r.purpose AS round_purpose, r.reward_cents AS round_reward_cents FROM survey_questions q
        JOIN rounds r ON r.id = q.round_id
        WHERE q.survey_id = ? AND r.status = 'sent'
          AND (q.target_user_id IS NULL OR q.target_user_id = ?)
+         AND NOT EXISTS (SELECT 1 FROM ask_declines d WHERE d.question_id = q.id AND d.user_id = ?)
          AND NOT EXISTS (
            SELECT 1 FROM response_answers ra
            JOIN responses resp ON resp.id = ra.response_id
@@ -92,7 +93,7 @@ export async function pendingAsksFor(db: D1Database, surveyId: string, userId: s
          )
        ORDER BY r.number ASC, q.sort_order ASC`
     )
-    .bind(surveyId, userId, userId)
+    .bind(surveyId, userId, userId, userId)
     .all<SurveyQuestion>();
   return r.results;
 }
@@ -117,6 +118,8 @@ export async function createProposedRound(
     serves?: string[];
     /** What the round pays per accepted answer, in cents. */
     rewardCents?: number | null;
+    /** 'testimonial' for a round that asks for lines meant for public use. */
+    purpose?: string | null;
   }
 ): Promise<{ round: Round; asks: SurveyQuestion[] }> {
   if (input.asks.length === 0) throw new Error("A round needs at least one ask");
@@ -140,8 +143,8 @@ export async function createProposedRound(
 
   const inserts: D1PreparedStatement[] = [
     db
-      .prepare("INSERT INTO rounds (id, survey_id, number, kind, status, rationale, proposed_by, serves, reward_cents) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, ?)")
-      .bind(roundId, surveyId, number, input.kind, input.rationale, input.proposedBy, input.serves?.length ? JSON.stringify(input.serves) : null, input.rewardCents || null),
+      .prepare("INSERT INTO rounds (id, survey_id, number, kind, status, rationale, proposed_by, serves, reward_cents, purpose) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?)")
+      .bind(roundId, surveyId, number, input.kind, input.rationale, input.proposedBy, input.serves?.length ? JSON.stringify(input.serves) : null, input.rewardCents || null, input.purpose ?? null),
   ];
   input.asks.forEach((a, i) => {
     const qType = a.type === "photo" ? "photo" : a.type === "video" ? "video" : "voice";

@@ -1,15 +1,27 @@
-import { useEffect, useState } from "react";
-import { Bot, Copy, CornerDownRight, LoaderCircle, RefreshCw, Send, Sparkles } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Bot, Copy, CornerDownRight, LoaderCircle, Megaphone, RefreshCw, Send, Sparkles } from "lucide-react";
 import { approveRound, rejectRound } from "@/api/client";
-import { apiErrorMessage, fetchAgentAccess, formatMoney, replanBrief, steerBrief, type BriefBoard as Board, type BriefEvent, type BriefRoundAsk } from "@/api/study";
+import {
+  apiErrorMessage,
+  fetchAgentAccess,
+  formatMoney,
+  planTestimonials,
+  replanBrief,
+  steerBrief,
+  type BriefBoard as Board,
+  type BriefEvent,
+  type BriefRoundAsk,
+} from "@/api/study";
 import { trackEvent } from "@/lib/posthog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/sonner";
+import { MoneyInput } from "@/components/creator/MoneyInput";
+import { centsToDollars, dollarsToCents } from "@/components/creator/studyUi";
 import { describeDeadline } from "@/lib/deadline";
-import { labelClass } from "@/components/study/BriefBoard";
+import { labelClass, TestimonialTag } from "@/components/study/BriefBoard";
 
 function ago(iso: string | null): string {
   if (!iso) return "";
@@ -114,6 +126,8 @@ function NextRound({ board, apiKey, onBoard, reload }: { board: Board; apiKey: s
     );
   }
 
+  // A testimonial round asks named people for a line meant for public use; its price is a bonus for recording one.
+  const testimonial = round.purpose === "testimonial";
   const cents = price.trim() === "" ? 0 : Math.max(0, Math.round(parseFloat(price) * 100) || 0);
   const maxCents = cents * round.cost.reach;
   const remaining = round.cost.remainingCents;
@@ -160,6 +174,12 @@ function NextRound({ board, apiKey, onBoard, reload }: { board: Board; apiKey: s
       </div>
       <p className="text-s font-medium text-foreground">
         Round {round.number}
+        {testimonial && (
+          <>
+            {" "}
+            <TestimonialTag label="Testimonials" />
+          </>
+        )}
         <span className="font-regular text-muted-foreground"> · {round.kind === "probe" ? "follow-ups for the people named" : "the same ask for everyone"}</span>
       </p>
 
@@ -173,12 +193,17 @@ function NextRound({ board, apiKey, onBoard, reload }: { board: Board; apiKey: s
       {round.rationale && <p className="text-s text-neutral-8">{round.rationale}</p>}
       <Asks asks={round.asks} />
       <Serves board={board} ids={round.serves} />
+      {testimonial && board.survey.testimonialNotice && (
+        <p className="text-xs text-muted-foreground" data-testid="testimonial-notice">
+          Each person is told: “{board.survey.testimonialNotice}” Recording it is their consent.
+        </p>
+      )}
 
       {canManage ? (
         <>
           <div className="flex flex-col gap-xs">
             <Label htmlFor="round-price" className="text-xs text-muted-foreground">
-              Reward per answer ({currency})
+              {testimonial ? "Bonus per testimonial" : "Reward per answer"} ({currency})
             </Label>
             <Input
               id="round-price"
@@ -191,7 +216,7 @@ function NextRound({ board, apiKey, onBoard, reload }: { board: Board; apiKey: s
             />
             <p className={`text-xs ${fits ? "text-muted-foreground" : "text-error"}`} data-testid="round-cost">
               {costLine}
-              {!fits ? ". Lower the reward or raise the budget." : ""}
+              {!fits ? `. Lower the ${testimonial ? "bonus" : "reward"} or raise the budget.` : ""}
             </p>
           </div>
           <div className="flex gap-xs">
@@ -226,6 +251,7 @@ function LiveRound({ board }: { board: Board }) {
   const round = board.liveRound;
   if (!round) return null;
   const deadline = describeDeadline(round.closesAt);
+  const testimonial = round.purpose === "testimonial";
   return (
     <section className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="live-round">
       <div className="flex items-center justify-between gap-s">
@@ -234,10 +260,16 @@ function LiveRound({ board }: { board: Board }) {
       </div>
       <p className="text-s font-medium text-foreground">
         Round {round.number}
+        {testimonial && (
+          <>
+            {" "}
+            <TestimonialTag label="Testimonials" />
+          </>
+        )}
         <span className="font-regular text-muted-foreground">
           {" "}
           · {people(round.answered)} answered
-          {round.rewardCents > 0 ? ` · ${formatMoney(round.rewardCents, board.rewards.currency)} per answer` : ""}
+          {round.rewardCents > 0 ? ` · ${formatMoney(round.rewardCents, board.rewards.currency)} per ${testimonial ? "testimonial" : "answer"}` : ""}
           {deadline ? ` · ${deadline.charAt(0).toLowerCase()}${deadline.slice(1)}` : ""}
         </span>
       </p>
@@ -293,6 +325,90 @@ function StudySteer({ board, apiKey, onBoard }: { board: Board; apiKey: string; 
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/**
+ * Research team: have the agent plan a testimonial round. It picks the people
+ * who were positive and asks each for a line meant for public use. The plan
+ * lands under "Next round" like any other, to be priced and sent from there.
+ */
+function TestimonialPlan({ board, apiKey, reload }: { board: Board; apiKey: string; reload: () => Promise<void> }) {
+  const [who, setWho] = useState("");
+  // null = untouched: the field shows the study's default reward.
+  const [bonusDraft, setBonusDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Nobody has spoken yet, so there is nobody to ask.
+  if (!board.you.canManage || !(board.voices > 0)) return null;
+
+  const bonus = bonusDraft ?? centsToDollars(board.rewards.defaultCents || null);
+
+  const plan = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    const hint = who.trim();
+    // An empty field is no bonus. It goes out as 0: left out, the server prices the round at the study's default.
+    const bonusCents = dollarsToCents(bonus) ?? 0;
+    setBusy(true);
+    trackEvent("testimonial_plan_requested", { surveyId: board.survey.id, hasWho: hint.length > 0, bonusCents });
+    try {
+      await planTestimonials(apiKey, board.survey.id, { who: hint || undefined, bonusCents });
+      await reload();
+      setWho("");
+      toast.success("Testimonial round planned. Check it under Next round.");
+    } catch (err) {
+      // "Nobody has been positive yet" comes back as a 409 with the sentence to show.
+      toast.error(apiErrorMessage(err, "The agent couldn't plan a testimonial round."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="testimonial-plan">
+      <h2 className={labelClass}>Ask for testimonials</h2>
+      <p className="text-s text-neutral-8">
+        The agent picks the people who were positive and asks each for a line you can use in public. They are told so on the ask, and it pays a bonus.
+      </p>
+      <form className="flex flex-col gap-s" onSubmit={plan}>
+        <div className="flex flex-col gap-xs">
+          <Label htmlFor="testimonial-who" className="text-xs text-muted-foreground">
+            Who
+          </Label>
+          <Input
+            id="testimonial-who"
+            value={who}
+            onChange={(e) => setWho(e.target.value)}
+            maxLength={300}
+            placeholder="People who were happy with onboarding"
+            disabled={busy}
+            data-testid="testimonial-who"
+          />
+        </div>
+        <div className="flex flex-col gap-xs">
+          <Label htmlFor="testimonial-bonus" className="text-xs text-muted-foreground">
+            Bonus per testimonial
+          </Label>
+          <MoneyInput
+            id="testimonial-bonus"
+            currency={board.rewards.currency}
+            value={bonus}
+            onValueChange={setBonusDraft}
+            // Cents are fine: the field's default step of 1 would refuse "12.50" on submit.
+            step="any"
+            placeholder="0"
+            disabled={busy}
+            data-testid="testimonial-bonus"
+          />
+        </div>
+        {/* The busy sentence is long for a pill: let it wrap on a 320px phone instead of overflowing the card. */}
+        <Button type="submit" size="sm" className="self-start max-w-full whitespace-normal text-left" disabled={busy} data-testid="testimonial-submit">
+          {busy ? <LoaderCircle className="animate-spin" aria-hidden /> : <Megaphone aria-hidden />}
+          {busy ? "The agent is choosing who to ask…" : "Plan a testimonial round"}
+        </Button>
+      </form>
     </section>
   );
 }
@@ -438,6 +554,7 @@ export default function PlanPanel({ board, apiKey, onBoard, reload }: { board: B
       <NextRound board={board} apiKey={apiKey} onBoard={onBoard} reload={reload} />
       <LiveRound board={board} />
       <StudySteer board={board} apiKey={apiKey} onBoard={onBoard} />
+      <TestimonialPlan board={board} apiKey={apiKey} reload={reload} />
       <Budget board={board} />
       <AgentAccess board={board} apiKey={apiKey} />
       <Timeline events={board.timeline} />

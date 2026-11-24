@@ -25,6 +25,13 @@ export interface StudyAnswer {
   durationMs: number;
   /** What may leave the study: none | quote (their words, unnamed) | voice (the recording too). */
   publishConsent: PublishConsent;
+  /** How well it answered its question; null = not judged. */
+  verdict: "answered" | "partial" | "unanswered" | null;
+  verdictNote: string | null;
+  /** The follow-ups the agent asked in the sitting before it let go. */
+  probes: string[];
+  /** 'testimonial' when the ask was for a line meant for public use. */
+  purpose: "testimonial" | null;
   submittedAt: string | null;
   audioUrl: string | null;
   videoUrl: string | null;
@@ -110,7 +117,7 @@ export interface RewardSummary {
 }
 
 export interface BriefBoard {
-  survey: { id: string; code: string; title: string | null; sponsor: string | null; study: boolean; dashboardCode: string | null };
+  survey: { id: string; code: string; title: string | null; sponsor: string | null; study: boolean; testimonialNotice: string; dashboardCode: string | null };
   you: { userId: string; role: GroupRole; canManage: boolean };
   goal: string;
   items: BriefItem[];
@@ -124,6 +131,8 @@ export interface BriefBoard {
     id: string;
     number: number;
     kind: RoundKind;
+    /** 'testimonial': asks named people for a line meant for public use, for a bonus. */
+    purpose: "testimonial" | null;
     rationale: string | null;
     createdAt: string | null;
     /** Ids of the brief questions this round digs into. */
@@ -135,6 +144,7 @@ export interface BriefBoard {
     id: string;
     number: number;
     kind: RoundKind;
+    purpose: "testimonial" | null;
     sentAt: string | null;
     closesAt: string | null;
     serves: string[];
@@ -172,6 +182,31 @@ export const replanBrief = (apiKey: string, surveyId: string) => apiFetch<BriefB
 /** What you hand your own AI agent so it can work on the study with your seat. */
 export const fetchAgentAccess = (apiKey: string, surveyId: string) =>
   apiFetch<{ mcpUrl: string; inviteLink: string; seat: string; studyId: string }>(`${base(surveyId)}/agent-access`, authed(apiKey));
+
+/**
+ * Research team: have the agent plan a testimonial round. It picks the people
+ * who were positive (`who` narrows that: "people happy with onboarding") and
+ * asks each for a line meant for public use; `bonusCents` is what recording
+ * it pays. Answers 409 with a sentence when nobody has been positive yet.
+ */
+export const planTestimonials = (apiKey: string, surveyId: string, input: { who?: string; bonusCents?: number | null }) =>
+  apiFetch<{ round: { id: string; number: number } }>(
+    `${base(surveyId)}/rounds/propose`,
+    post(apiKey, { purpose: "testimonial", hint: input.who?.trim() || undefined, rewardCents: input.bonusCents ?? undefined })
+  );
+
+export interface StudyClip extends StudyAnswer {
+  testimonial: boolean;
+  /** Recorded for a bonus: disclose it wherever the clip is published. */
+  incentivised: boolean;
+  bonusCents: number;
+  /** What the participant was told on the ask before recording. */
+  notice: string | null;
+  /** The recording itself may be used (voice consent); otherwise only the words, unnamed. */
+  audioUsable: boolean;
+}
+/** Research team: every line and recording its speaker allowed to be used in public. */
+export const fetchClips = (apiKey: string, surveyId: string) => apiFetch<{ clips: StudyClip[]; currency: string }>(`${base(surveyId)}/clips`, authed(apiKey));
 
 export const fetchStudyAnswers = (apiKey: string, surveyId: string, offset = 0, limit = 30) =>
   apiFetch<{ answers: StudyAnswer[]; total: number; hasMore: boolean }>(`${base(surveyId)}/answers?limit=${limit}&offset=${offset}`, authed(apiKey));
@@ -282,7 +317,9 @@ export interface LedgerReward {
   amountCents: number;
   currency: string;
   status: RewardStatus;
-  holdReason: "too_short" | "off_topic" | "over_budget" | null;
+  /** `unanswered`: an ask stayed unanswered after the agent's follow-ups (`holdNote` names it). `off_topic` is its older name. */
+  holdReason: "too_short" | "unanswered" | "off_topic" | "over_budget" | null;
+  holdNote: string | null;
   error: string | null;
   createdAt: string;
   sentAt: string | null;

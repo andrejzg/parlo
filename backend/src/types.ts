@@ -133,6 +133,8 @@ export interface Round {
   closed_at?: string | null;
   /** JSON array of the brief item ids this round digs into. */
   serves?: string | null;
+  /** 'testimonial': asks named people for a line meant for public use, under a notice, for a bonus. */
+  purpose?: string | null;
   /** What this round pays for an accepted answer, in cents; null or 0 = unpaid. */
   reward_cents?: number | null;
 }
@@ -162,6 +164,10 @@ export interface SurveyQuestion {
   round_id?: string | null;
   /** Null = asked of everyone; otherwise a probe aimed at one member. */
   target_user_id?: string | null;
+  /** The round's purpose, when asks are listed for a participant: 'testimonial' or null. */
+  round_purpose?: string | null;
+  /** What the ask's round pays, when listed for a signed-in member (a testimonial's bonus). */
+  round_reward_cents?: number | null;
 }
 
 export interface Response {
@@ -313,6 +319,8 @@ export interface SubmitResponseRequest {
   proof?: string;
   /** A study's consent screen: may these words (or this voice) be used in public material? Default none. */
   publishConsent?: string;
+  /** Ids of testimonial asks this client showed with their marketing notice before recording. Only these are stamped as consented for public use. */
+  testimonialAck?: string[];
 }
 
 export interface SurveyPublicView {
@@ -338,6 +346,8 @@ export interface SurveyPublicView {
   reward: { amountCents: number; currency: string } | null;
   /** A research study: the page drops its group furniture and asks for publication consent. */
   study: boolean;
+  /** Shown on a testimonial ask: who may use the recording, in a sentence. */
+  testimonialNotice: string;
 }
 
 export interface DashboardView {

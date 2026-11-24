@@ -39,6 +39,7 @@ import { closesAtFor, repeatsOnClose, shapeReport, timingSpec } from "../service
 import { outputsAgentSection, parseOutputs } from "../services/outputs";
 import { closeRound, createProposedRound, getRound, membersPendingFor, overdueRounds, roundAsks, sendRound, type ProposedAsk } from "../services/rounds";
 import { applyAgentReading, briefForAgent, listItems, LIVE_STATUSES, logEvent, type AgentReading } from "../services/briefBoard";
+import { judgePositive, POSITIVE_AT } from "../services/answerJudge";
 import { notifyManagers, notifyUsers } from "../services/notify";
 import { createWhatsAppClient } from "../services/whatsapp";
 import { displayNameFor } from "../services/groups";
@@ -1078,7 +1079,91 @@ export class GroupAgent extends Agent<Env, GroupState> {
 
   // ── Propose the next round ─────────────────────────────────────────
 
-  async proposeRound(surveyId: string, opts: { preferKind?: RoundKind; hint?: string } = {}): Promise<ProposalResult> {
+
+  /**
+   * Who a testimonial round asks, and with which words.
+   *
+   * The people are not the planner's choice: every participant who has said
+   * anything is read against "were they clearly positive?" (and about what the
+   * owner's note names), and anyone asked for a testimonial before in this
+   * study is left alone. The planner only supplies wording: its personal ask
+   * for a person it singled out, else its general one.
+   */
+  private async testimonialAsks(
+    surveyId: string,
+    drafted: ProposedAsk[],
+    general: ProposedAsk | null,
+    hint?: string
+  ): Promise<{ asks: ProposedAsk[]; rationale: string }> {
+    const db = this.env.DB;
+    const [said, asked] = await Promise.all([
+      db
+        .prepare(
+          `SELECT r.user_id, group_concat(ra.transcription, ' ') AS said, MAX(r.submitted_at) AS last_at
+           FROM response_answers ra
+           JOIN responses r ON r.id = ra.response_id
+           JOIN group_members gm ON gm.survey_id = r.survey_id AND gm.user_id = r.user_id
+           WHERE r.survey_id = ? AND r.status != 'in_progress' AND gm.role = 'member' AND gm.removed_at IS NULL
+             AND ra.transcription IS NOT NULL AND trim(ra.transcription) != ''
+           GROUP BY r.user_id ORDER BY last_at DESC LIMIT 120`
+        )
+        .bind(surveyId)
+        .all<{ user_id: string; said: string | null }>(),
+      // One testimonial ask per person per study: answered, pending or declined, they are not asked again.
+      db
+        .prepare(
+          `SELECT DISTINCT q.target_user_id AS user_id FROM survey_questions q JOIN rounds rd ON rd.id = q.round_id
+           WHERE q.survey_id = ? AND rd.purpose = 'testimonial' AND rd.status IN ('sent', 'closed') AND q.target_user_id IS NOT NULL`
+        )
+        .bind(surveyId)
+        .all<{ user_id: string }>(),
+    ]);
+    const already = new Set(asked.results.map((r) => r.user_id));
+    const fresh = said.results.filter((r) => !already.has(r.user_id));
+    const personal = new Map(drafted.filter((a) => !!a.targetUserId).map((a) => [a.targetUserId as string, a]));
+
+    // Ten at a time: one judgment per person, and a Worker has a ceiling on parallel calls.
+    const positive: string[] = [];
+    for (let i = 0; i < fresh.length; i += 10) {
+      const batch = fresh.slice(i, i + 10);
+      const scores = await judgePositive(this.env, batch.map((r) => ({ said: r.said ?? "" })), hint);
+      batch.forEach((r, j) => {
+        const score = scores[j];
+        // No judge reachable: only then does the planner's own pick stand.
+        if (score === null ? personal.has(r.user_id) : score >= POSITIVE_AT) positive.push(r.user_id);
+      });
+    }
+    if (positive.length === 0) {
+      throw new Error(
+        already.size > 0
+          ? "Nobody new to ask: everyone who was clearly positive has already been asked for a testimonial."
+          : "Nobody in the study has been clearly positive yet, so there is nobody to ask for a testimonial."
+      );
+    }
+    const fallback: ProposedAsk = general ?? {
+      text: "In a sentence or two, in your own words: what would you tell a peer about your experience?",
+      hint: null,
+      type: "voice",
+      targetUserId: null,
+    };
+    const asks = positive.slice(0, 60).map((userId) => ({ ...(personal.get(userId) ?? fallback), targetUserId: userId }));
+    const about = hint?.trim() ? ` (looking for: ${hint.trim().slice(0, 160)})` : "";
+    const rationale =
+      `${asks.length} ${asks.length === 1 ? "person" : "people"} sounded clearly positive${about} and ${asks.length === 1 ? "has" : "have"} not been asked before. ` +
+      "Each is asked for one line they are happy to see used in public.";
+    return { asks, rationale };
+  }
+  async proposeRound(
+    surveyId: string,
+    opts: {
+      preferKind?: RoundKind;
+      hint?: string;
+      /** 'testimonial': ask the people who were positive for a line meant for public use. */
+      purpose?: "testimonial";
+      /** What the round pays per accepted answer (for a testimonial, the bonus); default the study's. */
+      rewardCents?: number;
+    } = {}
+  ): Promise<ProposalResult> {
     this.bind(surveyId);
     let picked = pickAgentModel(this.env);
     const started = Date.now();
@@ -1122,6 +1207,14 @@ export class GroupAgent extends Agent<Env, GroupState> {
         "When the brief lists \"Questions this study must answer\" (each with an id in square brackets and a status) and steers from the team that no round has taken up: aim this round at the steers first, then at the open and emerging questions. Leave answered questions alone unless a steer says otherwise. Say in the rationale which steer or question the round follows, and list the ids of the questions it digs into in \"serves\".",
         "Members may carry a segment in /members.md. To ask one segment only, give an ask the target \"segment:<name>\" with the name exactly as written there; everyone in that segment gets it, whether or not they have answered before.",
         "Respond ONLY with JSON: {\"kind\":\"poll\"|\"probe\",\"rationale\":\"one or two sentences for the owner\",\"serves\":[\"<brief question id>\"],\"asks\":[{\"text\":\"…\",\"hint\":\"short nudge or null\",\"target\":\"all\"|\"<member id>\"|\"segment:<name>\"}]}. Poll asks use target \"all\"; probe asks use a member id from /members.md who has answered, or a segment.",
+        ...(opts.purpose === "testimonial"
+          ? [
+              "THIS ROUND ASKS FOR TESTIMONIALS, and only that. Who is asked is decided separately, from each participant's own words (the ones who were clearly positive, the owner's note may say about what, and who have not been asked before). Your job is the wording.",
+              "First write ONE ask with target \"all\": the general invitation, used for anyone you did not write a personal one for. It must not refer to anything one person said. Then, for each participant whose answers you read and who was clearly positive, write one personal ask aimed at their member id (never a segment) that starts from what that person actually said they liked, so it reads as a follow-up and not a script.",
+              "Each ask invites one or two sentences, in their own words and in the first person, that could be quoted in public: what they would tell a peer, or what the thing they praised did for them. Do not put words in their mouth and do not ask for anything they did not express. Under 25 words.",
+              "They are told on the ask that the recording may be used in marketing and that it pays a bonus, so do not repeat that in the wording.",
+            ]
+          : []),
       ].join("\n");
 
       const prompt = [
@@ -1168,6 +1261,8 @@ export class GroupAgent extends Agent<Env, GroupState> {
       };
       // One ask per person it is aimed at: a member id, or everyone in a segment.
       const drafted: ProposedAsk[] = [];
+      /** The first ask written for everyone (a testimonial round uses it for people the planner did not single out). */
+      let general: ProposedAsk | null = null;
       for (const a of parsed.asks ?? []) {
         if (typeof a.text !== "string" || !a.text.trim()) continue;
         const base = {
@@ -1180,24 +1275,40 @@ export class GroupAgent extends Agent<Env, GroupState> {
         if (segment) {
           for (const userId of bySegment.get(segment) ?? []) drafted.push({ ...base, targetUserId: userId });
         } else {
+          if (!target) general ??= { ...base, targetUserId: null };
           drafted.push({ ...base, targetUserId: target && answeredIds.has(target) ? target : null });
         }
       }
       const targeted = drafted.filter((a) => !!a.targetUserId);
       // Anything aimed at someone makes the round a probe; a probe carries only aimed asks.
-      const kind: RoundKind = parsed.kind === "probe" || (targeted.length > 0 && targeted.length === drafted.length) ? "probe" : "poll";
-      const asks: ProposedAsk[] = kind === "probe" ? targeted.slice(0, 60) : drafted.map((a) => ({ ...a, targetUserId: null })).slice(0, 3);
-      if (asks.length === 0) throw new Error("The agent did not produce any usable asks");
+      // A testimonial round is always aimed: nobody is asked for a public line by broadcast.
+      const kind: RoundKind =
+        opts.purpose === "testimonial" || parsed.kind === "probe" || (targeted.length > 0 && targeted.length === drafted.length) ? "probe" : "poll";
+      let asks: ProposedAsk[] = kind === "probe" ? targeted.slice(0, 60) : drafted.map((a) => ({ ...a, targetUserId: null })).slice(0, 3);
+      let testimonialRationale: string | null = null;
+      if (opts.purpose === "testimonial") {
+        const chosen = await this.testimonialAsks(surveyId, drafted, general, opts.hint);
+        asks = chosen.asks;
+        testimonialRationale = chosen.rationale;
+      }
+      if (asks.length === 0) {
+        throw new Error(
+          opts.purpose === "testimonial"
+            ? "Nobody in the study has been clearly positive yet, so there is nobody to ask for a testimonial."
+            : "The agent did not produce any usable asks"
+        );
+      }
       const serves = Array.isArray(parsed.serves) ? parsed.serves.filter((id): id is string => typeof id === "string" && liveItemIds.has(id)).slice(0, 8) : [];
 
       const created = await createProposedRound(this.env.DB, surveyId, {
         kind,
-        rationale: typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 600) : null,
+        rationale: testimonialRationale ?? (typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 600) : null),
         proposedBy: "agent",
         asks,
         serves,
-        // The study's default price per touch; a researcher changes it before sending.
-        rewardCents: pricing?.reward_cents ?? null,
+        // The study's default price per touch (for a testimonial, the bonus given); a researcher changes it before sending.
+        rewardCents: opts.rewardCents ?? pricing?.reward_cents ?? null,
+        purpose: opts.purpose ?? null,
       });
       if (liveItemIds.size > 0) {
         await logEvent(this.env.DB, surveyId, { type: "round_proposed", actorRole: "agent", roundId: created.round.id, body: created.round.rationale });
@@ -1263,6 +1374,9 @@ export class GroupAgent extends Agent<Env, GroupState> {
     const surveyId = this.requireSurveyId();
     // A question added a moment ago has not been read against the answers yet.
     await this.readBrief(surveyId).catch((err) => console.error("[GroupAgent] readBrief before replan failed", err));
+    // A testimonial round someone asked for is waiting to be sent: a steer does not get to replace it.
+    const waiting = await this.env.DB.prepare("SELECT 1 FROM rounds WHERE survey_id = ? AND status = 'proposed' AND purpose = 'testimonial' LIMIT 1").bind(surveyId).first();
+    if (waiting) return;
     const result = await this.proposeRound(surveyId, {});
     if (!result.ok) console.error("[GroupAgent] replan failed", result.error);
   }

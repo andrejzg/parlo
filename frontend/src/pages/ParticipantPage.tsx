@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, CircleX } from "lucide-react";
@@ -16,7 +16,8 @@ import ThankYouScreen from "@/components/participant/ThankYouScreen";
 import GroupReportScreen from "@/components/participant/GroupReportScreen";
 import { Survey, SurveyQuestion, VoiceAnswer } from "@/types/survey";
 import { MOTION, pageVariants, transitionLarge } from "@/lib/animations";
-import { useGetSurvey, useStartResponse, useSubmitResponse, refreshUploadUrls, sendWhatsAppOtp, fetchLinkedInProfile, type LinkedInProfile, loginByPhone, startLinkedIn, type PhoneProof, type PublishConsent } from "@/api/client";
+import { useGetSurvey, useStartResponse, useSubmitResponse, refreshUploadUrls, sendWhatsAppOtp, fetchLinkedInProfile, type LinkedInProfile, loginByPhone, startLinkedIn, probeAnswer, markProbeShown, declineAsk, type PhoneProof, type PublishConsent } from "@/api/client";
+import type { ProbeFn } from "@/components/participant/useAnswerProbe";
 import { uploadAudioBlob } from "@/api/upload";
 import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
 import { toast } from "@/components/ui/sonner";
@@ -101,6 +102,33 @@ function storePublishConsent(code: string, value: PublishConsent | null): void {
   }
 }
 
+// The testimonial asks whose notice ("For public use…") has been on screen
+// in this response's sitting. Recording under that notice is the consent, so
+// the submit names them (`testimonialAck`) and the server counts the consent
+// for those only. Mirrored per parlo code for the same reason as the
+// publication consent: it has to survive a refresh, and it belongs to one
+// response (cleared when a new sitting starts and once the response is sent).
+const NOTICE_SEEN_PREFIX = "parlo-testimonial-seen:";
+
+function readNoticeSeen(code: string): string[] {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(NOTICE_SEEN_PREFIX + code) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** `null` forgets them. */
+function storeNoticeSeen(code: string, ids: string[] | null): void {
+  try {
+    if (ids === null || ids.length === 0) localStorage.removeItem(NOTICE_SEEN_PREFIX + code);
+    else localStorage.setItem(NOTICE_SEEN_PREFIX + code, JSON.stringify(ids));
+  } catch {
+    // Storage unavailable: the ids still live in this page's memory.
+  }
+}
+
 export default function ParticipantPage() {
   useVisualViewport();
   const params = useParams<{ code: string }>();
@@ -136,6 +164,10 @@ export default function ParticipantPage() {
   // Study only: may this person's words (quote) or recording (voice) be used
   // in public material. Off unless they turn it on; sent with the submit.
   const [publishConsent, setPublishConsent] = useState<PublishConsent>(() => (code ? readPublishConsent(code) : "none"));
+  // Testimonial asks this visitor said "I'd rather not" to, in this visit.
+  const [declinedAsks, setDeclinedAsks] = useState<string[]>([]);
+  // Testimonial asks whose notice has been on screen in this sitting (see NOTICE_SEEN_PREFIX).
+  const noticeSeenRef = useRef<Set<string>>(new Set(code ? readNoticeSeen(code) : []));
 
   // Upload session state
   const responseIdRef = useRef<string | null>(null);
@@ -145,8 +177,18 @@ export default function ParticipantPage() {
   const startResponse = useStartResponse();
   const submitResponse = useSubmitResponse();
 
-  const survey: Survey = surveyQuery.data || DEMO_SURVEY;
-  const isDemo = survey === DEMO_SURVEY;
+  const loadedSurvey: Survey = surveyQuery.data || DEMO_SURVEY;
+  const isDemo = loadedSurvey === DEMO_SURVEY;
+  // A declined ask is gone from every screen at once: the welcome and report
+  // screens must not offer it again while the refetch is on its way (or at
+  // all, for a visitor with no personal link, whom the server cannot tell).
+  const survey: Survey = useMemo(
+    () =>
+      declinedAsks.length === 0
+        ? loadedSurvey
+        : { ...loadedSurvey, questions: loadedSurvey.questions.filter((q) => !declinedAsks.includes(q.id)) },
+    [loadedSurvey, declinedAsks]
+  );
 
   // The asks this visitor is answering in this session. Snapshotted when the
   // flow starts: after submit the personalised survey refetches with those
@@ -176,6 +218,9 @@ export default function ParticipantPage() {
     }, 1500);
 
     (async () => {
+      // Set when this load is the return from LinkedIn's OAuth with the profile connected.
+      let backFromLinkedIn: { profile: LinkedInProfile; phone: string } | null = null;
+
       // Check for returning device FIRST, unconditionally. A verified
       // participant opening a brand-new survey has no session record for
       // that survey code, but we still need to know they've authenticated
@@ -193,20 +238,17 @@ export default function ParticipantPage() {
           setDeviceApiKey(deviceAuth.apiKey);
         }
 
-        // Check if returning from LinkedIn OAuth
+        // Check if returning from LinkedIn OAuth. The trip was a full page
+        // load, so the sitting (answers, response session, upload URLs) has to
+        // come back from IndexedDB below before "You're connected" can lead
+        // to a submit. Until 2026-11-24 this returned here, the sitting was
+        // never restored, and Continue ended on "No response session".
         const params = new URLSearchParams(window.location.search);
         if (params.get("linkedin") === "connected" && deviceAuth?.apiKey) {
           window.history.replaceState({}, "", window.location.pathname + window.location.hash);
           try {
             const profile = await fetchLinkedInProfile(deviceAuth.apiKey);
-            if (profile.connected) {
-              setLinkedInProfile(profile);
-              setPhone(deviceAuth.phone);
-              setStage("linkedin-success");
-              clearTimeout(failsafe);
-              setSessionRestored(true);
-              return;
-            }
+            if (profile.connected) backFromLinkedIn = { profile, phone: deviceAuth.phone };
           } catch {}
         }
       } catch {
@@ -219,6 +261,12 @@ export default function ParticipantPage() {
 
         const session = await getSession(code);
         if (!session || session.surveyId !== surveyQuery.data.id) {
+          if (backFromLinkedIn) {
+            // Connected, but this browser holds no sitting (LinkedIn handed the
+            // trip back to a different browser, or storage was cleared).
+            trackEvent("participant_linkedin_return_without_session", { surveyCode: code });
+            toast("LinkedIn is connected. Your answers weren't found on this device, so please record them again.");
+          }
           // A member with nothing left to answer lands on the group's report.
           if (surveyQuery.data.member && surveyQuery.data.questions.length === 0 && !landedOnReport) {
             setLandedOnReport(true);
@@ -245,17 +293,18 @@ export default function ParticipantPage() {
         }));
 
         // Restore state
-        setStage(session.stage as Stage);
+        setStage(backFromLinkedIn ? "linkedin-success" : (session.stage as Stage));
         setQuestionIndex(session.questionIndex);
         setAnswers(restoredAnswers);
-        setPhone(session.phone);
+        setPhone(backFromLinkedIn?.phone || session.phone);
+        if (backFromLinkedIn) setLinkedInProfile(backFromLinkedIn.profile);
         setResponseCode(session.responseCode || "");
         responseIdRef.current = session.responseId;
         uploadUrlsRef.current = session.uploadUrls;
         uploadUrlsCreatedAtRef.current = session.uploadUrlsCreatedAt;
         setScreenKey((k) => k + 1);
 
-        toast("Session restored — pick up where you left off");
+        if (!backFromLinkedIn) toast("Session restored — pick up where you left off");
       } catch {
         // IDB not available or corrupt — start fresh
       }
@@ -419,11 +468,30 @@ export default function ParticipantPage() {
     if (code) storePublishConsent(code, null);
   };
 
+  // ── Testimonial asks ────────────────────────────────────────────────
+
+  const isTestimonialAsk = (questionId: string) =>
+    flowQuestions.find((q) => q.id === questionId)?.purpose === "testimonial";
+
+  /** A testimonial ask's notice is on screen (`TestimonialNotice`). */
+  const handleNoticeShown = (questionId: string) => {
+    if (noticeSeenRef.current.has(questionId)) return;
+    noticeSeenRef.current.add(questionId);
+    if (code) storeNoticeSeen(code, [...noticeSeenRef.current]);
+  };
+
+  /** A new sitting has shown no notice yet. */
+  const resetNoticeSeen = () => {
+    noticeSeenRef.current = new Set();
+    if (code) storeNoticeSeen(code, null);
+  };
+
   // ── Stage handlers ──────────────────────────────────────────────────
 
   const handleStart = () => {
     flowQuestionsRef.current = survey.questions;
     resetPublishConsent();
+    resetNoticeSeen();
     goForward("consent");
   };
 
@@ -457,9 +525,12 @@ export default function ParticipantPage() {
       return updated;
     });
 
-    // Persist to IDB + enqueue background upload
+    // Persist to IDB + enqueue background upload. A testimonial ask can be
+    // declined right up to the moment the answers are sent, and a declined ask
+    // must leave nothing on the server: its recording goes up with the submit
+    // (which uploads whatever is still pending), not in the background.
     persistAnswer(answer);
-    enqueueUpload(answer);
+    if (!isTestimonialAsk(answer.questionId)) enqueueUpload(answer);
 
     if (redoMode) {
       setRedoMode(false);
@@ -484,6 +555,102 @@ export default function ParticipantPage() {
     } else {
       setDirection(1);
       setQuestionIndex(nextIndex);
+      setScreenKey((k) => k + 1);
+    }
+  };
+
+  /**
+   * A study follow-up is keeping the participant on a question with a take
+   * the page has not been handed (QuestionScreen `onKeep`). Stored now, in
+   * state and IndexedDB, so going back or a reload cannot lose it. It is
+   * uploaded when they move on from the question, or with the submit.
+   */
+  const handleKeepAnswer = (answer: VoiceAnswer) => {
+    // The first take of the sitting counts as started here: by the time it is
+    // handed up for good, `answers` already holds it.
+    if (answers.length === 0 && !redoMode) {
+      trackEvent("participant_recording_started", { surveyCode: code });
+    }
+    setAnswers((prev) =>
+      prev.some((a) => a.questionId === answer.questionId)
+        ? prev.map((a) => (a.questionId === answer.questionId ? answer : a))
+        : [...prev, answer]
+    );
+    persistAnswer(answer);
+  };
+
+  /**
+   * Probing, a study's instrument: after a voice take the agent says whether
+   * the question was answered and may ask one follow-up, which QuestionScreen
+   * shows. Not for a testimonial ask, not once the response has been sent,
+   * and there is nothing to call before the response session exists.
+   */
+  const probeFor = (question: SurveyQuestion | undefined): ProbeFn | undefined => {
+    if (!question || !isStudy || isDemo || question.purpose === "testimonial") return undefined;
+    if (redoMode && redoReturnStage === "done") return undefined;
+    return async (input) => {
+      const responseId = responseIdRef.current;
+      return responseId ? probeAnswer(responseId, { questionId: question.id, ...input }) : null;
+    };
+  };
+
+  /** Every ask in the sitting was declined: nothing to review, nothing to send. */
+  const endEmptySitting = () => {
+    forceReleaseSharedStream();
+    flowQuestionsRef.current = null;
+    setQuestionIndex(0);
+    resetNoticeSeen();
+    if (code) deleteSession(code).catch(() => {});
+    // A member lands on the report, anyone else back on the welcome screen.
+    // Neither lists the declined ask any more.
+    goForward(isMember ? "report" : "welcome");
+  };
+
+  /**
+   * "I'd rather not" on a testimonial ask. The server stops asking it of this
+   * member, and the ask leaves this sitting: no answer kept, nothing
+   * uploaded, not on the review screen.
+   */
+  const handleDeclineAsk = (questionId: string) => {
+    // Without a personal link there is nobody for the server to remember: the
+    // ask is only skipped here.
+    if (code && memberToken && !isDemo) {
+      declineAsk(code, memberToken, questionId)
+        .then(() => surveyQuery.refetch())
+        .catch(() => {
+          // Not recorded: the ask comes back on a later visit and can be declined again.
+        });
+    }
+    setDeclinedAsks((prev) => (prev.includes(questionId) ? prev : [...prev, questionId]));
+
+    // Its recording, if there was one, never left the device (see handleAnswer).
+    const answersLeft = answers.filter((a) => a.questionId !== questionId);
+    const remaining = flowQuestions.filter((q) => q.id !== questionId);
+    setAnswers(answersLeft);
+    if (code) deleteAnswerFromIDB(code, questionId).catch(() => {});
+    noticeSeenRef.current.delete(questionId);
+    if (code) storeNoticeSeen(code, [...noticeSeenRef.current]);
+    flowQuestionsRef.current = remaining;
+
+    const wasRedo = redoMode;
+    if (wasRedo) setRedoMode(false);
+
+    if (answersLeft.length === 0 && (wasRedo || questionIndex >= remaining.length)) {
+      endEmptySitting();
+    } else if (wasRedo) {
+      forceReleaseSharedStream();
+      goForward(redoReturnStage);
+    } else if (questionIndex >= remaining.length) {
+      // It was the last ask: on to review, as after a last answer.
+      trackEvent("participant_recording_completed", {
+        surveyCode: code,
+        questionCount: remaining.length,
+      });
+      forceReleaseSharedStream();
+      goForward("review");
+    } else {
+      // The next ask takes its place.
+      setDirection(1);
       setScreenKey((k) => k + 1);
     }
   };
@@ -627,15 +794,26 @@ export default function ParticipantPage() {
       throw new Error("No response session — please try again");
     }
 
+    // The testimonial asks that were shown with their notice and then recorded
+    // (a declined ask has no answer here, a typed one has no recording).
+    // Recording under the notice is the consent to public use, and the server
+    // counts it for these ids only.
+    const testimonialAck = answers
+      .filter((a) => !!a.blob && isTestimonialAsk(a.questionId) && noticeSeenRef.current.has(a.questionId))
+      .map((a) => a.questionId);
+
     const result = await submitResponse.mutateAsync({
       responseId: responseIdRef.current,
       phone,
       apiKey: deviceApiKey ?? undefined,
       // Asked on a study's consent screen only; any other parlo sends nothing.
       ...(isStudy ? { publishConsent } : {}),
+      // Only when there is a testimonial to acknowledge.
+      ...(testimonialAck.length > 0 ? { testimonialAck } : {}),
     });
     // The choice was for this response; the next round asks again.
     storePublishConsent(code, null);
+    resetNoticeSeen();
     if (result?.memberToken) {
       saveMemberToken(code, result.memberToken);
       setMemberToken(result.memberToken);
@@ -690,6 +868,8 @@ export default function ParticipantPage() {
 
   const pageKey = stage === "question" ? `q-${screenKey}` : stage;
 
+  const currentQuestion = stage === "question" ? flowQuestions[questionIndex] : undefined;
+
   const existingAnswer =
     stage === "question"
       ? answers.find((a) => a.questionId === flowQuestions[questionIndex]?.id)
@@ -705,6 +885,7 @@ export default function ParticipantPage() {
     uploadUrlsRef.current = null;
     uploadUrlsCreatedAtRef.current = null;
     resetPublishConsent();
+    resetNoticeSeen();
     goForward("consent");
   };
 
@@ -831,6 +1012,26 @@ export default function ParticipantPage() {
                   onNext={handleAnswer}
                   onBack={questionIndex > 0 ? handleBack : undefined}
                   onDeleteAnswer={handleDeleteAnswer}
+                  probe={probeFor(currentQuestion)}
+                  onProbeShown={(text) => {
+                    if (responseIdRef.current && currentQuestion) markProbeShown(responseIdRef.current, currentQuestion.id, text);
+                  }}
+                  onKeep={handleKeepAnswer}
+                  testimonial={
+                    currentQuestion?.purpose === "testimonial"
+                      ? {
+                          notice: survey.testimonialNotice,
+                          currency: survey.reward?.currency,
+                          onShown: () => handleNoticeShown(currentQuestion.id),
+                        }
+                      : undefined
+                  }
+                  // Once the response has been sent there is nothing left to decline.
+                  onDecline={
+                    currentQuestion?.purpose === "testimonial" && !(redoMode && redoReturnStage === "done")
+                      ? () => handleDeclineAsk(currentQuestion.id)
+                      : undefined
+                  }
                 />
               )
             )}

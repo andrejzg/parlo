@@ -11,6 +11,7 @@ import {
   type BriefBoard as Board,
   type BriefItem,
   type BriefSteer,
+  type StudyAnswer,
 } from "@/api/study";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,8 +55,9 @@ function originLine(item: BriefItem): string | null {
 }
 
 /** What the participant allowed beyond the study. Nothing shows for "none": staying inside the study is the default. */
-export function PublishChip({ consent }: { consent: "none" | "quote" | "voice" }) {
-  if (consent === "none") return null;
+export function PublishChip({ consent }: { consent: "none" | "quote" | "voice" | undefined }) {
+  // Only an explicit yes shows: a missing value is not consent.
+  if (consent !== "quote" && consent !== "voice") return null;
   return (
     <span
       className="shrink-0 inline-flex items-center rounded-full bg-success-transparent px-xs py-xxs text-xxs font-medium text-success"
@@ -63,6 +65,36 @@ export function PublishChip({ consent }: { consent: "none" | "quote" | "voice" }
       data-testid="publish-chip"
     >
       {consent === "voice" ? "Voice can be used" : "Can be quoted"}
+    </span>
+  );
+}
+
+/**
+ * Whether an answer spoke to its question. Nothing shows for "answered" or
+ * for an answer nobody judged: the chip is for the ones worth a look.
+ */
+export function VerdictChip({ verdict, note }: { verdict: StudyAnswer["verdict"] | undefined; note?: string | null }) {
+  if (verdict !== "partial" && verdict !== "unanswered") return null;
+  const partial = verdict === "partial";
+  return (
+    <span
+      className={`shrink-0 inline-flex items-center rounded-full px-xs py-xxs text-xxs font-medium ${
+        partial ? "bg-warning-transparent text-warning" : "bg-error-transparent text-error"
+      }`}
+      title={note || (partial ? "It spoke to part of the question" : "It didn't speak to the question, even after the agent's follow-ups")}
+      data-testid="verdict-chip"
+      data-verdict={verdict}
+    >
+      {partial ? "Partly answered" : "Didn't answer"}
+    </span>
+  );
+}
+
+/** Marks a round, or an answer from one, that asked for a line meant for public use. */
+export function TestimonialTag({ label = "Testimonial" }: { label?: string }) {
+  return (
+    <span className="shrink-0 inline-flex items-center rounded-full bg-color-1-transparent px-xs py-xxs text-xxs font-medium text-color-1" data-testid="testimonial-tag">
+      {label}
     </span>
   );
 }

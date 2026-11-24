@@ -28,7 +28,18 @@ interface Answer {
   transcription: string | null;
   transcriptionStatus: string;
   publishConsent: "none" | "quote" | "voice";
+  verdict?: "answered" | "partial" | "unanswered" | null;
+  probes?: string[];
+  purpose?: "testimonial" | null;
   submittedAt: string | null;
+}
+interface Clip extends Answer {
+  testimonial: boolean;
+  incentivised: boolean;
+  bonusCents: number;
+  notice: string | null;
+  audioUsable: boolean;
+  audioUrl: string | null;
 }
 interface Item {
   id: string;
@@ -81,7 +92,7 @@ interface Rewards {
   payouts: "sandbox" | "production" | null;
 }
 interface Board {
-  survey: { id: string; code: string; title: string | null; sponsor: string | null; study: boolean; dashboardCode: string | null };
+  survey: { id: string; code: string; title: string | null; sponsor: string | null; study: boolean; testimonialNotice?: string; dashboardCode: string | null };
   you: { userId: string; role: string; canManage: boolean };
   goal: string;
   items: Item[];
@@ -89,8 +100,8 @@ interface Board {
   dropped: Item[];
   steers: { id: string; itemId: string | null; itemText: string | null; body: string; by: string; role: string; at: string | null }[];
   planning: boolean;
-  nextRound: { id: string; number: number; kind: string; rationale: string | null; serves: string[]; asks: Ask[]; cost: Cost } | null;
-  liveRound: { id: string; number: number; kind: string; sentAt: string | null; closesAt: string | null; serves: string[]; asks: Ask[]; answered: number; rewardCents: number } | null;
+  nextRound: { id: string; number: number; kind: string; purpose?: string | null; rationale: string | null; serves: string[]; asks: Ask[]; cost: Cost } | null;
+  liveRound: { id: string; number: number; kind: string; purpose?: string | null; sentAt: string | null; closesAt: string | null; serves: string[]; asks: Ask[]; answered: number; rewardCents: number } | null;
   timeline: StudyEvent[];
   report: { markdown: string | null; updatedAt: string | null };
   voices: number;
@@ -251,7 +262,10 @@ function renderBoard(b: Board): string {
   if (b.nextRound) {
     const r = b.nextRound;
     lines.push(
-      `Planned, not sent: round ${r.number} (${r.kind === "probe" ? "follow-ups aimed at the people named" : "the same asks for everyone"}) · round_id: ${r.id}`,
+      `Planned, not sent: round ${r.number} (${
+        r.purpose === "testimonial" ? "TESTIMONIALS: a line for public use from each person named, for a bonus" : r.kind === "probe" ? "follow-ups aimed at the people named" : "the same asks for everyone"
+      }) · round_id: ${r.id}`,
+      r.purpose === "testimonial" ? `Each person is told on the ask: "${b.survey.testimonialNotice ?? "This recording may be used in public marketing material."}" Recording it is their consent; they may decline.` : "",
       r.rationale ? `Why: ${r.rationale}` : "",
       ...asksLines(r.asks),
       `Cost: ${costLine(r.cost, currency)}`,
@@ -266,7 +280,7 @@ function renderBoard(b: Board): string {
     lines.push(
       "",
       "## Out now",
-      `Round ${r.number} (${r.kind}) · ${people(r.answered)} answered${r.rewardCents ? ` · ${money(r.rewardCents, currency)} per answer` : ""}${r.closesAt ? ` · closes ${r.closesAt}` : ""} · sent ${r.sentAt ?? ""}`,
+      `Round ${r.number} (${r.purpose === "testimonial" ? "testimonials" : r.kind}) · ${people(r.answered)} answered${r.rewardCents ? ` · ${money(r.rewardCents, currency)} per answer` : ""}${r.closesAt ? ` · closes ${r.closesAt}` : ""} · sent ${r.sentAt ?? ""}`,
       ...asksLines(r.asks)
     );
   }
@@ -359,7 +373,9 @@ export function registerStudyTools(server: McpServer, client: ParloClient) {
           `${answers.length} of ${res.total} answers${res.hasMore ? ` (more with offset ${(offset ?? 0) + res.answers.length})` : ""}:`,
           ...answers.map(
             (a) =>
-              `\n[answer ${a.id}] ${a.who}${a.segment ? ` (${a.segment})` : ""} · ${a.roundNumber === 0 ? "imported interview" : `round ${a.roundNumber}`} · ${a.submittedAt ?? ""} · may be published: ${a.publishConsent}\nAsked: ${a.questionText}\nSaid: ${
+              `\n[answer ${a.id}] ${a.who}${a.segment ? ` (${a.segment})` : ""} · ${a.roundNumber === 0 ? "imported interview" : `round ${a.roundNumber}`}${a.purpose === "testimonial" ? " · testimonial" : ""} · ${a.submittedAt ?? ""} · may be published: ${a.publishConsent}${
+                a.verdict ? ` · ${a.verdict === "answered" ? "answered the question" : a.verdict === "partial" ? "PARTLY answered the question" : "DID NOT answer the question"}` : ""
+              }\nAsked: ${a.questionText}${(a.probes ?? []).map((p) => `\nThe agent followed up: ${p}`).join("")}\nSaid: ${
                 a.transcription?.trim() || (a.transcriptionStatus === "pending" ? "(still being transcribed)" : "(no speech transcribed)")
               }`
           ),
@@ -674,6 +690,70 @@ export function registerStudyTools(server: McpServer, client: ParloClient) {
       })
   );
 
+  // ── Research team: testimonials and clips ─────────────────────────────
+
+  server.tool(
+    "plan_testimonial_round",
+    "Research team: have the study's agent plan a testimonial round. It reads the answers, picks the participants who were clearly positive (narrow it with `who`, e.g. \"people who were happy with onboarding\"), and writes each of them one short ask for a line in their own words that can be used in public. On the ask they are told who may use the recording and that it pays the bonus; recording it is their consent and they may decline. Nothing is sent by this call: review the plan, then send_round. Replaces any round that is planned but not sent. Takes 10 to 20 seconds.",
+    {
+      study_id: studyId,
+      who: z.string().max(300).optional().describe("Who to ask, in a phrase. Left out: everyone who was clearly positive."),
+      bonus: z.number().min(0).max(500).optional().describe("What recording the testimonial pays, in major units (15 = $15). Left out: the study's default reward."),
+    },
+    edits,
+    async ({ study_id, who, bonus }) =>
+      run(async () => {
+        await client.api("POST", `${base(study_id)}/rounds/propose`, { purpose: "testimonial", hint: who, rewardCents: toCents(bonus) ?? undefined });
+        const b = await client.api<Board>("GET", `${base(study_id)}/brief`);
+        const r = b.nextRound;
+        if (!r) return "The study's agent did not produce a testimonial round.";
+        return [
+          `Planned testimonial round ${r.number} · round_id: ${r.id} · ${people(r.asks.reduce((n, a) => n + Math.max(1, a.targets.length), 0))} to ask`,
+          r.rationale ? `Why these people: ${r.rationale}` : "",
+          ...asksLines(r.asks),
+          `Each is told: "${b.survey.testimonialNotice ?? "This recording may be used in public marketing material."}"`,
+          `Bonus: ${costLine(r.cost, b.rewards.currency)}`,
+          "Nothing has been sent. edit_round changes a wording or the bonus; send_round sends it (it reaches real people and commits the bonus); dismiss_round drops it. What comes back shows in get_clips.",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
+  );
+
+  server.tool(
+    "get_clips",
+    "Research team: every line and recording that its speaker allowed to be used in public: testimonials recorded for that purpose, and ordinary answers whose speaker said yes on the consent screen. For each: who said it, the words, whether the recording itself may be used or only the words (unnamed), whether it was recorded for a bonus (an incentivised line: say so wherever it is published), what the person was told, and a download link for the audio that works for one hour.",
+    { study_id: studyId },
+    readOnly,
+    async ({ study_id }) =>
+      run(async () => {
+        const res = await client.api<{ clips: Clip[]; currency: string }>("GET", `${base(study_id)}/clips`);
+        if (res.clips.length === 0) {
+          return "Nothing is cleared for public use yet. A participant can allow it on the consent screen, or plan_testimonial_round asks the people who were positive for a line.";
+        }
+        return [
+          `${res.clips.length} cleared for public use:`,
+          ...res.clips.map((c) =>
+            [
+              `\n[answer ${c.id}] ${c.who}${c.segment ? ` (${c.segment})` : ""} · ${c.testimonial ? "TESTIMONIAL" : c.roundNumber === 0 ? "imported interview" : `round ${c.roundNumber}`}${
+                c.verdict && c.verdict !== "answered" ? ` · ${c.verdict === "partial" ? "partly on the ask" : "not on the ask"}` : ""
+              }`,
+              `Asked: ${c.questionText}`,
+              `Said: ${c.transcription?.trim() ?? ""}`,
+              `May be used: ${c.publishConsent === "voice" ? "the recording and the words" : "the words only, without the name (the recording stays inside the study)"}`,
+              c.incentivised ? `Incentivised: recorded for a ${money(c.bonusCents, res.currency)} bonus. Disclose that wherever it is published.` : "",
+              c.notice ? `They were told: "${c.notice}"` : "",
+              c.audioUsable && c.audioUrl ? `Audio (link valid one hour): ${c.audioUrl}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n")
+          ),
+          "",
+          "Names are shown to the research team so a clip can be cleared with the person; only \"the recording and the words\" clips may carry a voice in public.",
+        ].join("\n");
+      })
+  );
+
   // ── Research team: the report and rewards ─────────────────────────────
 
   server.tool(
@@ -695,13 +775,23 @@ export function registerStudyTools(server: McpServer, client: ParloClient) {
     readOnly,
     async ({ study_id }) =>
       run(async () => {
-        const res = await client.api<{ summary: Rewards; rewards: { id: string; name: string | null; segment: string | null; roundNumber: number; amountCents: number; currency: string; status: string; holdReason: string | null; error: string | null; claimedAt: string | null }[] }>(
+        const res = await client.api<{ summary: Rewards; rewards: { id: string; name: string | null; segment: string | null; roundNumber: number; amountCents: number; currency: string; status: string; holdReason: string | null; holdNote?: string | null; error: string | null; claimedAt: string | null }[] }>(
           "GET",
           `${base(study_id)}/rewards`
         );
         const s = res.summary;
-        const reason = (r: { status: string; holdReason: string | null; error: string | null }) =>
-          r.status === "failed" ? `failed: ${r.error ?? "unknown"}` : r.holdReason === "too_short" ? "held: the answer was only a few words" : r.holdReason === "off_topic" ? "held: the answer did not speak to the question" : r.holdReason === "over_budget" ? "held: would take the study over budget" : r.status;
+        const reason = (r: { status: string; holdReason: string | null; holdNote?: string | null; error: string | null }) =>
+          r.status === "failed"
+            ? `failed: ${r.error ?? "unknown"}`
+            : r.holdReason === "too_short"
+            ? "held: the answer was only a few words"
+            : r.holdReason === "unanswered"
+            ? `held: did not answer "${r.holdNote ?? "one of the asks"}" after the agent's follow-ups (read it with get_study_answers before deciding)`
+            : r.holdReason === "off_topic"
+            ? "held: the answer did not speak to the question"
+            : r.holdReason === "over_budget"
+            ? "held: would take the study over budget"
+            : r.status;
         const attention = res.rewards.filter((r) => r.status === "held" || r.status === "failed");
         return [
           `Paid out ${money(s.sentCents, s.currency)} · owed ${money(s.owedCents, s.currency)} · ${s.remainingCents === null ? "no budget set" : `${money(s.remainingCents, s.currency)} left of ${money(s.budgetCents ?? 0, s.currency)}`} · default ${s.defaultCents ? money(s.defaultCents, s.currency) : "none"} per answer`,
@@ -754,4 +844,5 @@ export const STUDY_INSTRUCTIONS = [
   "No seat yet? join_study takes one from an invite link. Starting from nothing? create_study.",
   "send_round and review_reward (pay) reach real people and commit money. Call them only when your person asked for exactly that.",
   "The client hears voices, not names: participants appear to a client as labels like \"Customer 3\". Each answer says whether it may be published (none, quote, voice); only quote and voice answers may be used in anything public.",
+  "Answers are judged against their question. Inside a sitting the study's agent asks up to two follow-ups when an answer falls short, then lets go; get_study_answers shows the follow-ups and whether the question ended up answered. Pay follows that: a round with an ask left unanswered is held for the research team to pay or void (get_rewards, review_reward). To get public lines, plan_testimonial_round asks the people who were positive, for a bonus; get_clips lists what may be used and what was paid for it.",
 ].join("\n");

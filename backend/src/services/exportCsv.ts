@@ -12,7 +12,7 @@ export const ANSWERS_CSV_COLUMNS = [
   "answer",
   "answered_at",
   "duration_seconds",
-  "response_id", "publish_consent",
+  "response_id", "publish_consent", "verdict",
 ] as const;
 
 interface AnswerRow {
@@ -33,6 +33,8 @@ interface AnswerRow {
   image_r2_key: string | null;
   video_r2_key: string | null;
   publish_consent: string | null;
+  answer_consent: string | null;
+  verdict: string | null;
 }
 
 function csvCell(v: unknown): string {
@@ -63,7 +65,7 @@ export async function buildAnswersCsv(db: D1Database, surveyId: string): Promise
               r.first_name AS response_first_name, r.last_name AS response_last_name,
               u.first_name, u.last_name, u.wa_name, u.linkedin_name,
               q.text AS question, q.question_type, rd.number AS round_number,
-              a.transcription, a.transcription_status, a.duration_ms, a.image_r2_key, a.video_r2_key
+              a.transcription, a.transcription_status, a.duration_ms, a.image_r2_key, a.video_r2_key, a.verdict, a.publish_consent AS answer_consent
        FROM response_answers a
        JOIN responses r ON r.id = a.response_id
        JOIN survey_questions q ON q.id = a.question_id
@@ -95,8 +97,10 @@ export async function buildAnswersCsv(db: D1Database, surveyId: string): Promise
         toIsoish(r.submitted_at),
         r.duration_ms ? Math.round(r.duration_ms / 1000) : "",
         r.response_id,
-        // none | quote | voice: what may leave the study (see migration 0018).
-        r.publish_consent ?? "none",
+        // none | quote | voice: what may leave the study (see migration 0018); a testimonial answer is 'voice' on its own.
+        r.answer_consent === "voice" || r.publish_consent === "voice" ? "voice" : r.answer_consent === "quote" || r.publish_consent === "quote" ? "quote" : "none",
+        // answered | partial | unanswered; empty when not judged (migration 0019).
+        r.verdict ?? "",
       ]
         .map(csvCell)
         .join(",")

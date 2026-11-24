@@ -71,6 +71,17 @@ upload.get("/api/audio/:key", async (c) => {
   );
   headers.set("cache-control", "public, max-age=3600");
 
+  // `?dl=<name>`: save it instead of playing it. A cross-origin `download`
+  // attribute is ignored by browsers, so the header has to say so (the Clips
+  // tab hands a recording to whoever will publish it).
+  const dl = c.req.query("dl");
+  if (dl) {
+    const type = object.httpMetadata?.contentType ?? "";
+    const ext = type.includes("wav") ? "wav" : type.includes("ogg") ? "ogg" : type.includes("mp4") || type.includes("m4a") ? "m4a" : type.includes("mpeg") ? "mp3" : "webm";
+    const name = dl.replace(/\.[a-z0-9]{2,4}$/i, "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "clip";
+    headers.set("content-disposition", `attachment; filename="${name}.${ext}"`);
+  }
+
   return new Response(object.body, { headers });
 });
 

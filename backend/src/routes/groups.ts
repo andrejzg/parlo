@@ -238,12 +238,16 @@ groups.post("/api/my/surveys/:surveyId/rounds/propose", async (c) => {
   const surveyId = c.req.param("surveyId");
   const gate = await requireMember(c, surveyId, true);
   if (gate instanceof Response) return gate;
-  const body = await c.req.json<{ kind?: string; hint?: string }>().catch(() => ({} as { kind?: string; hint?: string }));
+  type ProposeBody = { kind?: string; hint?: string; purpose?: string; rewardCents?: number | null };
+  const body = await c.req.json<ProposeBody>().catch((): ProposeBody => ({}));
   const preferKind: RoundKind | undefined = body.kind === "poll" || body.kind === "probe" ? body.kind : undefined;
+  // `purpose: "testimonial"`: the agent picks the people who were positive and asks each for a line meant for public use.
+  const purpose = body.purpose === "testimonial" ? ("testimonial" as const) : undefined;
+  const rewardCents = body.rewardCents === undefined || body.rewardCents === null ? undefined : sanitizeCents(body.rewardCents) ?? undefined;
   const agent = await getAgentByName(c.env.GROUP_AGENT, surveyId);
-  const result = await agent.proposeRound(surveyId, { preferKind, hint: typeof body.hint === "string" ? body.hint.slice(0, 500) : undefined });
-  if (!result.ok || !result.round) return c.json({ error: result.error ?? "The agent couldn't propose a round" }, 502);
-  trackServerEvent(gate.membership.user_id, "round_proposal_requested", { surveyId, kind: result.round.kind });
+  const result = await agent.proposeRound(surveyId, { preferKind, hint: typeof body.hint === "string" ? body.hint.slice(0, 500) : undefined, purpose, rewardCents });
+  if (!result.ok || !result.round) return c.json({ error: result.error ?? "The agent couldn't propose a round" }, purpose && /nobody/i.test(result.error ?? "") ? 409 : 502);
+  trackServerEvent(gate.membership.user_id, "round_proposal_requested", { surveyId, kind: result.round.kind, purpose: purpose ?? "round" });
   return c.json({ round: { ...result.round, asks: await roundAsksWithNames(c.env.DB, result.round.id) } });
 });
 
@@ -346,6 +350,9 @@ groups.post("/api/my/surveys/:surveyId/rounds/:roundId/approve", async (c) => {
   }
   const recipients = sent.recipients;
 
+  if (round.purpose === "testimonial") {
+    trackServerEvent(gate.membership.user_id, "testimonial_offered", { surveyId, round: round.number, people: recipients.length, bonusCents: cost.rewardCents });
+  }
   trackServerEvent(gate.membership.user_id, "round_approved", { surveyId, round: round.number, kind: round.kind, recipients: recipients.length, rewardCents: cost.rewardCents, maxCents: cost.maxCents });
   return c.json({ ok: true, round: { ...(await getRound(c.env.DB, round.id)), asks: await roundAsksWithNames(c.env.DB, round.id) }, notified: recipients.length });
 });
