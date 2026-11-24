@@ -12,7 +12,7 @@ import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import type { AuthVariables } from "../middleware/auth";
 import { latestSentRound, pendingAsksFor } from "../services/rounds";
 import { notifyManagers } from "../services/notify";
-import { judgeAnswers, MAX_PROBES, probeKey, probeShownKey, probesAsked, probesShown, wordCount, writeProbe } from "../services/answerJudge";
+import { judgeAnswers, MAX_PROBES, probeKey, probeShownKey, probesAsked, probesShown, warmUpProbe, wordCount, writeProbe } from "../services/answerJudge";
 import { transcribeAudio } from "../services/ai";
 
 const responses = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
@@ -77,6 +77,10 @@ responses.post("/api/s/:code/responses", async (c) => {
     .run();
 
   const uploadUrls = await uploadUrlsFor(c, responseId, questions);
+
+  // A study follows up on answers: have speech-to-text and the judge warm by
+  // the time the first one is recorded (see warmUpProbe).
+  if (survey.kind === "study" || survey.sponsor_name) c.executionCtx.waitUntil(warmUpProbe(c.env));
 
   trackServerEvent(responseId, "response_started", {
     surveyId: survey.id,

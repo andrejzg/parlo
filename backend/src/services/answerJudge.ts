@@ -16,7 +16,7 @@
  */
 
 import type { Env } from "../types";
-import { runJsonCompletion } from "./ai";
+import { runJsonCompletion, transcribeAudio } from "./ai";
 import { systemOne, type NoulQuestion } from "./typesafe";
 import { trackServerEvent } from "./analytics";
 
@@ -208,6 +208,42 @@ export function judgePositive(env: Env, people: { said: string }[], about?: stri
 /** At or above this a participant counts as clearly positive. */
 export const POSITIVE_AT = 0.6;
 
+/**
+ * Wake up what a follow-up needs, when a study sitting starts. The first
+ * probe after a quiet spell took 8.7 s in production against 1.8 s for the
+ * next one, and the page waits six seconds at most, so without this the first
+ * question of a sitting would rarely get its follow-up. Speech-to-text on half
+ * a second of silence and one throwaway judgment; the participant is still on
+ * the consent screen or talking while it runs. Never throws.
+ */
+export async function warmUpProbe(env: Env): Promise<void> {
+  const seconds = 0.5;
+  const rate = 16000;
+  const samples = Math.floor(rate * seconds);
+  const wav = new ArrayBuffer(44 + samples * 2);
+  const view = new DataView(wav);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + samples * 2, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, samples * 2, true);
+  await Promise.allSettled([
+    transcribeAudio(env.AI, wav, "probe-warmup"),
+    judgeAnswers(env, [{ question: "What did you have for breakfast?", transcript: "Toast and coffee, like most mornings." }], "probe-warmup"),
+  ]);
+}
+
 export function probeKey(responseId: string, questionId: string) {
   return `probe:${responseId}:${questionId}`;
 }
@@ -258,7 +294,7 @@ export async function judgeResponseAnswers(env: Env, responseId: string): Promis
   if (!study) return 0;
   const rows = await db
     .prepare(
-      `SELECT ra.id, ra.transcription, q.text, COALESCE(rd.number, 1) AS round_number
+      `SELECT ra.id, ra.transcription, q.text, rd.purpose, COALESCE(rd.number, 1) AS round_number
        FROM response_answers ra
        JOIN survey_questions q ON q.id = ra.question_id
        LEFT JOIN rounds rd ON rd.id = q.round_id
@@ -266,21 +302,41 @@ export async function judgeResponseAnswers(env: Env, responseId: string): Promis
          AND q.question_type != 'photo' AND COALESCE(rd.number, 1) > 0`
     )
     .bind(responseId)
-    .all<{ id: string; transcription: string | null; text: string; round_number: number }>();
+    .all<{ id: string; transcription: string | null; text: string; purpose: string | null; round_number: number }>();
   if (rows.results.length === 0) return 0;
 
-  const judged = await judgeAnswers(
-    env,
-    rows.results.map((r) => ({ question: r.text, transcript: r.transcription ?? "" })),
-    "answer-verdict"
-  );
+  // A testimonial is not an answer to a question: it is a line the person
+  // chose to give. Its bonus turns on whether the line can stand as one (their
+  // own words, clearly positive), not on whether it matches the ask's wording.
+  // The first production run held a bonus for "it gave me my Fridays back"
+  // because the ask had been about dashboards.
+  const ordinary = rows.results.filter((r) => r.purpose !== "testimonial");
+  const testimonials = rows.results.filter((r) => r.purpose === "testimonial");
+  const [answers, lines] = await Promise.all([
+    judgeAnswers(env, ordinary.map((r) => ({ question: r.text, transcript: r.transcription ?? "" })), "answer-verdict"),
+    judgePositive(env, testimonials.map((r) => ({ said: r.transcription ?? "" }))),
+  ]);
+  const byId = new Map<string, Judged | null>();
+  ordinary.forEach((r, i) => byId.set(r.id, answers[i]));
+  testimonials.forEach((r, i) => {
+    const score = lines[i];
+    byId.set(r.id, score === null ? null : { verdict: verdictFor(score), score });
+  });
+  const judged = rows.results.map((r) => byId.get(r.id) ?? null);
+
   let stamped = 0;
   for (const [i, row] of rows.results.entries()) {
     const j = judged[i];
     if (!j) continue;
+    const note =
+      wordCount(row.transcription) < MIN_ANSWER_WORDS
+        ? "Only a few words"
+        : row.purpose === "testimonial" && j.verdict === "unanswered"
+          ? "Does not read as a testimonial"
+          : null;
     await db
       .prepare("UPDATE response_answers SET verdict = ?, verdict_score = ?, verdict_note = ? WHERE id = ?")
-      .bind(j.verdict, j.score, wordCount(row.transcription) < MIN_ANSWER_WORDS ? "Only a few words" : null, row.id)
+      .bind(j.verdict, j.score, note, row.id)
       .run();
     stamped++;
   }
