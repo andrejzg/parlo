@@ -736,7 +736,17 @@ export function registerStudyTools(server: McpServer, client: ParloClient) {
           ...res.clips.map((c) =>
             [
               `\n[answer ${c.id}] ${c.who}${c.segment ? ` (${c.segment})` : ""} · ${c.testimonial ? "TESTIMONIAL" : c.roundNumber === 0 ? "imported interview" : `round ${c.roundNumber}`}${
-                c.verdict && c.verdict !== "answered" ? ` · ${c.verdict === "partial" ? "partly on the ask" : "not on the ask"}` : ""
+                c.verdict && c.verdict !== "answered"
+                  ? ` · ${
+                      c.testimonial
+                        ? c.verdict === "partial"
+                          ? "a weak testimonial"
+                          : "does not read as a testimonial"
+                        : c.verdict === "partial"
+                          ? "partly on the ask"
+                          : "not on the ask"
+                    }`
+                  : ""
               }`,
               `Asked: ${c.questionText}`,
               `Said: ${c.transcription?.trim() ?? ""}`,
@@ -786,7 +796,7 @@ export function registerStudyTools(server: McpServer, client: ParloClient) {
             : r.holdReason === "too_short"
             ? "held: the answer was only a few words"
             : r.holdReason === "unanswered"
-            ? `held: did not answer "${r.holdNote ?? "one of the asks"}" after the agent's follow-ups (read it with get_study_answers before deciding)`
+            ? `held: "${r.holdNote ?? "one of the asks"}" was judged not answered (get_study_answers shows what was said and any follow-ups the agent asked; read it before deciding)`
             : r.holdReason === "off_topic"
             ? "held: the answer did not speak to the question"
             : r.holdReason === "over_budget"
