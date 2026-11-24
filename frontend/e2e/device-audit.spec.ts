@@ -227,6 +227,8 @@ for (const { name, profile } of DEVICES) {
               id: "parlo-device",
               phone: "+12345678901",
               verifiedAt: Date.now(),
+              // Without a key the record is cleared on load and the flow asks for the phone (since 2026-10-11).
+              apiKey: "pk_test_key",
             }),
           );
         } catch {

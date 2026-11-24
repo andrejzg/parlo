@@ -7,6 +7,10 @@
  *   /api/my/surveys/:id/participants  the research team ("manage")
  *   /api/my/surveys/:id/invites       the research team
  *   /api/join/:token                  whoever holds an invite link
+ *   /api/studies                      anyone signed in: start a study in one call
+ *
+ * A request that carries `X-Parlo-Client: mcp…` comes from someone's AI
+ * agent through the MCP server; the changes it makes are logged as such.
  */
 
 import { Hono } from "hono";
@@ -15,9 +19,16 @@ import type { Env, GroupRole, Survey } from "../types";
 import type { AuthVariables } from "../middleware/auth";
 import { requireSeat, type AppContext, type Seat } from "../services/access";
 import { canManage, displayNameFor, ensureApiKey, ensureMember, updateUserNames, upsertUserByPhone } from "../services/groups";
+import { ensureRound1, setRoundReward } from "../services/rounds";
+import { generateQuestionsFromBrief, type GeneratedSurvey } from "../services/ai";
+import { BRIEF_MAX_CHARS } from "../services/brief";
+import { buildShareUrl } from "../services/slug";
+import { sanitizeCents } from "../services/rewards";
+import { replaceQuestions } from "./surveys";
 import {
   addItem,
   ensureSeeded,
+  eventsSince,
   getItem,
   listAnswers,
   listItems,
@@ -32,7 +43,7 @@ import {
 } from "../services/briefBoard";
 import { importParticipants, MAX_IMPORT, type ParticipantInput } from "../services/participants";
 import { notifyUsers } from "../services/notify";
-import { generateCode } from "../services/codes";
+import { generateCode, generateId } from "../services/codes";
 import { PhoneProofError, resolveVerifiedPhone } from "../services/phoneProof";
 import { checkRateLimit } from "../services/ratelimit";
 import { trackServerEvent } from "../services/analytics";
@@ -41,6 +52,11 @@ const study = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
 function baseUrlOf(c: AppContext) {
   return new URL(c.req.url).origin;
+}
+
+/** 'agent' when the request came through the MCP server, from someone's AI agent. Attribution only, not a permission. */
+function viaOf(c: AppContext): "agent" | null {
+  return (c.req.header("X-Parlo-Client") ?? "").toLowerCase().startsWith("mcp") ? "agent" : null;
 }
 
 /** Everyone on the other side of the table from the actor, for the Inbox. */
@@ -70,7 +86,8 @@ async function afterBriefChange(c: AppContext, gate: Seat, line: string, body: s
   c.executionCtx.waitUntil(
     (async () => {
       try {
-        const who = (await actorName(c.env.DB, gate.membership.user_id)) ?? (gate.membership.role === "client" ? "The client" : "A researcher");
+        const person = (await actorName(c.env.DB, gate.membership.user_id)) ?? (gate.membership.role === "client" ? "The client" : "A researcher");
+        const who = viaOf(c) ? `${person}'s agent` : person;
         await notifyUsers(c.env.DB, await otherSide(c.env.DB, surveyId, gate.membership), {
           type: "brief_update",
           title: `${who} ${line} in ${gate.survey.title ?? "your study"}`,
@@ -109,7 +126,7 @@ study.put("/api/my/surveys/:surveyId/brief/goal", async (c) => {
   if (goal.length < 10) return c.json({ error: "Say what the study is for in a sentence or two" }, 400);
   if (goal === (gate.survey.brief ?? "").trim()) return c.json(await board(c, gate));
   await c.env.DB.prepare("UPDATE surveys SET brief = ? WHERE id = ?").bind(goal, gate.survey.id).run();
-  await logEvent(c.env.DB, gate.survey.id, { type: "goal_edited", actorId: gate.membership.user_id, actorRole: gate.membership.role, body: goal });
+  await logEvent(c.env.DB, gate.survey.id, { via: viaOf(c), type: "goal_edited", actorId: gate.membership.user_id, actorRole: gate.membership.role, body: goal });
   trackServerEvent(gate.membership.user_id, "brief_goal_edited", { surveyId: gate.survey.id, role: gate.membership.role });
   await afterBriefChange(c, gate, "rewrote what the study is for", goal.slice(0, 160));
   return c.json(await board(c, gate));
@@ -124,8 +141,8 @@ study.post("/api/my/surveys/:surveyId/brief/items", async (c) => {
   const live = (await listItems(c.env.DB, gate.survey.id)).filter((i) => LIVE_STATUSES.includes(i.status));
   if (live.length >= MAX_LIVE_ITEMS) return c.json({ error: `A brief holds up to ${MAX_LIVE_ITEMS} questions. Drop one first.` }, 400);
   const item = await addItem(c.env.DB, gate.survey.id, { text, origin: originFor(gate.membership.role), createdBy: gate.membership.user_id });
-  await logEvent(c.env.DB, gate.survey.id, { type: "item_added", actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId: item.id, body: text });
-  trackServerEvent(gate.membership.user_id, "brief_item_added", { surveyId: gate.survey.id, role: gate.membership.role });
+  await logEvent(c.env.DB, gate.survey.id, { via: viaOf(c), type: "item_added", actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId: item.id, body: text });
+  trackServerEvent(gate.membership.user_id, "brief_item_added", { surveyId: gate.survey.id, role: gate.membership.role, via: viaOf(c) ?? "app" });
   await afterBriefChange(c, gate, "added a question to the brief", text);
   return c.json(await board(c, gate), 201);
 });
@@ -136,7 +153,7 @@ study.put("/api/my/surveys/:surveyId/brief/items/:itemId", async (c) => {
   const item = await getItem(c.env.DB, gate.survey.id, c.req.param("itemId"));
   if (!item) return c.json({ error: "That question is not on this brief" }, 404);
   const body = await c.req.json<{ text?: string; status?: string }>().catch(() => ({} as { text?: string; status?: string }));
-  const actor = { actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId: item.id };
+  const actor = { actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId: item.id, via: viaOf(c) };
 
   if (typeof body.text === "string") {
     const text = body.text.trim().replace(/\s+/g, " ").slice(0, MAX_ITEM_CHARS);
@@ -185,7 +202,7 @@ study.post("/api/my/surveys/:surveyId/brief/items/:itemId/:verdict{accept|dismis
     .prepare("UPDATE brief_items SET status = ?, status_by = 'agent', updated_at = datetime('now') WHERE id = ?")
     .bind(accept ? "open" : "dismissed", item.id)
     .run();
-  await logEvent(c.env.DB, gate.survey.id, {
+  await logEvent(c.env.DB, gate.survey.id, { via: viaOf(c),
     type: accept ? "suggestion_accepted" : "suggestion_dismissed",
     actorId: gate.membership.user_id,
     actorRole: gate.membership.role,
@@ -210,10 +227,19 @@ study.post("/api/my/surveys/:surveyId/brief/steer", async (c) => {
     if (!item) return c.json({ error: "That question is not on this brief" }, 404);
     itemId = item.id;
   }
-  await logEvent(c.env.DB, gate.survey.id, { type: "steer", actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId, body: note });
-  trackServerEvent(gate.membership.user_id, "brief_steered", { surveyId: gate.survey.id, role: gate.membership.role, onItem: !!itemId });
+  await logEvent(c.env.DB, gate.survey.id, { via: viaOf(c), type: "steer", actorId: gate.membership.user_id, actorRole: gate.membership.role, itemId, body: note });
+  trackServerEvent(gate.membership.user_id, "brief_steered", { surveyId: gate.survey.id, role: gate.membership.role, onItem: !!itemId, via: viaOf(c) ?? "app" });
   await afterBriefChange(c, gate, "steered the study", note);
   return c.json(await board(c, gate), 201);
+});
+
+/** What changed on the brief since a moment (ISO), oldest first. For an agent that comes back and wants only the news. */
+study.get("/api/my/surveys/:surveyId/brief/events", async (c) => {
+  const gate = await requireSeat(c, c.req.param("surveyId"), "steer");
+  if (gate instanceof Response) return gate;
+  const limit = parseInt(c.req.query("limit") ?? "100", 10) || 100;
+  const events = await eventsSince(c.env.DB, gate.survey, gate.membership, c.req.query("since") ?? null, limit);
+  return c.json({ events, now: new Date().toISOString() });
 });
 
 /** A researcher asks for the plan now instead of waiting for the agent's debounce. */
@@ -309,6 +335,8 @@ study.post("/api/my/surveys/:surveyId/invites", async (c) => {
     }
   }
 
+  if (body.role === "client") await c.env.DB.prepare("UPDATE surveys SET kind = 'study' WHERE id = ? AND kind IS NULL").bind(gate.survey.id).run();
+
   let invite = await c.env.DB
     .prepare("SELECT * FROM invites WHERE survey_id = ? AND role = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1")
     .bind(gate.survey.id, body.role)
@@ -320,6 +348,29 @@ study.post("/api/my/surveys/:surveyId/invites", async (c) => {
     trackServerEvent(gate.membership.user_id, "invite_created", { surveyId: gate.survey.id, role: body.role });
   }
   return c.json({ token: invite.token, role: invite.role, link: inviteLink(c.env, invite.token), uses: invite.uses, sponsor }, 201);
+});
+
+/**
+ * What someone on the team hands their own AI agent so it can work on the
+ * study with their seat: the MCP server's address and the invite link for
+ * their kind of seat (the agent takes it with the `join_study` tool). The
+ * link carries no more than the seat its holder already has.
+ */
+study.get("/api/my/surveys/:surveyId/agent-access", async (c) => {
+  const gate = await requireSeat(c, c.req.param("surveyId"), "steer");
+  if (gate instanceof Response) return gate;
+  const role: "client" | "admin" = gate.membership.role === "client" ? "client" : "admin";
+  let invite = await c.env.DB
+    .prepare("SELECT * FROM invites WHERE survey_id = ? AND role = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1")
+    .bind(gate.survey.id, role)
+    .first<InviteRow>();
+  if (!invite) {
+    const token = generateCode(28);
+    await c.env.DB.prepare("INSERT INTO invites (token, survey_id, role, created_by) VALUES (?, ?, ?, ?)").bind(token, gate.survey.id, role, gate.membership.user_id).run();
+    invite = (await c.env.DB.prepare("SELECT * FROM invites WHERE token = ?").bind(token).first<InviteRow>()) as InviteRow;
+  }
+  trackServerEvent(gate.membership.user_id, "agent_access_opened", { surveyId: gate.survey.id, role: gate.membership.role });
+  return c.json({ mcpUrl: "https://mcp.parlo.me/mcp", inviteLink: inviteLink(c.env, invite.token), seat: role === "client" ? "client" : "research team", studyId: gate.survey.id });
 });
 
 study.delete("/api/my/surveys/:surveyId/invites/:token", async (c) => {
@@ -414,6 +465,91 @@ study.post("/api/join/:token", async (c) => {
     role,
     dashboardCode: canManage(role) ? survey?.dashboard_code ?? null : null,
   });
+});
+
+// ── Start a study ────────────────────────────────────────────────────
+
+const STUDY_CURRENCIES = new Set(["USD", "EUR", "GBP", "CAD", "AUD"]);
+
+/**
+ * One call from a brief to a study that is ready to work on: the parlo, its
+ * first round (the team's own questions when given, else written from the
+ * brief), the sponsor, and what a touch pays. The caller owns it. The brief's
+ * questions are seeded on the first open of the board.
+ */
+study.post("/api/studies", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Sign in first: a study belongs to a person" }, 401);
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  const [createOk, studyOk] = await Promise.all([checkRateLimit(c.env.KV, "survey-create", ip, 100), checkRateLimit(c.env.KV, "study-create", userId, 30)]);
+  if (!createOk || !studyOk) return c.json({ error: "Rate limit exceeded. Try again in an hour." }, 429);
+
+  type Body = { brief?: unknown; title?: unknown; sponsorName?: unknown; rewardCents?: unknown; budgetCents?: unknown; currency?: unknown; questions?: unknown };
+  const body = await c.req.json<Body>().catch((): Body => ({}));
+  const brief = typeof body.brief === "string" ? body.brief.trim().slice(0, BRIEF_MAX_CHARS) : "";
+  if (brief.length < 20) return c.json({ error: "Write the brief: what the study is for, who it should hear from, and what you need to learn." }, 400);
+  const title = typeof body.title === "string" ? body.title.trim().replace(/\s+/g, " ").slice(0, 120) || null : null;
+  const sponsor = typeof body.sponsorName === "string" ? body.sponsorName.trim().replace(/\s+/g, " ").slice(0, 80) || null : null;
+  const rewardCents = body.rewardCents === undefined || body.rewardCents === null ? null : sanitizeCents(body.rewardCents);
+  const budgetCents = body.budgetCents === undefined || body.budgetCents === null ? null : sanitizeCents(body.budgetCents, 100_000_000);
+  if (body.rewardCents != null && rewardCents === null) return c.json({ error: "rewardCents must be a positive number" }, 400);
+  if (body.budgetCents != null && budgetCents === null) return c.json({ error: "budgetCents must be a positive number" }, 400);
+  const currency = typeof body.currency === "string" ? body.currency.toUpperCase() : "USD";
+  if (!STUDY_CURRENCIES.has(currency)) return c.json({ error: `currency must be one of ${Array.from(STUDY_CURRENCIES).join(", ")}` }, 400);
+  const own = Array.isArray(body.questions)
+    ? body.questions.filter((q): q is string => typeof q === "string").map((q) => q.trim().replace(/\s+/g, " ").slice(0, 500)).filter((q) => q.length >= 8).slice(0, 12)
+    : [];
+
+  // Round 1: the team's own questions when they brought them, else written from the brief.
+  let generated: GeneratedSurvey | null = null;
+  if (own.length === 0 || !title) {
+    try {
+      generated = await generateQuestionsFromBrief(c.env.AI, c.env.KV, { brief, clarifications: [] }, c.env.CEREBRAS_API_KEY);
+    } catch (err) {
+      console.error("[study] question generation failed", err);
+      if (own.length === 0) return c.json({ error: "Couldn't write the first round from that brief. Try again, or send your own questions." }, 502);
+    }
+  }
+  const finalTitle = title ?? generated?.title ?? brief.split(/[.!?\n]/)[0].slice(0, 80);
+  const round1: GeneratedSurvey = own.length ? { title: finalTitle, questions: own.map((text) => ({ text, hint: "", type: "voice" as const })) } : (generated as GeneratedSurvey);
+
+  const db = c.env.DB;
+  const surveyId = generateId();
+  const code = generateCode(8);
+  const dashboardCode = generateCode(12);
+  await db
+    .prepare(
+      `INSERT INTO surveys (id, code, dashboard_code, creator_id, title, visibility, kind, sponsor_name, brief, brief_clarifications, output_shape, outputs,
+                            reward_cents, reward_budget_cents, reward_currency)
+       VALUES (?, ?, ?, ?, ?, 'private', 'study', ?, ?, '[]', 'other', '[]', ?, ?, ?)`
+    )
+    .bind(surveyId, code, dashboardCode, userId, finalTitle, sponsor, brief, rewardCents || null, budgetCents, currency)
+    .run();
+  await ensureMember(db, surveyId, userId, "owner");
+  const first = await ensureRound1(db, surveyId);
+  await replaceQuestions(db, surveyId, round1);
+  if (rewardCents) await setRoundReward(db, first.id, rewardCents);
+
+  const via = viaOf(c);
+  trackServerEvent(userId, "survey_created", { surveyId, code, dashboardCode, viaApiKey: true, via: via === "agent" ? "mcp-study" : "study" });
+  trackServerEvent(userId, "study_created", { surveyId, sponsored: !!sponsor, ownQuestions: own.length, rewardCents: rewardCents ?? 0, budgetCents: budgetCents ?? 0, via: via ?? "app" });
+
+  const origin = (c.env.FRONTEND_ORIGIN ?? "https://parlo.me").replace(/\/+$/, "");
+  return c.json(
+    {
+      surveyId,
+      code,
+      dashboardCode,
+      title: finalTitle,
+      sponsor,
+      questions: round1.questions.map((q) => ({ text: q.text, hint: q.hint ?? "", type: q.type ?? "voice" })),
+      studyLink: `${origin}/study/${surveyId}`,
+      dashboardLink: `${origin}/d/${dashboardCode}`,
+      // The open link works, but only answers through a personal link are paid: import participants to get those.
+      shareLink: buildShareUrl(finalTitle, code, origin),
+    },
+    201
+  );
 });
 
 export default study;

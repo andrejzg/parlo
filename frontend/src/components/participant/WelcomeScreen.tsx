@@ -18,8 +18,11 @@ interface WelcomeScreenProps {
 }
 
 export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeScreenProps) {
-  const mix = getMediaMix(survey.questions);
-  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
+  // A research study has a research team and participants on personal links,
+  // not a group: no member count, and the copy says "the report".
+  const study = !!survey.study;
+  const mix = getMediaMix(survey.questions, { study });
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name, { study });
   const round = survey.round ?? null;
   const isProbe = round?.kind === "probe" && survey.member;
   const firstName = survey.member?.displayName?.split(" ")[0];
@@ -97,7 +100,7 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
           <span className="whitespace-nowrap">{survey.questions.length} question{survey.questions.length !== 1 ? "s" : ""}</span>
           <span className="text-neutral-6">&middot;</span>
           <span className="whitespace-nowrap">{mix.timeEstimate}</span>
-          {typeof survey.memberCount === "number" && survey.memberCount > 1 && (
+          {!study && typeof survey.memberCount === "number" && survey.memberCount > 1 && (
             <>
               <span className="text-neutral-6">&middot;</span>
               <span className="flex items-center gap-xs whitespace-nowrap">
@@ -136,7 +139,7 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
           </>
         ) : onSeeReport ? (
           <Button size="lg" className="w-full" onClick={onSeeReport}>
-            See what the group said
+            {study ? "See the report" : "See what the group said"}
           </Button>
         ) : (
           <Button size="lg" className="w-full" onClick={onStart} disabled>
@@ -145,7 +148,7 @@ export default function WelcomeScreen({ survey, onStart, onSeeReport }: WelcomeS
         )}
         {hasPending && onSeeReport && (
           <Button variant="link" size="sm" onClick={onSeeReport}>
-            See the group's report first
+            {study ? "See the report first" : "See the group's report first"}
           </Button>
         )}
         <p className="text-xs text-muted-foreground">{mix.securityFootnote}</p>

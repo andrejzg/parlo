@@ -21,6 +21,12 @@ interface ThankYouScreenProps {
   onRedo?: (questionIndex: number) => void;
   /** Members: open the group's report ("answer to unlock"). */
   onSeeReport?: () => void;
+  /**
+   * A research study (`survey.study`): no "Share this parlo" (a study recruits
+   * by personal link, a forwarded link is unpaid and unwanted) and the report
+   * button says "the report", not "the group".
+   */
+  study?: boolean;
 }
 
 function formatDuration(ms: number) {
@@ -292,7 +298,7 @@ function AnswerRow({ answer, question, isExpanded, onTap, onRedo }: AnswerRowPro
   );
 }
 
-export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, memberToken, onRedo, onSeeReport }: ThankYouScreenProps) {
+export default function ThankYouScreen({ answers, questions, surveyCode, surveyTitle, responseCode, memberToken, onRedo, onSeeReport, study = false }: ThankYouScreenProps) {
   const totalMs = answers.reduce((acc, a) => acc + a.durationMs, 0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -390,19 +396,21 @@ export default function ThankYouScreen({ answers, questions, surveyCode, surveyT
         <motion.div variants={fadeUp} className="w-full flex flex-col items-center gap-s">
           {onSeeReport && (
             <Button size="lg" className="w-full" onClick={onSeeReport} data-testid="thankyou-see-report">
-              See what the group said
+              {study ? "See the report" : "See what the group said"}
             </Button>
           )}
-          <Button size="lg" variant={onSeeReport ? "secondary" : "default"} className="w-full" asChild>
-            <a
-              href={whatsappShareUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => trackEvent("participant_share_survey_clicked", { surveyCode })}
-            >
-              Share this parlo
-            </a>
-          </Button>
+          {!study && (
+            <Button size="lg" variant={onSeeReport ? "secondary" : "default"} className="w-full" asChild>
+              <a
+                href={whatsappShareUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => trackEvent("participant_share_survey_clicked", { surveyCode })}
+              >
+                Share this parlo
+              </a>
+            </Button>
+          )}
 
           {whatsappUpdatesUrl && (
             <Button variant="link" size="sm" asChild>

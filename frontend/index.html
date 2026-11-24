@@ -25,7 +25,7 @@
       <pre>curl -X POST https://api.parlo.me/api/agent/parlos -H 'content-type: application/json' -d '{"brief":"&lt;what the person said: who they are, who should answer, what they want to know, what they will do with it&gt;","opener_audio_url":"&lt;optional https URL of their voice note&gt;"}'</pre>
       <p>The JSON answer has shareLink (post it into the group chat; the parlo is live), claimLink (send it to the person; one tap makes the parlo theirs) and apiKey (send it as the X-Parlo-Api-Key header next time).</p>
       <p>The voice note matters: the group hears the person's opener before they answer, and that is what gets a group chat to answer. The answer carries openerLink, a WhatsApp link to Parlo's own number. Send it to the person with the share link: they tap it and send Parlo a voice note (30 to 60 seconds: who they are, what they want to hear from the group, what they will do with it). Parlo stores it as the opener and, the number being theirs, makes the parlo theirs too. If you already hold the voice note as a file URL, pass it as opener_audio_url instead.</p>
-      <p>Full notes: https://parlo.me/llms.txt. For reports and follow-up rounds connect the MCP server at https://mcp.parlo.me/mcp (Streamable HTTP, OAuth).</p>
+      <p>Full notes: https://parlo.me/llms.txt. For reports and follow-up rounds connect the MCP server at https://mcp.parlo.me/mcp (Streamable HTTP, OAuth). The same server is how an agent works on a research study with its person's seat (research team or client): list_studies, get_study, steer_study and more, described in llms.txt.</p>
     </section>
     <script type="module" src="/src/main.tsx"></script>
   </body>

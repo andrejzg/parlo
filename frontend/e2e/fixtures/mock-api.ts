@@ -117,7 +117,18 @@ export async function setupApiMocks(
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ success: true, id: TEST_RESPONSE.id }),
+      body: JSON.stringify({ success: true, id: TEST_RESPONSE.id, memberToken: null, visibility: "private" }),
+    });
+  });
+
+  // GET /api/auth/linkedin/profile — a returning device with LinkedIn already
+  // connected. After review the page checks this; "connected" sends it straight
+  // to submit, anything else parks it on the LinkedIn step, which has no skip.
+  await page.route(`**/api/auth/linkedin/profile*`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ connected: true, name: "Test Participant", email: null, photoUrl: null }),
     });
   });
 

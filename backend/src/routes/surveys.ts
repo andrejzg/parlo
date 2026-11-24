@@ -603,7 +603,7 @@ async function scheduleRound1Close(c: { env: Env; executionCtx: { waitUntil(prom
  * Replace a survey's questions with a freshly generated set, atomically.
  * Deleting first means "Regenerate" doesn't pile duplicates into the table.
  */
-async function replaceQuestions(db: D1Database, surveyId: string, generated: GeneratedSurvey) {
+export async function replaceQuestions(db: D1Database, surveyId: string, generated: GeneratedSurvey) {
   // Only round 1 (the original set) is replaced; later rounds are the agent's.
   const round1 = await ensureRound1(db, surveyId);
   const deleteStmt = db
@@ -746,6 +746,7 @@ surveys.get("/api/s/:code", async (c) => {
     },
     memberCount: memberCountRow?.n ?? 0,
     sponsor: survey.sponsor_name ? { name: survey.sponsor_name } : null,
+    study: survey.kind === "study" || !!survey.sponsor_name,
     // Only someone who arrived by a personal link is offered money (services/rewards.ts).
     reward: await rewardOfferFor(db, survey, member),
   };
@@ -1188,6 +1189,8 @@ surveys.get("/api/my/surveys", async (c) => {
         s.visibility,
         s.created_at,
         s.report_updated_at,
+        s.kind,
+        s.sponsor_name,
         substr(s.report_md, 1, 2000) AS report_head,
         gm.role,
         gm.access_token,
@@ -1217,6 +1220,8 @@ surveys.get("/api/my/surveys", async (c) => {
       visibility: string;
       created_at: string;
       report_updated_at: string | null;
+      kind: string | null;
+      sponsor_name: string | null;
       report_head: string | null;
       role: "owner" | "admin" | "client" | "member";
       access_token: string;
@@ -1280,6 +1285,9 @@ surveys.get("/api/my/surveys", async (c) => {
         title: r.title,
         status: r.status,
         visibility: r.visibility === "open" ? "open" : "private",
+        // A research study: its home is /study/:id, for the research team and the client alike.
+        study: r.kind === "study" || !!r.sponsor_name,
+        sponsor: onTeam ? r.sponsor_name : null,
         createdAt: toIso(r.created_at) ?? r.created_at,
         role: r.role,
         memberToken: r.access_token,

@@ -56,7 +56,19 @@ The opener is the voice note the group hears before they answer: the person, in 
 
 ## MCP server
 
-https://mcp.parlo.me/mcp — Streamable HTTP, OAuth 2.1 with dynamic client registration (discovery at https://mcp.parlo.me/.well-known/oauth-authorization-server). On the authorize page paste the person's API key, or choose "create new account" for a fresh one. Tools: create_parlo (same as the request above), list_my_surveys, get_dashboard, get_transcriptions, get_survey_stats, get_survey, get_share_links, update_questions. Connect once and keep the token: the first connection costs about 20 seconds of OAuth, later calls are instant.
+https://mcp.parlo.me/mcp — Streamable HTTP, OAuth 2.1 with dynamic client registration (discovery at https://mcp.parlo.me/.well-known/oauth-authorization-server). On the authorize page paste the person's API key, or choose "create new account" for a fresh one. A Parlo API key also works directly as the bearer token (`Authorization: Bearer pk_…`), with no OAuth. Tools for parlos: create_parlo (same as the request above), list_my_surveys, get_dashboard, get_transcriptions, get_survey_stats, get_survey, get_share_links, update_questions. Connect once and keep the token: the first connection costs about 20 seconds of OAuth, later calls are instant.
+
+## Research studies (two agents, one brief)
+
+A study is a parlo run as research: a research team, usually a client (the company that commissioned it), participants who answer short voice questions in rounds, and a brief that keeps changing while people are heard. The brief is a short list of the questions the study must answer; the study's own agent reads the answers against it (open, emerging, answered, with quotes), keeps a report and plans the next round.
+
+Agents work on a study through the MCP server, with the seat of the person they act for. The research team's agent and the client's agent use the same tools; the server refuses what a seat may not do and says why.
+
+- Both seats: list_studies, get_study (read this before changing anything), get_study_answers, get_study_report, get_study_changes (what others did since a time), add_study_question, update_study_question (reword, mark answered, reopen, drop), review_agent_suggestion, steer_study ("dig into this"; the study's agent re-plans the next round in about half a minute), set_study_goal.
+- Research team only: create_study (brief in, study out), plan_next_round, edit_round, send_round, dismiss_round, add_participants (returns each person's personal link), create_invite, refresh_study_report, get_rewards, set_reward_settings, review_reward.
+- No seat yet: join_study takes one from an invite link (https://parlo.me/join/…). A person gets "Copy instructions for your agent" on the study's page; an agent that connects with a fresh account and calls join_study with that link holds the same kind of seat.
+
+Rules an agent should know. send_round notifies real participants and commits reward money; review_reward with "pay" moves money: call either only when your person asked for exactly that. Every change you make is logged with your person's name and marked as made by their agent, and the other side is told. A client hears voices, not names: participants reach a client as labels like "Customer 3". Each answer says whether it may be published (none, quote, voice); only quote and voice answers may be used in anything public. Personal links and invite links are secrets.
 
 ## What participants see
 
@@ -64,4 +76,4 @@ shareLink opens a page that plays the opener (if there is one), shows the round'
 
 ## Vocabulary
 
-A "parlo" is what a person creates (the product never says "survey" on screen; the API and event names still do). The person who creates it is the owner; people who answer are members; the agent writes /report.md for the group and proposes the next round for the owner to approve.
+A "parlo" is what a person creates (the product never says "survey" on screen; the API and event names still do). A "study" is a parlo run as research (see above). The person who creates it is the owner; people who answer are members; the agent writes /report.md for the group and proposes the next round for the owner to approve.

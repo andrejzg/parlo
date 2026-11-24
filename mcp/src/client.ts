@@ -123,7 +123,7 @@ export interface MySurvey {
   createdAt: string;
 }
 
-class ParloApiError extends Error {
+export class ParloApiError extends Error {
   constructor(
     public status: number,
     public statusText: string,
@@ -159,6 +159,9 @@ export class ParloClient {
   private headers(): Record<string, string> {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
+      // Tells the backend this change comes from someone's AI agent, so the
+      // study's log can say so. Attribution only; it grants nothing.
+      "X-Parlo-Client": "mcp",
     };
     if (this.apiKey) {
       h["X-Parlo-Api-Key"] = this.apiKey;
@@ -183,6 +186,20 @@ export class ParloClient {
     }
 
     return res.json() as Promise<T>;
+  }
+
+  /** Whether this session carries a person's API key. */
+  get signedIn(): boolean {
+    return !!this.apiKey;
+  }
+
+  /**
+   * Any backend route, as the session's user. The study tools use this
+   * rather than one typed method per route: the backend is the contract
+   * (see CLAUDE.md, "The research studio").
+   */
+  async api<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+    return this.request<T>(method, path, body);
   }
 
   async createSurvey(params?: CreateSurveyParams): Promise<CreateSurveyResponse> {

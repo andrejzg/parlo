@@ -35,7 +35,11 @@ function formatWhen(iso: string | null | undefined) {
  */
 export default function GroupReportScreen({ survey, code, token, pendingCount, onAnswer, onRefresh }: GroupReportScreenProps) {
   const report = survey.report ?? { available: false, unlocked: false, markdown: null, updatedAt: null };
-  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
+  // A research study recruits by personal link: no member count, no
+  // "Invite someone" (a forwarded link is unpaid and unwanted), and the copy
+  // says "the report", not "the group".
+  const study = !!survey.study;
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name, { study });
   const isOpen = survey.visibility === "open";
   const [feed, setFeed] = useState<GroupFeedItem[] | null>(null);
   const [feedError, setFeedError] = useState(false);
@@ -63,6 +67,15 @@ export default function GroupReportScreen({ survey, code, token, pendingCount, o
   const shareUrl = buildShareUrl(survey.title, code);
   const whatsappShareUrl = `https://wa.me/?text=${encodeURIComponent(`Join this parlo: ${shareUrl}`)}`;
   const greeting = survey.member?.displayName ? `Hey, ${survey.member.displayName.split(" ")[0]}` : "You're in";
+  // What the report card says while it is locked. A study participant is
+  // already in the study: there is no group to join.
+  const lockedCopy = study
+    ? report.available
+      ? "Answer this round to unlock the report."
+      : "Answer to get the agent's report as soon as it's ready."
+    : report.available
+    ? "Answer this round to unlock what the group said."
+    : "Answer to join the group. You'll get the agent's report as soon as it's ready.";
 
   return (
     <motion.div
@@ -92,11 +105,15 @@ export default function GroupReportScreen({ survey, code, token, pendingCount, o
                 Round {survey.round.number}
               </span>
             )}
-            <span className="flex items-center gap-xs whitespace-nowrap">
-              <Users size={14} aria-hidden />
-              {survey.memberCount ?? 0} member{(survey.memberCount ?? 0) === 1 ? "" : "s"}
-            </span>
-            <span className="text-neutral-6">&middot;</span>
+            {!study && (
+              <>
+                <span className="flex items-center gap-xs whitespace-nowrap">
+                  <Users size={14} aria-hidden />
+                  {survey.memberCount ?? 0} member{(survey.memberCount ?? 0) === 1 ? "" : "s"}
+                </span>
+                <span className="text-neutral-6">&middot;</span>
+              </>
+            )}
             <span>{vis.label}</span>
           </div>
         </motion.div>
@@ -123,9 +140,7 @@ export default function GroupReportScreen({ survey, code, token, pendingCount, o
                 <Lock size={16} aria-hidden />
               </div>
               <p className="text-s text-neutral-8">
-                {report.available
-                  ? "Answer this round to unlock what the group said."
-                  : "Answer to join the group. You'll get the agent's report as soon as it's ready."}
+                {lockedCopy}
               </p>
             </div>
           )}
@@ -185,11 +200,13 @@ export default function GroupReportScreen({ survey, code, token, pendingCount, o
         ) : (
           <p className="text-xs text-muted-foreground text-center">You're up to date. We'll let you know when the next round opens.</p>
         )}
-        <Button variant="secondary" size="lg" className="w-full" asChild>
-          <a href={whatsappShareUrl} target="_blank" rel="noopener noreferrer" onClick={() => trackEvent("participant_share_survey_clicked", { surveyCode: code, from: "report" })}>
-            Invite someone
-          </a>
-        </Button>
+        {!study && (
+          <Button variant="secondary" size="lg" className="w-full" asChild>
+            <a href={whatsappShareUrl} target="_blank" rel="noopener noreferrer" onClick={() => trackEvent("participant_share_survey_clicked", { surveyCode: code, from: "report" })}>
+              Invite someone
+            </a>
+          </Button>
+        )}
       </motion.div>
     </motion.div>
   );

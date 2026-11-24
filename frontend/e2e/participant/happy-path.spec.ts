@@ -6,11 +6,16 @@ const SURVEY_CODE = "test123";
 
 /**
  * Pre-seed the `parlo-device-auth` localStorage key so the participant flow
- * skips phone + OTP entirely and goes review → submit → done. The current
- * participant flow no longer has first-name / last-name screens; phone auth
+ * skips phone + OTP entirely and goes review → submit → done. Phone auth
  * goes through Firebase + reCAPTCHA which can't run reliably in headless
  * Chromium. Rather than mock Firebase, we use the existing "returning device"
  * short-circuit already wired into ParticipantPage.
+ *
+ * The record must carry an `apiKey`: since 2026-10-11 a device record without
+ * one is cleared on load and the person verifies again (CLAUDE.md, "Phone
+ * proof"), which is why these tests sat on the phone screen until 2026-11-24.
+ * The LinkedIn profile the page checks after review is stubbed as connected
+ * in `setupApiMocks`.
  *
  * Must be called BEFORE page.goto() — uses addInitScript so the value is
  * present when the app boots.
@@ -28,6 +33,7 @@ async function seedDeviceAuth(
             id: "parlo-device",
             phone: phoneValue,
             verifiedAt: Date.now(),
+            apiKey: "pk_test_key",
           }),
         );
       } catch {
@@ -53,7 +59,7 @@ async function finishAndAssertDone(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Looks good, continue" }).click();
   // With deviceAuth pre-seeded, the flow skips phone + OTP and lands on Thank You.
   await expect(page.getByText("All done!").first()).toBeVisible({ timeout: 15000 });
-  await expect(page.getByText("Share this survey")).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText("Share this parlo")).toBeVisible({ timeout: 5000 });
 }
 
 test.describe("Participant happy path", () => {
@@ -101,6 +107,9 @@ test.describe("Participant happy path", () => {
       // Wait for the specific question text to confirm transition is done
       await expect(page.getByText(TEST_SURVEY.questions[i - 1].text).first()).toBeVisible();
       const textarea = page.getByPlaceholder("Type your answer...");
+      // The leaving question's screen is still in the DOM while it animates out
+      // (pitfall 8), so there are briefly two text boxes. Wait for the one.
+      await expect(textarea).toHaveCount(1, { timeout: 5000 });
       await expect(textarea).toBeVisible();
       // Clear and fill — the textarea might have stale value from transition
       await textarea.click();

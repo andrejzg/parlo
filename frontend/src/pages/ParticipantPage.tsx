@@ -16,7 +16,7 @@ import ThankYouScreen from "@/components/participant/ThankYouScreen";
 import GroupReportScreen from "@/components/participant/GroupReportScreen";
 import { Survey, SurveyQuestion, VoiceAnswer } from "@/types/survey";
 import { MOTION, pageVariants, transitionLarge } from "@/lib/animations";
-import { useGetSurvey, useStartResponse, useSubmitResponse, refreshUploadUrls, sendWhatsAppOtp, fetchLinkedInProfile, type LinkedInProfile, loginByPhone, startLinkedIn, type PhoneProof } from "@/api/client";
+import { useGetSurvey, useStartResponse, useSubmitResponse, refreshUploadUrls, sendWhatsAppOtp, fetchLinkedInProfile, type LinkedInProfile, loginByPhone, startLinkedIn, type PhoneProof, type PublishConsent } from "@/api/client";
 import { uploadAudioBlob } from "@/api/upload";
 import { trackEvent, identifyUser, captureException } from "@/lib/posthog";
 import { toast } from "@/components/ui/sonner";
@@ -75,6 +75,32 @@ const DEMO_SURVEY: Survey = {
 
 const UPLOAD_URL_TTL_MS = 8 * 60 * 1000; // 8 min (2 min buffer on 10 min server TTL)
 
+// A study's publication consent (the consent screen's "Can we quote you?")
+// is mirrored per parlo code, like the member token, so the choice survives a
+// refresh and the trip to LinkedIn and back. It belongs to one response: the
+// key is removed when a new pass through the consent screen starts and once
+// the response is submitted.
+const PUBLISH_CONSENT_PREFIX = "parlo-publish:";
+
+function readPublishConsent(code: string): PublishConsent {
+  try {
+    const stored = localStorage.getItem(PUBLISH_CONSENT_PREFIX + code);
+    return stored === "quote" || stored === "voice" ? stored : "none";
+  } catch {
+    return "none";
+  }
+}
+
+/** `null` forgets the choice. */
+function storePublishConsent(code: string, value: PublishConsent | null): void {
+  try {
+    if (value === null) localStorage.removeItem(PUBLISH_CONSENT_PREFIX + code);
+    else localStorage.setItem(PUBLISH_CONSENT_PREFIX + code, value);
+  } catch {
+    // Storage unavailable: the choice still lives in this page's state.
+  }
+}
+
 export default function ParticipantPage() {
   useVisualViewport();
   const params = useParams<{ code: string }>();
@@ -107,6 +133,9 @@ export default function ParticipantPage() {
   const [deviceApiKey, setDeviceApiKey] = useState<string | null>(null);
   const [devicePhone, setDevicePhone] = useState<string | null>(null);
   const [linkedInProfile, setLinkedInProfile] = useState<LinkedInProfile | null>(null);
+  // Study only: may this person's words (quote) or recording (voice) be used
+  // in public material. Off unless they turn it on; sent with the submit.
+  const [publishConsent, setPublishConsent] = useState<PublishConsent>(() => (code ? readPublishConsent(code) : "none"));
 
   // Upload session state
   const responseIdRef = useRef<string | null>(null);
@@ -124,9 +153,12 @@ export default function ParticipantPage() {
   // asks gone, but Review / Thank you still need them.
   const flowQuestionsRef = useRef<SurveyQuestion[] | null>(null);
   const flowQuestions = flowQuestionsRef.current ?? survey.questions;
-  const mediaMix = getMediaMix(flowQuestions);
+  // A research study: the consent copy names the research team, the screens
+  // drop their group furniture, and the consent screen asks about publication.
+  const isStudy = !!survey.study;
+  const mediaMix = getMediaMix(flowQuestions, { study: isStudy });
   // A sponsored study names the sponsor wherever the copy says who hears an answer.
-  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name);
+  const vis = visibilityCopy(survey.visibility, survey.sponsor?.name, { study: isStudy });
   const isMember = !!survey.member;
   const pendingCount = survey.questions.length;
   const [landedOnReport, setLandedOnReport] = useState(false);
@@ -374,15 +406,35 @@ export default function ParticipantPage() {
     setScreenKey((k) => k + 1);
   };
 
+  // ── Publication consent (study only) ────────────────────────────────
+
+  const handlePublishConsentChange = (value: PublishConsent) => {
+    setPublishConsent(value);
+    if (code) storePublishConsent(code, value);
+  };
+
+  /** A fresh pass through the consent screen starts with both switches off. */
+  const resetPublishConsent = () => {
+    setPublishConsent("none");
+    if (code) storePublishConsent(code, null);
+  };
+
   // ── Stage handlers ──────────────────────────────────────────────────
 
   const handleStart = () => {
     flowQuestionsRef.current = survey.questions;
+    resetPublishConsent();
     goForward("consent");
   };
 
   const handleConsent = async () => {
-    trackEvent("consent_accepted", { role: "participant", surveyCode: code, visibility: survey.visibility ?? "private", round: survey.round?.number ?? 1 });
+    trackEvent("consent_accepted", {
+      role: "participant",
+      surveyCode: code,
+      visibility: survey.visibility ?? "private",
+      round: survey.round?.number ?? 1,
+      ...(isStudy ? { publishConsent } : {}),
+    });
     if (!flowQuestionsRef.current) flowQuestionsRef.current = survey.questions;
 
     // Start response session early (non-blocking) to get presigned URLs
@@ -579,7 +631,11 @@ export default function ParticipantPage() {
       responseId: responseIdRef.current,
       phone,
       apiKey: deviceApiKey ?? undefined,
+      // Asked on a study's consent screen only; any other parlo sends nothing.
+      ...(isStudy ? { publishConsent } : {}),
     });
+    // The choice was for this response; the next round asks again.
+    storePublishConsent(code, null);
     if (result?.memberToken) {
       saveMemberToken(code, result.memberToken);
       setMemberToken(result.memberToken);
@@ -648,6 +704,7 @@ export default function ParticipantPage() {
     responseIdRef.current = null;
     uploadUrlsRef.current = null;
     uploadUrlsCreatedAtRef.current = null;
+    resetPublishConsent();
     goForward("consent");
   };
 
@@ -736,6 +793,7 @@ export default function ParticipantPage() {
                 description={`${mediaMix.consentDescription} ${vis.consent}`}
                 buttonLabel={mediaMix.isVoiceOnly ? "I agree, start recording" : "I agree, let's start"}
                 onConsent={handleConsent}
+                publish={isStudy ? { value: publishConsent, onChange: handlePublishConsentChange } : undefined}
               />
             )}
             {stage === "question" && (
@@ -923,6 +981,7 @@ export default function ParticipantPage() {
                 memberToken={isDemo ? null : memberToken}
                 onRedo={(qIdx) => handleRedo(qIdx, "done")}
                 onSeeReport={!isDemo && memberToken ? handleSeeReport : undefined}
+                study={isStudy}
               />
             )}
           </motion.div>

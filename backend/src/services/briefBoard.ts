@@ -55,6 +55,8 @@ export interface BriefEventRow {
   body: string | null;
   round_id: string | null;
   created_at: string;
+  /** 'agent' when the change came through the MCP server; null = a person, in the app. */
+  via?: string | null;
 }
 
 export type BriefEventType =
@@ -112,12 +114,21 @@ export async function addItem(
 export async function logEvent(
   db: D1Database,
   surveyId: string,
-  e: { type: BriefEventType; actorId?: string | null; actorRole: GroupRole | "agent"; itemId?: string | null; body?: string | null; roundId?: string | null }
+  e: {
+    type: BriefEventType;
+    actorId?: string | null;
+    actorRole: GroupRole | "agent";
+    itemId?: string | null;
+    body?: string | null;
+    roundId?: string | null;
+    /** 'agent' when someone's AI agent made the change through the MCP server. */
+    via?: string | null;
+  }
 ): Promise<string> {
   const id = generateId();
   await db
-    .prepare("INSERT INTO brief_events (id, survey_id, item_id, actor_id, actor_role, type, body, round_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(id, surveyId, e.itemId ?? null, e.actorId ?? null, e.actorRole, e.type, e.body ?? null, e.roundId ?? null)
+    .prepare("INSERT INTO brief_events (id, survey_id, item_id, actor_id, actor_role, type, body, round_id, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, surveyId, e.itemId ?? null, e.actorId ?? null, e.actorRole, e.type, e.body ?? null, e.roundId ?? null, e.via ?? null)
     .run();
   return id;
 }
@@ -347,6 +358,7 @@ interface AnswerJoinRow {
   r_first: string | null;
   r_last: string | null;
   sponsor_consent: number | null;
+  publish_consent: string | null;
   submitted_at: string | null;
   round_number: number | null;
   question_id: string;
@@ -355,7 +367,7 @@ interface AnswerJoinRow {
 }
 
 const ANSWER_SELECT = `SELECT ra.id, ra.audio_r2_key, ra.video_r2_key, ra.image_r2_key, ra.transcription, ra.transcription_status, ra.duration_ms,
-        r.id AS response_id, r.user_id, r.first_name AS r_first, r.last_name AS r_last, r.sponsor_consent, r.submitted_at,
+        r.id AS response_id, r.user_id, r.first_name AS r_first, r.last_name AS r_last, r.sponsor_consent, r.publish_consent, r.submitted_at,
         rd.number AS round_number, q.id AS question_id, q.text AS question_text, q.question_type
  FROM response_answers ra
  JOIN responses r ON r.id = ra.response_id
@@ -364,6 +376,10 @@ const ANSWER_SELECT = `SELECT ra.id, ra.audio_r2_key, ra.video_r2_key, ra.image_
 
 async function presentAnswer(env: Env, baseUrl: string, viewerRole: GroupRole, labels: Map<string, ParticipantLabel>, a: AnswerJoinRow) {
   const sign = async (key: string | null) => (key ? generatePresignedReadUrl(baseUrl, key, await generateReadToken(env.KV, key)) : null);
+  // An imported interview often carries the speaker's name on every line ("Dana: …").
+  // The client reads the words under the label, so names come out of the text too.
+  // (A recording can still say a name aloud; that cannot be taken out here.)
+  const redact = nameRedactor(viewerRole, labels);
   const fallback = [a.r_first, a.r_last].filter(Boolean).join(" ") || null;
   return {
     id: a.id,
@@ -374,9 +390,11 @@ async function presentAnswer(env: Env, baseUrl: string, viewerRole: GroupRole, l
     questionId: a.question_id,
     questionText: a.question_text,
     questionType: a.question_type,
-    transcription: a.transcription,
+    transcription: redact(a.transcription),
     transcriptionStatus: a.transcription_status,
     durationMs: a.duration_ms,
+    /** What may leave the study: none | quote (words, unnamed) | voice (the recording too). */
+    publishConsent: a.publish_consent === "quote" || a.publish_consent === "voice" ? a.publish_consent : ("none" as const),
     submittedAt: toIso(a.submitted_at),
     audioUrl: await sign(a.audio_r2_key || null),
     videoUrl: await sign(a.video_r2_key),
@@ -500,7 +518,7 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
     evidence: (evidenceByItem.get(i.id) ?? [])
       .map((e) => {
         const a = presented.get(e.answerId);
-        return a ? { quote: e.quote, answer: a } : null;
+        return a ? { quote: redact(e.quote) ?? e.quote, answer: a } : null;
       })
       .filter((x): x is { quote: string; answer: PresentedAnswer } => !!x),
   });
@@ -574,6 +592,7 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
       code: survey.code,
       title: survey.title,
       sponsor: survey.sponsor_name ?? null,
+      study: survey.kind === "study" || !!survey.sponsor_name,
       // The dashboard code opens names and phone numbers; the client never gets it.
       dashboardCode: manager ? survey.dashboard_code : null,
     },
@@ -597,16 +616,62 @@ export async function loadBoard(env: Env, survey: Survey, viewer: GroupMember, b
       itemText: e.item_id ? itemText.get(e.item_id) ?? null : null,
       by: actor(e),
       role: e.actor_role,
+      // Someone's AI agent made this change for them, through the MCP server.
+      viaAgent: e.via === "agent",
       roundNumber: e.round_id ? roundNumber.get(e.round_id) ?? null : null,
       at: toIso(e.created_at),
     })),
     report: { markdown: redact(survey.report_md ?? null), updatedAt: survey.report_updated_at ?? null },
     voices: countsRes?.voices ?? 0,
     answers: countsRes?.answers ?? 0,
+    /** People brought into the study as participants, whether or not they have answered. */
+    participants: labels.size,
     team,
     rewards: await rewardSummary(env, survey),
   };
 }
 
 export type BriefBoard = Awaited<ReturnType<typeof loadBoard>>;
+
+/**
+ * What changed on the brief since a moment, oldest first: for an agent that
+ * comes back to a study and wants only what is new.
+ */
+export async function eventsSince(db: D1Database, survey: Survey, viewer: GroupMember, sinceIso: string | null, limit = 100) {
+  // `created_at` is SQLite's "YYYY-MM-DD HH:MM:SS" in UTC (pitfall 25).
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  const since = Number.isFinite(sinceMs) ? new Date(sinceMs).toISOString().slice(0, 19).replace("T", " ") : "1970-01-01 00:00:00";
+  const [events, team, items, rounds, labels] = await Promise.all([
+    db
+      .prepare("SELECT * FROM brief_events WHERE survey_id = ? AND created_at > ? ORDER BY created_at ASC, rowid ASC LIMIT ?")
+      .bind(survey.id, since, Math.min(Math.max(limit, 1), 200))
+      .all<BriefEventRow>(),
+    db
+      .prepare(
+        `SELECT gm.user_id, u.first_name, u.last_name, u.wa_name, u.linkedin_name, u.phone
+         FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.survey_id = ? AND gm.role IN ('owner', 'admin', 'client')`
+      )
+      .bind(survey.id)
+      .all<{ user_id: string; first_name: string | null; last_name: string | null; wa_name: string | null; linkedin_name: string | null; phone: string | null }>(),
+    listItems(db, survey.id),
+    db.prepare("SELECT id, number FROM rounds WHERE survey_id = ?").bind(survey.id).all<{ id: string; number: number }>(),
+    participantLabels(db, survey.id),
+  ]);
+  const redact = nameRedactor(viewer.role, labels);
+  const names = new Map(team.results.map((t) => [t.user_id, displayNameFor(t)] as const));
+  const itemText = new Map(items.map((i) => [i.id, i.text]));
+  const roundNumber = new Map(rounds.results.map((r) => [r.id, r.number]));
+  return events.results.map((e) => ({
+    id: e.id,
+    type: e.type,
+    body: e.actor_role === "agent" ? redact(e.body) : e.body,
+    itemId: e.item_id,
+    itemText: e.item_id ? itemText.get(e.item_id) ?? null : null,
+    by: e.actor_role === "agent" ? "The agent" : (e.actor_id && names.get(e.actor_id)) || (e.actor_role === "client" ? "The client" : "A researcher"),
+    role: e.actor_role,
+    viaAgent: e.via === "agent",
+    roundNumber: e.round_id ? roundNumber.get(e.round_id) ?? null : null,
+    at: toIso(e.created_at),
+  }));
+}
 export { MAX_LIVE_ITEMS };

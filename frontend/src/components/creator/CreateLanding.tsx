@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,14 @@ export default function CreateLanding({ onCreateAgent }: CreateLandingProps) {
             Create a parlo
           </Button>
           <p className="text-xs text-muted-foreground text-center">Free to start · No account required</p>
+          {/* The whole line is the link, and the padding (cancelled by the margin) grows the tap target without moving anything. */}
+          <Link
+            to="/study/new"
+            className="self-center -my-xxs rounded-xs px-xs py-xxs text-xs text-muted-foreground text-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring"
+            data-testid="landing-start-study"
+          >
+            Running research? <span className="underline underline-offset-2">Start a study</span>
+          </Link>
           <p className="text-xxs text-muted-foreground text-center">
             AI agent?{" "}
             <a href="/llms.txt" className="underline underline-offset-2">

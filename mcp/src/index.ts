@@ -12,6 +12,7 @@ import { registerGetShareLinks } from "./tools/get-share-links.js";
 import { registerUpdateQuestions } from "./tools/update-questions.js";
 import { registerListMySurveys } from "./tools/list-my-surveys.js";
 import { registerGetTranscriptions } from "./tools/get-transcriptions.js";
+import { registerStudyTools, STUDY_INSTRUCTIONS } from "./tools/study.js";
 import { oauthHandlers } from "./oauth/handlers.js";
 import { bearerAuthMiddleware } from "./oauth/middleware.js";
 
@@ -23,10 +24,14 @@ interface Env {
 }
 
 function createServer(env: Env, apiKey?: string): McpServer {
-  const server = new McpServer({
-    name: "parlo-mcp",
-    version: "0.2.0",
-  });
+  const server = new McpServer(
+    {
+      name: "parlo-mcp",
+      version: "0.3.0",
+    },
+    // Read by the connecting agent before its first tool call.
+    { instructions: STUDY_INSTRUCTIONS },
+  );
 
   const client = new ParloClient(
     env.PARLO_BACKEND_URL,
@@ -43,6 +48,8 @@ function createServer(env: Env, apiKey?: string): McpServer {
   registerUpdateQuestions(server, client);
   registerListMySurveys(server, client);
   registerGetTranscriptions(server, client);
+  // Research studies: one set of tools for the research team's agents and the client's.
+  registerStudyTools(server, client);
 
   return server;
 }

@@ -50,12 +50,21 @@ function formatEstimate(seconds: number): string {
   return `~${lo}–${hi} min`;
 }
 
+export interface MediaMixOptions {
+  /**
+   * A research study (`survey.study`): the recordings go to the research
+   * team, not to "the person who created this parlo". Only the consent
+   * sentence differs; everything else reads the same.
+   */
+  study?: boolean;
+}
+
 /**
  * Inspect the question types in a survey and return copy + labels that match
  * the media mix. Keeps voice-only surveys worded like before and adapts when
  * photo/video questions are present.
  */
-export function getMediaMix(questions: SurveyQuestion[]): MediaMix {
+export function getMediaMix(questions: SurveyQuestion[], options: MediaMixOptions = {}): MediaMix {
   const types = new Set(questions.map((q) => q.type ?? "voice"));
   const hasVoice = types.has("voice");
   const hasPhoto = types.has("photo");
@@ -106,16 +115,21 @@ export function getMediaMix(questions: SurveyQuestion[]): MediaMix {
     ? "Answer with short videos from your camera."
     : "Share your thoughts by voice. No typing needed.";
 
-  // Consent screen description.
+  // Consent screen description. Who gets the recordings depends on the kind
+  // of parlo; the sentence that follows it on screen (lib/visibility.ts)
+  // names everyone who hears them.
+  const sharedWith = options.study ? "the research team" : "the person who created this parlo";
   const consentDescription = isVoiceOnly
-    ? "Your voice responses will be recorded and shared with the person who created this parlo."
+    ? `Your voice responses will be recorded and shared with ${sharedWith}.`
     : isMixed
-    ? "Your responses — voice, photos, and video — will be recorded and shared with the person who created this parlo."
+    ? options.study
+      ? "Your responses (voice, photos, and video) will be recorded and shared with the research team."
+      : "Your responses — voice, photos, and video — will be recorded and shared with the person who created this parlo."
     : hasPhoto && !hasVideo
-    ? "Your photos and any voice responses will be shared with the person who created this parlo."
+    ? `Your photos and any voice responses will be shared with ${sharedWith}.`
     : hasVideo && !hasPhoto
-    ? "Your videos and any voice responses will be shared with the person who created this parlo."
-    : "Your responses will be recorded and shared with the person who created this parlo.";
+    ? `Your videos and any voice responses will be shared with ${sharedWith}.`
+    : `Your responses will be recorded and shared with ${sharedWith}.`;
 
   // CTA label — "Start recording" only makes sense for voice-only.
   const ctaLabel = isVoiceOnly

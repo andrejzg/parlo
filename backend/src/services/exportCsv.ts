@@ -12,7 +12,7 @@ export const ANSWERS_CSV_COLUMNS = [
   "answer",
   "answered_at",
   "duration_seconds",
-  "response_id",
+  "response_id", "publish_consent",
 ] as const;
 
 interface AnswerRow {
@@ -32,6 +32,7 @@ interface AnswerRow {
   duration_ms: number | null;
   image_r2_key: string | null;
   video_r2_key: string | null;
+  publish_consent: string | null;
 }
 
 function csvCell(v: unknown): string {
@@ -58,7 +59,7 @@ function answerText(r: AnswerRow): string {
 export async function buildAnswersCsv(db: D1Database, surveyId: string): Promise<string> {
   const rows = await db
     .prepare(
-      `SELECT r.id AS response_id, r.submitted_at,
+      `SELECT r.id AS response_id, r.submitted_at, r.publish_consent,
               r.first_name AS response_first_name, r.last_name AS response_last_name,
               u.first_name, u.last_name, u.wa_name, u.linkedin_name,
               q.text AS question, q.question_type, rd.number AS round_number,
@@ -94,6 +95,8 @@ export async function buildAnswersCsv(db: D1Database, surveyId: string): Promise
         toIsoish(r.submitted_at),
         r.duration_ms ? Math.round(r.duration_ms / 1000) : "",
         r.response_id,
+        // none | quote | voice: what may leave the study (see migration 0018).
+        r.publish_consent ?? "none",
       ]
         .map(csvCell)
         .join(",")

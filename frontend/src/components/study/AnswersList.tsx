@@ -3,6 +3,7 @@ import { LoaderCircle } from "lucide-react";
 import { fetchStudyAnswers, type StudyAnswer } from "@/api/study";
 import { Button } from "@/components/ui/button";
 import VoiceNotePill from "@/components/VoiceNotePill";
+import { PublishChip } from "@/components/study/BriefBoard";
 
 function when(iso: string | null): string {
   if (!iso) return "";
@@ -18,7 +19,10 @@ function AnswerCard({ answer }: { answer: StudyAnswer }) {
           {answer.roundNumber === 0 ? "Interview" : `Round ${answer.roundNumber}`} · {when(answer.submittedAt)}
         </p>
       </div>
-      <p className="text-xs text-muted-foreground">{answer.questionText}</p>
+      <div className="flex items-center justify-between gap-s">
+        <p className="min-w-0 text-xs text-muted-foreground">{answer.questionText}</p>
+        <PublishChip consent={answer.publishConsent} />
+      </div>
       {answer.audioUrl && <VoiceNotePill url={answer.audioUrl} durationMs={answer.durationMs} className="bg-muted" />}
       {answer.videoUrl && <video src={answer.videoUrl} controls playsInline className="w-full rounded-s" />}
       {answer.imageUrl && <img src={answer.imageUrl} alt="" className="w-full rounded-s" />}

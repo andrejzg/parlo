@@ -1,4 +1,4 @@
-import type { Env, Survey, SurveyQuestion, GroupVisibility } from "../types";
+import { asPublishConsent, type Env, type Survey, type SurveyQuestion, type GroupVisibility, type PublishConsent } from "../types";
 import { generateId } from "./codes";
 import { ensureMember, getMembership } from "./groups";
 import { createRewardsForResponse, settleRewardsForResponse, type SettledReward } from "./rewards";
@@ -31,7 +31,7 @@ export async function submitResponse(
   env: Env,
   ctx: { waitUntil(promise: Promise<unknown>): void },
   responseId: string,
-  who: { userId: string | null; firstName?: string | null; lastName?: string | null },
+  who: { userId: string | null; firstName?: string | null; lastName?: string | null; publishConsent?: PublishConsent },
   source: "web" | "whatsapp",
   /** Transcripts already made (the WhatsApp bot transcribes each voice note on receipt), by question id. */
   pretranscribed: Record<string, string> = {}
@@ -66,12 +66,13 @@ export async function submitResponse(
   await db
     .prepare(
       `UPDATE responses
-       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?, sponsor_consent = ?,
+       SET phone = ?, first_name = ?, last_name = ?, user_id = ?, visibility_at_submit = ?, sponsor_consent = ?, publish_consent = ?,
            status = 'submitted', submitted_at = datetime('now')
        WHERE id = ?`
     )
     // The consent screen named the sponsor if the study had one when this was submitted.
-    .bind(phone, who.firstName ?? null, who.lastName ?? null, userId, visibility, survey.sponsor_name ? 1 : 0, responseId)
+    // Publication consent is only ever what the participant chose on that screen; the bot never asks, so it is none there.
+    .bind(phone, who.firstName ?? null, who.lastName ?? null, userId, visibility, survey.sponsor_name ? 1 : 0, asPublishConsent(who.publishConsent), responseId)
     .run();
 
   // One response_answers row per file that landed in R2 (voice .webm/.wav,

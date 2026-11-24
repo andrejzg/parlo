@@ -81,6 +81,8 @@ export interface Survey {
   timing?: string | null;
   /** Who, besides the research team, hears the answers; null = not a sponsored study. */
   sponsor_name?: string | null;
+  /** 'study' when the parlo is run as a research study; null = a group parlo. */
+  kind?: string | null;
   /** Default price per touch for new rounds, in cents. */
   reward_cents?: number | null;
   /** The study's reward cap, in cents; null = no cap. */
@@ -177,6 +179,15 @@ export interface Response {
   visibility_at_submit?: GroupVisibility | null;
   /** 1 when submitted under a consent line naming the sponsor; the client only hears those. */
   sponsor_consent?: number | null;
+  /** What the participant allowed beyond the study: none | quote | voice. */
+  publish_consent?: PublishConsent | null;
+}
+
+/** none: nothing leaves the study. quote: words may be quoted publicly, unnamed. voice: the recording may be used too. */
+export type PublishConsent = "none" | "quote" | "voice";
+
+export function asPublishConsent(value: unknown): PublishConsent {
+  return value === "quote" || value === "voice" ? value : "none";
 }
 
 export interface ResponseAnswer {
@@ -300,6 +311,8 @@ export interface SubmitResponseRequest {
   idToken?: string;
   /** Proof token from POST /api/otp/verify-whatsapp. */
   proof?: string;
+  /** A study's consent screen: may these words (or this voice) be used in public material? Default none. */
+  publishConsent?: string;
 }
 
 export interface SurveyPublicView {
@@ -323,6 +336,8 @@ export interface SurveyPublicView {
   sponsor: { name: string } | null;
   /** What answering now pays this visitor; null for anyone who did not arrive by a personal link. */
   reward: { amountCents: number; currency: string } | null;
+  /** A research study: the page drops its group furniture and asks for publication consent. */
+  study: boolean;
 }
 
 export interface DashboardView {

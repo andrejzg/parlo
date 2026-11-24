@@ -73,10 +73,18 @@ function answerSessionKey(from: string) {
   return `wa-answer:${from}`;
 }
 
-function visibilityLine(visibility: string | null | undefined): string {
-  return visibility === "open"
-    ? "Everyone in the group hears everyone's answers, with names."
-    : "Only the person who set this up, their admins and the agent hear your voice. Everyone gets the agent's report.";
+/**
+ * Who hears the answer, said before the first question. On a sponsored study
+ * this is the consent line: the response is stamped `sponsor_consent = 1` at
+ * submit, so the bot has to have named the sponsor here, as the web consent
+ * screen does (`frontend/src/lib/visibility.ts`). Keep the two in step.
+ */
+function visibilityLine(visibility: string | null | undefined, sponsor?: string | null): string {
+  if (visibility === "open") return "Everyone in the group hears everyone's answers, with names.";
+  if (sponsor?.trim()) {
+    return `The research team and ${sponsor.trim()} hear your answers. The sponsor hears your voice but is not shown your name. Everyone who answers gets the agent's report.`;
+  }
+  return "Only the person who set this up, their admins and the agent hear your voice. Everyone gets the agent's report.";
 }
 
 function questionText(session: AnswerSession, lead: string): string {
@@ -89,9 +97,9 @@ function questionText(session: AnswerSession, lead: string): string {
 async function startAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }, wa: WhatsAppClient, from: string, contactName: string | null, code: string): Promise<void> {
   const db = env.DB;
   const survey = await db
-    .prepare("SELECT id, code, title, visibility, intro_r2_key, intro_transcript, report_md FROM surveys WHERE code = ? AND status = 'active'")
+    .prepare("SELECT id, code, title, visibility, intro_r2_key, intro_transcript, report_md, sponsor_name FROM surveys WHERE code = ? AND status = 'active'")
     .bind(code)
-    .first<{ id: string; code: string; title: string | null; visibility: string | null; intro_r2_key: string | null; intro_transcript: string | null; report_md: string | null }>();
+    .first<{ id: string; code: string; title: string | null; visibility: string | null; intro_r2_key: string | null; intro_transcript: string | null; report_md: string | null; sponsor_name: string | null }>();
   if (!survey) {
     await wa.sendText(from, `No parlo found with code "${code}". Check the link and try again.`);
     return;
@@ -166,7 +174,7 @@ async function startAnswerSession(env: Env, ctx: { waitUntil(promise: Promise<un
 
   const count = session.questions.length;
   const lead =
-    `"${title}": ${count} question${count === 1 ? "" : "s"}. Answer each with a voice note (hold the mic). ${visibilityLine(survey.visibility)}` +
+    `"${title}": ${count} question${count === 1 ? "" : "s"}. Answer each with a voice note (hold the mic). ${visibilityLine(survey.visibility, survey.sponsor_name)}` +
     (nonVoice > 0 ? ` ${nonVoice} more need a photo or video; those are at https://parlo.me/s/${survey.code}.` : "") +
     "\n\n";
   await wa.sendText(from, questionText(session, lead));

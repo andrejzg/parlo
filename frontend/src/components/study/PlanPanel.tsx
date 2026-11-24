@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Bot, CornerDownRight, LoaderCircle, RefreshCw, Send, Sparkles } from "lucide-react";
+import { Bot, Copy, CornerDownRight, LoaderCircle, RefreshCw, Send, Sparkles } from "lucide-react";
 import { approveRound, rejectRound } from "@/api/client";
-import { apiErrorMessage, formatMoney, replanBrief, steerBrief, type BriefBoard as Board, type BriefEvent, type BriefRoundAsk } from "@/api/study";
+import { apiErrorMessage, fetchAgentAccess, formatMoney, replanBrief, steerBrief, type BriefBoard as Board, type BriefEvent, type BriefRoundAsk } from "@/api/study";
+import { trackEvent } from "@/lib/posthog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -298,35 +299,37 @@ function StudySteer({ board, apiKey, onBoard }: { board: Board; apiKey: string; 
 
 function sentence(e: BriefEvent): string {
   const q = e.itemText ? `“${e.itemText}”` : "a question";
+  // A change made through the MCP server reads as the person's agent, not the person.
+  const by = e.viaAgent ? `${e.by}'s agent` : e.by;
   switch (e.type) {
     case "goal_edited":
-      return `${e.by} rewrote what the study is for`;
+      return `${by} rewrote what the study is for`;
     case "item_added":
-      return `${e.by} added ${q}`;
+      return `${by} added ${q}`;
     case "item_edited":
-      return `${e.by} reworded a question to ${q}`;
+      return `${by} reworded a question to ${q}`;
     case "item_dropped":
-      return `${e.by} dropped ${q}`;
+      return `${by} dropped ${q}`;
     case "item_reopened":
-      return `${e.by} reopened ${q}`;
+      return `${by} reopened ${q}`;
     case "item_answered":
-      return `${e.by} marked ${q} answered`;
+      return `${by} marked ${q} answered`;
     case "suggestion_made":
       return `The agent suggested adding “${e.body ?? ""}”`;
     case "suggestion_accepted":
-      return `${e.by} added the agent's suggestion ${q}`;
+      return `${by} added the agent's suggestion ${q}`;
     case "suggestion_dismissed":
-      return `${e.by} passed on the agent's suggestion ${q}`;
+      return `${by} passed on the agent's suggestion ${q}`;
     case "status_changed": {
       const [from, to] = (e.body ?? "").split(" → ");
       return `The agent moved ${q} from ${from} to ${to}`;
     }
     case "steer":
-      return `${e.by} steered${e.itemText ? ` on ${q}` : ""}: ${e.body ?? ""}${e.roundNumber ? ` (taken up in round ${e.roundNumber})` : ""}`;
+      return `${by} steered${e.itemText ? ` on ${q}` : ""}: ${e.body ?? ""}${e.roundNumber ? ` (taken up in round ${e.roundNumber})` : ""}`;
     case "round_proposed":
       return `The agent planned round ${e.roundNumber ?? ""}${e.body ? `: ${e.body}` : ""}`;
     case "round_sent":
-      return `${e.by} sent round ${e.roundNumber ?? ""}`;
+      return `${by} sent round ${e.roundNumber ?? ""}`;
     default:
       return e.body ?? "";
   }
@@ -349,7 +352,7 @@ function Timeline({ events }: { events: BriefEvent[] }) {
               }`}
               aria-hidden
             >
-              {e.role === "agent" ? <Bot size={12} /> : e.by.charAt(0).toUpperCase()}
+              {e.role === "agent" || e.viaAgent ? <Bot size={12} /> : e.by.charAt(0).toUpperCase()}
             </span>
             <div className="min-w-0">
               <p className="text-xs text-neutral-8">{sentence(e)}</p>
@@ -384,6 +387,50 @@ function Budget({ board }: { board: Board }) {
   );
 }
 
+/**
+ * Bring your own AI agent. It connects to Parlo's MCP server, takes the same
+ * kind of seat you hold with the invite link, and can then read the study,
+ * work on the brief and steer (and, for the research team, plan and send
+ * rounds). What it changes is logged as "<your name>'s agent".
+ */
+function AgentAccess({ board, apiKey }: { board: Board; apiKey: string }) {
+  const [busy, setBusy] = useState(false);
+  const copy = async () => {
+    setBusy(true);
+    try {
+      const access = await fetchAgentAccess(apiKey, board.survey.id);
+      const me = board.team.find((t) => t.userId === board.you.userId)?.name;
+      await navigator.clipboard.writeText(
+        [
+          `Work with me on a research study in Parlo.`,
+          `1. Connect to the MCP server at ${access.mcpUrl} (choose "create new account" if it asks you to sign in).`,
+          `2. Call join_study with this invite link${me && me !== "Researcher" && me !== "Client" ? ` and the name "${me}"` : ""}: ${access.inviteLink}`,
+          `3. Call get_study with study_id ${access.studyId} and read it before changing anything.`,
+          `You will hold a ${access.seat} seat, the same as mine. Keep the invite link private.`,
+        ].join("\n")
+      );
+      trackEvent("agent_access_copied", { surveyId: board.survey.id, role: board.you.role });
+      toast.success("Copied. Paste it to your agent.");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Couldn't copy that."));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="rounded-m bg-card p-m flex flex-col gap-s" data-testid="agent-access">
+      <h2 className={labelClass}>Work on it with your AI agent</h2>
+      <p className="text-s text-neutral-8">
+        Your agent can read this study, add questions and steer{board.you.canManage ? ", and plan and send rounds" : ""}, with the same seat you hold. What it changes shows here as your agent's.
+      </p>
+      <Button type="button" variant="secondary" size="sm" className="self-start" onClick={copy} disabled={busy} data-testid="agent-access-copy">
+        {busy ? <LoaderCircle className="animate-spin" aria-hidden /> : <Copy aria-hidden />}
+        Copy instructions for your agent
+      </Button>
+    </section>
+  );
+}
+
 /** Everything beside the brief: what is out, what goes out next, steering, the budget, the log. */
 export default function PlanPanel({ board, apiKey, onBoard, reload }: { board: Board; apiKey: string; onBoard: (b: Board) => void; reload: () => Promise<void> }) {
   return (
@@ -392,6 +439,7 @@ export default function PlanPanel({ board, apiKey, onBoard, reload }: { board: B
       <LiveRound board={board} />
       <StudySteer board={board} apiKey={apiKey} onBoard={onBoard} />
       <Budget board={board} />
+      <AgentAccess board={board} apiKey={apiKey} />
       <Timeline events={board.timeline} />
     </div>
   );
